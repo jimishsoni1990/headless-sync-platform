@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 0 — Foundation  
-**Last updated:** 2026-06-22 (P0-S5 — DB queue provider)  
-**Next session: P0-S6 — Worker engine + strategies + event/adapter registries**
+**Last updated:** 2026-06-22 (P0-S6 — Worker engine + strategies + registries)  
+**Next session: P0-S7 — Phase 0 DoD gate verification**
 
 ---
 
@@ -23,7 +23,7 @@
 - [x] P0-S3 Module registry / discovery / lifecycle
 - [x] P0-S4 Outbox capture + RelayWorkerStrategy
 - [x] P0-S5 DB queue provider
-- [ ] P0-S6 Worker engine + strategies + event/adapter registries
+- [x] P0-S6 Worker engine + strategies + event/adapter registries
 - [ ] P0-S7 Phase 0 DoD gate verification
 
 ### Phase 1A — Blog MVP
@@ -146,4 +146,5 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 2026-06-22 | housekeeping | Committed P0-S2+P0-S3 (close ritual had been skipped; tree was dirty). SSH verified; pushed to origin/main (608fb27). FLAG-MONOREPO-SSH resolved.
 2026-06-22 | P0-S4 | Shipped: core/Contracts/ (OutboxWriterInterface, AggregateVersionCounterInterface), core/Events/Outbox/ (OutboxEvent, OutboxWriter, AggregateVersionCounter, Exception/OutboxWriteException, Connection/OutboxConnectionInterface + MysqliOutboxConnection + PgsqlOutboxConnection), core/Workers/Strategies/RelayWorkerStrategy, core/Container/Definitions/OutboxServiceProvider (wired into ContainerBuilder), tests/bootstrap.php (wpdb stub), tests/Unit/Events/Outbox/ (FakeWpdb, FakeOutboxConnection, AggregateVersionCounterTest ×5, OutboxWriterTest ×8, RelayWorkerStrategyTest ×21), tests/Integration/Events/Outbox/ (ConcurrentAggregateVersionTest ×3 live MySQL, RelayEndToEndTest ×5 live MySQL + live PG). Bugs fixed: bare VALUES(1) → LAST_INSERT_ID(1) in AggregateVersionCounter; \wpdb type hint → object for structural test compatibility; bind_param type-string mismatch in test setup. All four P0-S4 DoD items proved against live DBs: happy-path relay, idempotent re-relay (ON CONFLICT DO NOTHING), crash-safety (CommitSaboteurMysqlConnection — PG row survives MySQL rollback, recovery tick produces no duplicate), SKIP LOCKED concurrency. RelayWorkerStrategy redesigned mid-session: removed 'relaying' intermediate status; MySQL FOR UPDATE lock spans entire batch (BEGIN→SELECT SKIP LOCKED→PG insert+mark-relayed→COMMIT). Full suite: 99/99 tests pass (91 unit + 8 integration). Reviewer approved. | FLAG-P0S4-1: resolved by redesign (no DDL change). FLAG-P0S4-2: resolved (live-DB integration tests pass). FLAG-P0S4-3: open — created_at UTC fidelity on relay binding and assertion; resolve by P0-S7 gate.
 2026-06-22 | P0-S5 | Shipped: core/Queue/Exception/QueueException, core/Queue/Providers/Database/ (QueueConnectionInterface, DatabaseQueueConnection, DatabaseQueueProvider), core/Container/Definitions/QueueServiceProvider (wired into ContainerBuilder), tests/Unit/Queue/ (FakeQueueConnection, FakeEvent, DatabaseQueueProviderTest ×37), tests/Integration/Queue/DatabaseQueueProviderIntegrationTest ×10 (live PG). Bugs fixed: (1) DatabaseQueueConnection was final — extracted QueueConnectionInterface; (2) pg_connect() pooling on SKIP LOCKED test — fixed with PGSQL_CONNECT_FORCE_NEW; (3) ownership-fencing bug — complete(), release(), deadLetter() were fenced only on status='claimed', not worker_id — fixed by adding AND worker_id=$workerId fence, returning bool (false=lease lost, abandon), moving deadLetter() ownership UPDATE first inside the transaction. New integration test proves fencing: A claims, lease expires, requeueTimedOut revives, B claims, A's complete() and release() both return false, J remains owned by B with attempts=2. Full suite: 145/145 tests pass (127 unit + 10 PG integration + 8 pre-existing relay integration). | FLAG-P0S5-1 raised and resolved same session via DECISION E (v1.5): three pg_* wrappers are accepted temporary duplication; consolidate to shared DatabaseConnectionInterface in P0-S7; P0-S6 must introduce no new raw pg_* wrapper.
+2026-06-22 | P0-S6 | Shipped: core/Workers/WorkerStrategyInterface, WorkerExecutionContext, HeartbeatRecord, HeartbeatPublisherInterface, NullHeartbeatPublisher, WorkerEngine; core/Workers/Strategies/ EventWorkerStrategy (full Doc 8 §7 pipeline: Claim→Load→Validate→Resolve→Execute→Commit→Ack, retry/backoff/deadLetter), ReplayWorkerStrategy stub, ReconciliationWorkerStrategy stub, MaintenanceWorkerStrategy stub; core/Events/EventRegistry (explicit registration, OPEN-1 naming validation); core/Delivery/AdapterRegistry (explicit registration, last-wins on duplicate); core/Container/Definitions/WorkerServiceProvider (wired into ContainerBuilder). Tests: tests/Unit/Workers/ (WorkerEngineTest ×14, EventWorkerStrategyTest ×14, FakeHeartbeatPublisher, FakeWorkerStrategy, FakeQueueProvider), tests/Unit/Events/EventRegistryTest ×15, tests/Unit/Delivery/ (AdapterRegistryTest ×12, FakeAdapter). Full suite: 179/179 unit tests pass. No new pg_* wrapper introduced (DECISION E enforced). Pre-existing PHPUnit 12 deprecation in DatabaseQueueProviderTest (@dataProvider doc-comment) carried over unchanged. | No new flags.
 
