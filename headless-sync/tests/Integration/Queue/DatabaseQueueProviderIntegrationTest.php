@@ -367,11 +367,23 @@ final class DatabaseQueueProviderIntegrationTest extends TestCase
         $releaseResult = $providerA->release($jobId, $workerA, 0);
         self::assertFalse($releaseResult, 'Stale release() must return false');
 
-        // J is still owned by B — A did not overwrite B's claim.
+        // Worker A (stale) calls deadLetter() — must return false and write NO DLQ row.
+        // Dead-lettering a job owned by another worker is the worst failure case:
+        // it would mark a live job as terminal and insert a false DLQ entry.
+        $dlqResult = $providerA->deadLetter($jobId, $workerA, [
+            'failure_reason'   => 'stale owner attempting dead-letter',
+            'attempt_count'    => 1,
+            'payload_snapshot' => null,
+        ]);
+        self::assertFalse($dlqResult, 'Stale deadLetter() must return false');
+        $dlqRows = $this->fetchDlqForJob($jobId);
+        self::assertCount(0, $dlqRows, 'Stale deadLetter() must write no DLQ row');
+
+        // J is still owned by B — none of A's stale calls overwrote B's claim.
         $row = $this->fetchJob($jobId);
         self::assertSame('claimed', $row['status'], 'Job must still be claimed (owned by B)');
         self::assertSame($workerB, $row['worker_id'], 'worker_id must still be B');
-        self::assertSame(2, (int) $row['attempts'], 'attempts must not have changed after stale calls');
+        self::assertSame(2, (int) $row['attempts'], 'attempts must not have doubled after stale calls');
     }
 
     // -------------------------------------------------------------------------
