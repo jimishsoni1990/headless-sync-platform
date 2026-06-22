@@ -161,8 +161,13 @@ final class DatabaseQueueProvider implements QueueProviderInterface
 
     /**
      * Mark a claimed job as completed.
+     *
+     * Fenced on AND worker_id = $workerId AND status = 'claimed' (ownership guard).
+     * If affected_rows == 0 the lease was lost to timeout recovery — returns false
+     * so the caller can abandon cleanly. The new owner is now responsible; throwing
+     * here would be incorrect.
      */
-    public function complete(string $jobId): void
+    public function complete(string $jobId, string $workerId): bool
     {
         $affected = $this->conn->execute(
             "UPDATE system.queue_jobs
@@ -170,25 +175,24 @@ final class DatabaseQueueProvider implements QueueProviderInterface
                     completed_at          = NOW(),
                     visibility_timeout_at = NULL,
                     worker_id             = NULL
-             WHERE  id = $1::uuid
-               AND  status = 'claimed'",
-            [$jobId],
+             WHERE  id        = $1::uuid
+               AND  worker_id = $2::uuid
+               AND  status    = 'claimed'",
+            [$jobId, $workerId],
         );
 
-        if ($affected === 0) {
-            throw new QueueException(
-                "complete(): job {$jobId} not found or not in 'claimed' status."
-            );
-        }
+        return $affected === 1;
     }
 
     /**
      * Return a claimed job to 'available' state for retry.
      *
-     * $delaySeconds controls when the job becomes claimable again; pass 0 for immediate.
-     * Pass the result of computeBackoffSeconds() for ADR-022 exponential-backoff scheduling.
+     * Fenced on AND worker_id = $workerId AND status = 'claimed'.
+     * Returns false (abandon) if the lease was lost; true if recorded.
+     *
+     * $delaySeconds: computed by the caller (e.g. computeBackoffSeconds()).
      */
-    public function release(string $jobId, int $delaySeconds = 0): void
+    public function release(string $jobId, string $workerId, int $delaySeconds = 0): bool
     {
         $affected = $this->conn->execute(
             "UPDATE system.queue_jobs
@@ -196,16 +200,13 @@ final class DatabaseQueueProvider implements QueueProviderInterface
                     available_at          = NOW() + ($1 * INTERVAL '1 second'),
                     visibility_timeout_at = NULL,
                     worker_id             = NULL
-             WHERE  id = $2::uuid
-               AND  status = 'claimed'",
-            [(string) $delaySeconds, $jobId],
+             WHERE  id        = $2::uuid
+               AND  worker_id = $3::uuid
+               AND  status    = 'claimed'",
+            [(string) $delaySeconds, $jobId, $workerId],
         );
 
-        if ($affected === 0) {
-            throw new QueueException(
-                "release(): job {$jobId} not found or not in 'claimed' status."
-            );
-        }
+        return $affected === 1;
     }
 
     /**
@@ -222,31 +223,56 @@ final class DatabaseQueueProvider implements QueueProviderInterface
      *   - If array/object → json_encode.
      *   - If unparseable → wrap as {"raw":"<escaped>"}.
      *   - Never NULL.
+     *
+     * Ownership-fenced: the queue UPDATE is guarded on AND worker_id = $workerId
+     * AND status = 'claimed'. If affected_rows == 0 the lease was lost — returns
+     * false and the transaction is rolled back (no DLQ entry written for a job
+     * this worker no longer owns).
+     *
+     * The event_id lookup is inside the transaction so it is consistent with
+     * the ownership check.
      */
-    public function deadLetter(string $jobId, string $workerId, array $failureContext): void
+    public function deadLetter(string $jobId, string $workerId, array $failureContext): bool
     {
-        $failureReason  = (string) ($failureContext['failure_reason'] ?? 'unknown');
-        $stackTrace     = isset($failureContext['stack_trace']) ? (string) $failureContext['stack_trace'] : null;
-        $attemptCount   = (int) ($failureContext['attempt_count'] ?? 0);
-        $payloadRaw     = $failureContext['payload_snapshot'] ?? null;
-
-        $payloadJson = $this->coercePayloadSnapshot($payloadRaw);
-
-        $eventId = $this->conn->query(
-            "SELECT event_id FROM system.queue_jobs WHERE id = $1::uuid",
-            [$jobId],
-        );
-
-        if (empty($eventId)) {
-            throw new QueueException("deadLetter(): job {$jobId} not found.");
-        }
-
-        $eventIdValue = $eventId[0]['event_id'];
-        $dlqId        = $this->uuidv7();
+        $failureReason = (string) ($failureContext['failure_reason'] ?? 'unknown');
+        $stackTrace    = isset($failureContext['stack_trace']) ? (string) $failureContext['stack_trace'] : null;
+        $attemptCount  = (int) ($failureContext['attempt_count'] ?? 0);
+        $payloadJson   = $this->coercePayloadSnapshot($failureContext['payload_snapshot'] ?? null);
+        $dlqId         = $this->uuidv7();
 
         $this->conn->beginTransaction();
 
         try {
+            // Ownership-fenced queue UPDATE first. If the lease was lost, the
+            // INSERT must not happen — roll back and abandon.
+            $affected = $this->conn->execute(
+                "UPDATE system.queue_jobs
+                 SET    status     = 'dead_lettered',
+                        last_error = $1,
+                        worker_id  = $2::uuid
+                 WHERE  id        = $3::uuid
+                   AND  worker_id = $2::uuid
+                   AND  status    = 'claimed'",
+                [$failureReason, $workerId, $jobId],
+            );
+
+            if ($affected === 0) {
+                $this->conn->rollback();
+                return false;
+            }
+
+            // Fetch event_id inside the same transaction for consistency.
+            $rows = $this->conn->query(
+                "SELECT event_id FROM system.queue_jobs WHERE id = $1::uuid",
+                [$jobId],
+            );
+
+            if (empty($rows)) {
+                // Should never happen — the UPDATE above found the row — but guard anyway.
+                $this->conn->rollback();
+                throw new QueueException("deadLetter(): job {$jobId} vanished after ownership check.");
+            }
+
             $this->conn->execute(
                 "INSERT INTO system.dead_letter_jobs
                      (id, job_id, event_id, failure_reason, created_at,
@@ -256,7 +282,7 @@ final class DatabaseQueueProvider implements QueueProviderInterface
                 [
                     $dlqId,
                     $jobId,
-                    $eventIdValue,
+                    $rows[0]['event_id'],
                     $failureReason,
                     $stackTrace,
                     (string) $attemptCount,
@@ -265,21 +291,14 @@ final class DatabaseQueueProvider implements QueueProviderInterface
                 ],
             );
 
-            $this->conn->execute(
-                "UPDATE system.queue_jobs
-                 SET    status     = 'dead_lettered',
-                        last_error = $1,
-                        worker_id  = $2::uuid
-                 WHERE  id = $3::uuid",
-                [$failureReason, $workerId, $jobId],
-            );
-
             $this->conn->commit();
 
         } catch (\Throwable $e) {
             $this->conn->rollback();
             throw new QueueException('deadLetter() failed: ' . $e->getMessage(), previous: $e);
         }
+
+        return true;
     }
 
     /**

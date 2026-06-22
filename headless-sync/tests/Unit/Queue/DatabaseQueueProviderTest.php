@@ -15,9 +15,10 @@ use PHPUnit\Framework\TestCase;
  *   enqueue()          — valid partition, invalid partition rejection, correct SQL shape
  *   claim()            — SKIP LOCKED pattern emitted, empty-queue returns null,
  *                        transaction wraps SELECT+UPDATE, returned row has incremented attempts
- *   complete()         — correct SQL shape, throws on 0 affected
- *   release()          — correct SQL shape with delay, throws on 0 affected
- *   deadLetter()       — DLQ INSERT + queue UPDATE in transaction, payload coercion (DECISION A)
+ *   complete()         — ownership fence (worker_id guard), returns true/false, SQL shape
+ *   release()          — ownership fence, delay binding, returns true/false, SQL shape
+ *   deadLetter()       — ownership-fenced queue UPDATE first, event_id fetch inside tx,
+ *                        DLQ INSERT second; returns false on lease-loss; payload coercion
  *   requeueTimedOut()  — correct SQL shape, partition filter present
  *   computeBackoffSeconds() — exponential growth, cap applied, range correct
  *   partition guard    — 'content', 'commerce', 'system' accepted; others rejected
@@ -210,106 +211,128 @@ final class DatabaseQueueProviderTest extends TestCase
     // complete()
     // -------------------------------------------------------------------------
 
-    public function test_complete_emits_correct_update(): void
+    public function test_complete_emits_correct_update_with_worker_id_fence(): void
     {
-        $this->provider->complete('job-uuid-done');
+        $result = $this->provider->complete('job-uuid-done', 'worker-abc');
 
         $sql    = $this->conn->executeCalls[0]['sql'];
         $params = $this->conn->executeCalls[0]['params'];
 
+        self::assertTrue($result, 'complete() must return true when row is affected');
         self::assertStringContainsString("status                = 'completed'", $sql);
         self::assertStringContainsString('visibility_timeout_at = NULL', $sql);
+        self::assertStringContainsString('worker_id = $2::uuid', $sql);
+        self::assertStringContainsString("status    = 'claimed'", $sql);
         self::assertSame('job-uuid-done', $params[0]);
+        self::assertSame('worker-abc',    $params[1]);
     }
 
-    public function test_complete_throws_when_no_rows_affected(): void
+    public function test_complete_returns_false_on_lease_loss(): void
     {
         $this->conn->executeReturnValue = 0;
 
-        $this->expectException(QueueException::class);
-        $this->expectExceptionMessageMatches("/not found or not in 'claimed'/");
+        $result = $this->provider->complete('ghost-job', 'worker-abc');
 
-        $this->provider->complete('ghost-job');
+        self::assertFalse($result, 'complete() must return false (abandon) when no rows affected');
     }
 
     // -------------------------------------------------------------------------
     // release()
     // -------------------------------------------------------------------------
 
-    public function test_release_emits_update_with_delay(): void
+    public function test_release_emits_update_with_worker_id_fence_and_delay(): void
     {
-        $this->provider->release('job-uuid-rel', 120);
+        $result = $this->provider->release('job-uuid-rel', 'worker-abc', 120);
 
         $sql    = $this->conn->executeCalls[0]['sql'];
         $params = $this->conn->executeCalls[0]['params'];
 
+        self::assertTrue($result, 'release() must return true when row is affected');
         self::assertStringContainsString("status                = 'available'", $sql);
         self::assertStringContainsString('available_at', $sql);
-        self::assertSame('120', $params[0]);
+        self::assertStringContainsString('worker_id = $3::uuid', $sql);
+        self::assertStringContainsString("'claimed'", $sql);
+        self::assertSame('120',          $params[0]);
         self::assertSame('job-uuid-rel', $params[1]);
+        self::assertSame('worker-abc',   $params[2]);
     }
 
     public function test_release_with_zero_delay(): void
     {
-        $this->provider->release('job-uuid-now', 0);
+        $this->provider->release('job-uuid-now', 'worker-abc', 0);
 
         $params = $this->conn->executeCalls[0]['params'];
         self::assertSame('0', $params[0]);
     }
 
-    public function test_release_throws_when_no_rows_affected(): void
+    public function test_release_returns_false_on_lease_loss(): void
     {
         $this->conn->executeReturnValue = 0;
 
-        $this->expectException(QueueException::class);
-        $this->provider->release('ghost-job', 30);
+        $result = $this->provider->release('ghost-job', 'worker-abc', 30);
+
+        self::assertFalse($result, 'release() must return false (abandon) when no rows affected');
     }
 
     // -------------------------------------------------------------------------
     // deadLetter()
     // -------------------------------------------------------------------------
 
-    public function test_dead_letter_inserts_into_dlq_and_updates_job(): void
+    /*
+     * New call sequence after ownership-fence refactor:
+     *   1. beginTransaction()
+     *   2. execute()  — queue UPDATE (ownership-fenced)   executeCalls[0]
+     *   3. query()    — event_id fetch inside tx           queryCalls[0]
+     *   4. execute()  — DLQ INSERT                         executeCalls[1]
+     *   5. commit()
+     */
+
+    public function test_dead_letter_returns_true_and_does_update_then_insert(): void
     {
-        // First query(): returns the job's event_id lookup
         $this->conn->queryResultQueue[] = [['event_id' => 'ev-dl-001']];
 
-        $this->provider->deadLetter('job-dl', 'worker-dl', [
-            'failure_reason'  => 'Processing failed',
-            'stack_trace'     => 'trace...',
-            'attempt_count'   => 10,
+        $result = $this->provider->deadLetter('job-dl', 'worker-dl', [
+            'failure_reason'   => 'Processing failed',
+            'stack_trace'      => 'trace...',
+            'attempt_count'    => 10,
             'payload_snapshot' => ['title' => 'Hello'],
         ]);
 
-        // Should have BEGIN + COMMIT
+        self::assertTrue($result);
         self::assertSame(1, $this->conn->beginCount);
         self::assertSame(1, $this->conn->commitCount);
+        self::assertSame(0, $this->conn->rollbackCount);
 
-        // Two execute calls: INSERT + UPDATE
+        // execute[0] = queue UPDATE (ownership-fenced), execute[1] = DLQ INSERT
         self::assertCount(2, $this->conn->executeCalls);
+        $updateSql = $this->conn->executeCalls[0]['sql'];
+        $insertSql = $this->conn->executeCalls[1]['sql'];
 
-        $insertSql = $this->conn->executeCalls[0]['sql'];
-        $updateSql = $this->conn->executeCalls[1]['sql'];
-
+        self::assertStringContainsString("status     = 'dead_lettered'", $updateSql);
+        self::assertStringContainsString('worker_id = $2::uuid', $updateSql);
+        self::assertStringContainsString("status    = 'claimed'", $updateSql);
         self::assertStringContainsString('INSERT INTO system.dead_letter_jobs', $insertSql);
         self::assertStringContainsString('payload_snapshot', $insertSql);
         self::assertStringContainsString('stack_trace', $insertSql);
-        self::assertStringContainsString("status     = 'dead_lettered'", $updateSql);
     }
 
-    public function test_dead_letter_throws_when_job_not_found(): void
+    public function test_dead_letter_returns_false_on_lease_loss(): void
     {
-        // event_id lookup returns empty
-        $this->conn->queryResultQueue[] = [];
+        // Queue UPDATE returns 0 rows → lease was lost → must return false, not throw.
+        $this->conn->executeReturnValue = 0;
 
-        $this->expectException(QueueException::class);
-        $this->expectExceptionMessageMatches('/not found/');
-
-        $this->provider->deadLetter('ghost', 'worker', [
+        $result = $this->provider->deadLetter('job-leased-away', 'stale-worker', [
             'failure_reason'   => 'x',
             'attempt_count'    => 1,
             'payload_snapshot' => null,
         ]);
+
+        self::assertFalse($result, 'deadLetter() must return false when lease was lost');
+        self::assertSame(1, $this->conn->rollbackCount, 'Must rollback when lease lost');
+        self::assertSame(0, $this->conn->commitCount);
+        // No DLQ INSERT should have been attempted.
+        self::assertCount(1, $this->conn->executeCalls, 'Only the ownership-check UPDATE should have run');
+        self::assertCount(0, $this->conn->queryCalls,   'event_id fetch must not run after lease-loss');
     }
 
     public function test_dead_letter_wraps_null_payload_as_raw_json(): void
@@ -322,9 +345,8 @@ final class DatabaseQueueProviderTest extends TestCase
             'payload_snapshot' => null,
         ]);
 
-        $insertParams = $this->conn->executeCalls[0]['params'];
-        // payload_snapshot is the 8th parameter (index 7)
-        $payloadParam = $insertParams[7];
+        // DLQ INSERT is executeCalls[1]; payload_snapshot is its 8th param (index 7)
+        $payloadParam = $this->conn->executeCalls[1]['params'][7];
         self::assertSame('{"raw":"null"}', $payloadParam, 'null payload must be wrapped as {"raw":"null"}');
     }
 
@@ -338,7 +360,7 @@ final class DatabaseQueueProviderTest extends TestCase
             'payload_snapshot' => 'not valid json {{{',
         ]);
 
-        $payloadParam = $this->conn->executeCalls[0]['params'][7];
+        $payloadParam = $this->conn->executeCalls[1]['params'][7];
         self::assertStringContainsString('"raw"', $payloadParam);
         self::assertStringContainsString('not valid json {{{', $payloadParam);
     }
@@ -355,7 +377,7 @@ final class DatabaseQueueProviderTest extends TestCase
             'payload_snapshot' => $json,
         ]);
 
-        $payloadParam = $this->conn->executeCalls[0]['params'][7];
+        $payloadParam = $this->conn->executeCalls[1]['params'][7];
         self::assertSame($json, $payloadParam);
     }
 
@@ -369,14 +391,15 @@ final class DatabaseQueueProviderTest extends TestCase
             'payload_snapshot' => ['key' => 'value'],
         ]);
 
-        $payloadParam = $this->conn->executeCalls[0]['params'][7];
+        $payloadParam = $this->conn->executeCalls[1]['params'][7];
         self::assertSame('{"key":"value"}', $payloadParam);
     }
 
     public function test_dead_letter_rolls_back_on_insert_failure(): void
     {
-        $this->conn->queryResultQueue[] = [['event_id' => 'ev-fail']];
-        $this->conn->failNextExecute    = true;
+        // First execute (queue UPDATE) succeeds; second (DLQ INSERT) fails.
+        $this->conn->queryResultQueue[]   = [['event_id' => 'ev-fail']];
+        $this->conn->failOnExecuteCall    = 1; // zero-based: fail the 2nd execute call
 
         $this->expectException(QueueException::class);
 

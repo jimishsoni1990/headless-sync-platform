@@ -124,6 +124,26 @@ Additionally, `RelayEndToEndTest::test_pending_row_is_relayed_and_marked_relayed
 
 ---
 
+### FLAG-P0S5-1 — Three structurally identical pg_* connection wrappers
+
+**Raised:** 2026-06-22 | **Session:** P0-S5 | **Status:** Open — ruling needed before P0-S6
+
+`PgsqlConnection` (P0-S2), `PgsqlOutboxConnection` (P0-S4), and `DatabaseQueueConnection` (P0-S5)
+are three structurally identical `pg_*` wrappers — same interface, same implementation pattern,
+different namespaces. No ruling authorises the per-subsystem isolation pattern; no ruling
+authorises consolidation either.
+
+**Impact:** P0-S6 introduces new subsystems (worker engine). If we consolidate before P0-S6,
+we can avoid a fourth wrapper. If per-subsystem isolation is the correct pattern (each subsystem
+owns its own connection lifecycle), that should be recorded so future sessions follow it.
+
+**Resolution trigger:** A ruling in `docs/ARCHITECTURE_DECISIONS.md` on whether PostgreSQL
+connections are per-subsystem (each owns its own wrapper) or shared (one `PgsqlConnection`
+class used by all subsystems with the DSN/schema injected). The ruling must be implemented
+before P0-S6 begins or the flag must be explicitly deferred with a rationale.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
@@ -133,5 +153,5 @@ Additionally, `RelayEndToEndTest::test_pending_row_is_relayed_and_marked_relayed
 2026-06-22 | P0-S3 | Shipped: core/Module/ (ModuleManifest, ModuleDiscovery, ModuleLoader, ModuleRegistry, ModuleRegistrar, Exception/InvalidManifestException), core/Contracts/ModuleInterface.php (OPEN-9 union shape), core/Container/Definitions/ModuleServiceProvider.php, modules/Content/module.json fixture, tests/Unit/Module/ (35 tests). 57/57 unit tests pass. Two-phase register-then-boot ordering verified across modules. | Flags: FLAG-P0S3-1 (core/Module singular, session map wins — no action); FLAG-P0S3-2 (phpunit ^11.5 require-dev, Accepted); BOM fix in MigrationRunner.php (P0-S2 file, benign).
 2026-06-22 | housekeeping | Committed P0-S2+P0-S3 (close ritual had been skipped; tree was dirty). SSH verified; pushed to origin/main (608fb27). FLAG-MONOREPO-SSH resolved.
 2026-06-22 | P0-S4 | Shipped: core/Contracts/ (OutboxWriterInterface, AggregateVersionCounterInterface), core/Events/Outbox/ (OutboxEvent, OutboxWriter, AggregateVersionCounter, Exception/OutboxWriteException, Connection/OutboxConnectionInterface + MysqliOutboxConnection + PgsqlOutboxConnection), core/Workers/Strategies/RelayWorkerStrategy, core/Container/Definitions/OutboxServiceProvider (wired into ContainerBuilder), tests/bootstrap.php (wpdb stub), tests/Unit/Events/Outbox/ (FakeWpdb, FakeOutboxConnection, AggregateVersionCounterTest ×5, OutboxWriterTest ×8, RelayWorkerStrategyTest ×21), tests/Integration/Events/Outbox/ (ConcurrentAggregateVersionTest ×3 live MySQL, RelayEndToEndTest ×5 live MySQL + live PG). Bugs fixed: bare VALUES(1) → LAST_INSERT_ID(1) in AggregateVersionCounter; \wpdb type hint → object for structural test compatibility; bind_param type-string mismatch in test setup. All four P0-S4 DoD items proved against live DBs: happy-path relay, idempotent re-relay (ON CONFLICT DO NOTHING), crash-safety (CommitSaboteurMysqlConnection — PG row survives MySQL rollback, recovery tick produces no duplicate), SKIP LOCKED concurrency. RelayWorkerStrategy redesigned mid-session: removed 'relaying' intermediate status; MySQL FOR UPDATE lock spans entire batch (BEGIN→SELECT SKIP LOCKED→PG insert+mark-relayed→COMMIT). Full suite: 99/99 tests pass (91 unit + 8 integration). Reviewer approved. | FLAG-P0S4-1: resolved by redesign (no DDL change). FLAG-P0S4-2: resolved (live-DB integration tests pass). FLAG-P0S4-3: open — created_at UTC fidelity on relay binding and assertion; resolve by P0-S7 gate.
-2026-06-22 | P0-S5 | Shipped: core/Queue/Exception/QueueException, core/Queue/Providers/Database/ (QueueConnectionInterface, DatabaseQueueConnection, DatabaseQueueProvider), core/Container/Definitions/QueueServiceProvider (wired into ContainerBuilder), tests/Unit/Queue/ (FakeQueueConnection, FakeEvent, DatabaseQueueProviderTest ×37), tests/Integration/Queue/DatabaseQueueProviderIntegrationTest ×9 (live PG). Bug found and fixed mid-session: DatabaseQueueConnection was final — extracted QueueConnectionInterface so DatabaseQueueProvider is testable without a real PG handle. Second bug: pg_connect() pooling caused SKIP LOCKED test to use the same connection for both locker and claimant — fixed with PGSQL_CONNECT_FORCE_NEW on all provider connections. All five P0-S5 DoD items proved: SKIP LOCKED concurrency (providerB finds null while lockConn holds lock), visibility-timeout recovery (requeueTimedOut revives backdated jobs), idempotent requeue race (two concurrent calls requeue exactly 1 row), retry-limit → dead-letter with payload_snapshot NOT NULL (DECISION A coercion for null/invalid/array/string payloads), partition isolation (commerce claim ignores content jobs). Full suite: 144/144 tests pass (127 unit + 9 PG integration + 8 pre-existing relay integration). | No new flags.
+2026-06-22 | P0-S5 | Shipped: core/Queue/Exception/QueueException, core/Queue/Providers/Database/ (QueueConnectionInterface, DatabaseQueueConnection, DatabaseQueueProvider), core/Container/Definitions/QueueServiceProvider (wired into ContainerBuilder), tests/Unit/Queue/ (FakeQueueConnection, FakeEvent, DatabaseQueueProviderTest ×37), tests/Integration/Queue/DatabaseQueueProviderIntegrationTest ×10 (live PG). Bugs fixed: (1) DatabaseQueueConnection was final — extracted QueueConnectionInterface; (2) pg_connect() pooling on SKIP LOCKED test — fixed with PGSQL_CONNECT_FORCE_NEW; (3) ownership-fencing bug — complete(), release(), deadLetter() were fenced only on status='claimed', not worker_id; requeueTimedOut() can reassign a job while original owner is still running — fixed by adding AND worker_id=$workerId fence, changing return types to bool (false=lease lost, abandon), moving deadLetter() ownership UPDATE to run first inside the transaction before the DLQ INSERT. New integration test (test_stale_owner_complete_and_release_return_false_after_reassign) proves the fencing: A claims, lease expires, requeueTimedOut revives, B claims, A's complete() and release() both return false, J remains owned by B with attempts=2. Full suite: 145/145 tests pass (127 unit + 10 PG integration + 8 pre-existing relay integration). | FLAG-P0S5-1: three structurally identical pg_* connection wrappers (PgsqlConnection P0-S2, PgsqlOutboxConnection P0-S4, DatabaseQueueConnection P0-S5) — needs ruling on consolidation vs per-subsystem isolation before P0-S6.
 

@@ -46,13 +46,25 @@ class FakeQueueConnection implements QueueConnectionInterface
     /** Override execute() return value (default 1). */
     public int $executeReturnValue = 1;
 
+    /**
+     * Fail on the Nth execute() call (zero-based index into executeCalls).
+     * -1 means "never fail on index". Use when the first execute must succeed
+     * but a later one (e.g. DLQ INSERT) must fail.
+     */
+    public int $failOnExecuteCall = -1;
+
     public function execute(string $sql, array $params = []): int
     {
+        $callIndex = count($this->executeCalls);
         $this->executeCalls[] = ['sql' => $sql, 'params' => $params];
 
         if ($this->failNextExecute) {
             $this->failNextExecute = false;
             throw new QueueException('Simulated execute failure');
+        }
+
+        if ($this->failOnExecuteCall >= 0 && $callIndex === $this->failOnExecuteCall) {
+            throw new QueueException('Simulated execute failure on call ' . $callIndex);
         }
 
         return $this->executeReturnValue;

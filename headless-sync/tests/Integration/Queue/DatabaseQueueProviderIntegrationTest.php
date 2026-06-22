@@ -79,8 +79,9 @@ final class DatabaseQueueProviderIntegrationTest extends TestCase
         self::assertSame($workerId, $row['worker_id']);
         self::assertNotNull($row['visibility_timeout_at']);
 
-        // Complete it.
-        $provider->complete($jobId);
+        // Complete it — pass the same workerId that claimed it.
+        $result = $provider->complete($jobId, $workerId);
+        self::assertTrue($result, 'complete() must return true when the lease is still held');
         $row = $this->fetchJob($jobId);
         self::assertSame('completed', $row['status']);
         self::assertNull($row['visibility_timeout_at']);
@@ -240,11 +241,12 @@ final class DatabaseQueueProviderIntegrationTest extends TestCase
     public function test_dead_letter_null_payload_becomes_raw_json_not_null(): void
     {
         $provider = $this->makeProvider();
+        $workerId = $this->newUuid();
         $event    = new FakeEvent($this->newUuid());
         $jobId    = $provider->enqueue($event, 'content');
-        $provider->claim('content', $this->newUuid());
+        $provider->claim('content', $workerId);
 
-        $provider->deadLetter($jobId, $this->newUuid(), [
+        $provider->deadLetter($jobId, $workerId, [
             'failure_reason'   => 'unparseable',
             'attempt_count'    => 1,
             'payload_snapshot' => null,
@@ -286,13 +288,15 @@ final class DatabaseQueueProviderIntegrationTest extends TestCase
     public function test_release_with_backoff_delay_reschedules_job(): void
     {
         $provider = $this->makeProvider();
+        $workerId = $this->newUuid();
         $event    = new FakeEvent($this->newUuid());
         $jobId    = $provider->enqueue($event, 'content');
 
-        $provider->claim('content', $this->newUuid());
+        $provider->claim('content', $workerId);
 
-        // Release with a 60-second backoff.
-        $provider->release($jobId, 60);
+        // Release with a 60-second backoff — pass the owning workerId.
+        $result = $provider->release($jobId, $workerId, 60);
+        self::assertTrue($result, 'release() must return true when the lease is still held');
 
         $row = $this->fetchJob($jobId);
         self::assertSame('available', $row['status']);
@@ -304,6 +308,70 @@ final class DatabaseQueueProviderIntegrationTest extends TestCase
         $availableAt = new \DateTimeImmutable($row['available_at']);
         self::assertGreaterThan(new \DateTimeImmutable(), $availableAt,
             'available_at must be in the future after backoff release');
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 7 — Ownership fencing: stale owner abandons after lease expiry + reassign
+    // -------------------------------------------------------------------------
+
+    /**
+     * Scenario: Worker A claims job J. Its visibility timeout expires. requeueTimedOut()
+     * revives J. Worker B claims J. Worker A (stale) then calls complete() and release()
+     * and must get false (0 rows affected) for both — it must NOT overwrite B's claim.
+     *
+     * Post-conditions:
+     *   - J is still owned by B (status=claimed, worker_id=B).
+     *   - attempts == 2 (one per claim), not 3.
+     *   - Worker A's complete() and release() both return false.
+     */
+    public function test_stale_owner_complete_and_release_return_false_after_reassign(): void
+    {
+        $providerA = $this->makeProvider();
+        $providerB = $this->makeProvider();
+        $workerA   = $this->newUuid();
+        $workerB   = $this->newUuid();
+        $event     = new FakeEvent($this->newUuid());
+
+        // Enqueue one job.
+        $jobId = $providerA->enqueue($event, 'content');
+
+        // Worker A claims.
+        $claimedA = $providerA->claim('content', $workerA);
+        self::assertNotNull($claimedA, 'Worker A must claim the job');
+        self::assertSame(1, $claimedA['attempts']);
+
+        // Simulate lease expiry by backdating visibility_timeout_at.
+        pg_query_params(
+            $this->pgConn,
+            "UPDATE {$this->schema}.queue_jobs
+             SET    visibility_timeout_at = NOW() - INTERVAL '1 second'
+             WHERE  id = $1::uuid",
+            [$jobId]
+        );
+
+        // Recovery tick: job is revived.
+        $requeued = $providerA->requeueTimedOut('content');
+        self::assertSame(1, $requeued, 'requeueTimedOut() must revive the expired job');
+
+        // Worker B claims the revived job.
+        $claimedB = $providerB->claim('content', $workerB);
+        self::assertNotNull($claimedB, 'Worker B must claim the revived job');
+        self::assertSame(2, $claimedB['attempts'], 'attempts must be 2 after B claims');
+        self::assertSame($workerB, $claimedB['worker_id']);
+
+        // Worker A (stale) calls complete() — must return false (lease lost).
+        $completeResult = $providerA->complete($jobId, $workerA);
+        self::assertFalse($completeResult, 'Stale complete() must return false');
+
+        // Worker A (stale) calls release() — must return false (lease lost).
+        $releaseResult = $providerA->release($jobId, $workerA, 0);
+        self::assertFalse($releaseResult, 'Stale release() must return false');
+
+        // J is still owned by B — A did not overwrite B's claim.
+        $row = $this->fetchJob($jobId);
+        self::assertSame('claimed', $row['status'], 'Job must still be claimed (owned by B)');
+        self::assertSame($workerB, $row['worker_id'], 'worker_id must still be B');
+        self::assertSame(2, (int) $row['attempts'], 'attempts must not have changed after stale calls');
     }
 
     // -------------------------------------------------------------------------

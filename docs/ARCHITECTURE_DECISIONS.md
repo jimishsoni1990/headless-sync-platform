@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.4  
+Version: 1.5  
 Status: Accepted  
 Owner: Architecture  
 
@@ -16,13 +16,14 @@ Owner: Architecture
 | 1.2 | 2026-06-21 | Timestamp canon scoped by engine (PostgreSQL `TIMESTAMPTZ` vs MySQL `DATETIME`-UTC); type canon bound explicitly to ALL tables including module-owned `content.*`, superseding Doc 3 §9–11. Phase 0 freeze-check wording corrected so MySQL `DATETIME` columns are not flagged as violations. Implications table annotated with MySQL timestamp types and a note that `content.*` tables inherit v1.2 canon with freeze check at Phase 1A DoD. |
 | 1.3 | 2026-06-21 | OPEN-6: froze `wp_hsp_outbox` column-level DDL (previously "new table" only). Added `source_updated_at` (was missing — required to populate `system.events` OPEN-5 column). Pinned relay fidelity: `event_id` and `created_at` (capture time) are preserved unchanged from outbox into `system.events`. Implications table MySQL row updated to reference v1.3 frozen DDL. |
 | 1.4 | 2026-06-21 | DECISION A: `dead_letter_jobs.payload_snapshot` changed to `NOT NULL`; raw payload must always be preserved. OPEN-8: froze `system.schema_versions`, `system.module_versions`, `system.security_events` DDL (were Doc-3-underspecified). OPEN-9: `ModuleInterface` is the union of declarative discovery + WP lifecycle methods, supersedes Doc 2 §12. DECISION D: `AdapterInterface` adds `bulkPersist()` per Doc 7 §19. |
+| 1.5 | 2026-06-22 | DECISION E: shared runtime PostgreSQL connection layer; resolves FLAG-P0S5-1. Consolidation deferred to P0-S7; P0-S6 binding constraint (no new raw `pg_*` wrapper). |
 
 ---
 
 ## Table of Contents
 
 1. [Open Items (OPEN-1 through OPEN-9)](#open-items)
-2. [Decisions (DECISION 1 through DECISION 3, DECISION A, DECISION D)](#decisions)
+2. [Decisions (DECISION 1 through DECISION 3, DECISION A, DECISION D, DECISION E)](#decisions)
 3. [Implications Carried into Schema](#implications-carried-into-schema)
 
 ---
@@ -353,6 +354,27 @@ WordPress lifecycle (called by the module registry in order):
 **Ruling:** `AdapterInterface` exposes both `persist(CanonicalModelInterface $model, EventInterface $event): void` and `bulkPersist(array $models): void`. `bulkPersist()` is a **capability declaration**, not a strategy mandate: a conforming adapter may implement it by looping `persist()` internally. Bulk SQL, batch upserts, and single-transaction semantics for bulk operations are implementation-defined and specified at the adapter implementation task, not here.
 
 **Rationale:** Doc 7 §19 requires adapters to support bulk operations for reconciliation, full replay, and bulk import workflows. Specifying the method at the interface level ensures all adapters are capable of serving those callers without requiring callers to know the adapter's implementation strategy.
+
+---
+
+### DECISION E — Shared Runtime PostgreSQL Connection Layer (resolves FLAG-P0S5-1)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Supersedes** | — |
+| **Adds to** | Doc 4 §12; Doc 2 (core infrastructure layout) |
+| **Resolves** | FLAG-P0S5-1 |
+
+**Ruling:** Runtime DML subsystems (outbox relay, queue provider, worker infrastructure, and future runtime services) share a single runtime PostgreSQL connection abstraction. The migration engine is explicitly excluded and retains its own migration-specific abstraction (`ConnectionInterface`, `execute(string $sql): void`, DDL-only) — its DDL/lifecycle/error semantics differ and must stay isolated.
+
+Consolidation is deferred to P0-S7. No consolidation occurs during P0-S5 or P0-S6. The three existing `pg_*` wrappers (`PgsqlConnection` [migrations], `PgsqlOutboxConnection`, `DatabaseQueueConnection`) are an accepted temporary duplication, not a permanent pattern.
+
+**P0-S6 constraint (binding):** P0-S6 introduces NO additional raw `pg_*` wrapper class. The worker obtains PostgreSQL access through an existing runtime provider/connection (e.g. via `QueueProviderInterface`, Doc 4 §12), never a new low-level handle.
+
+**P0-S7 authorized scope:** introduce a shared runtime `DatabaseConnectionInterface` (`execute`/`query`/`beginTransaction`/`commit`/`rollback`) + one shared PG implementation under `core/Database/`; collapse `OutboxConnectionInterface` and `QueueConnectionInterface` into it; replace the duplicated runtime wrappers with the shared implementation; the connection layer throws a single infrastructure `DatabaseException`, which subsystems may translate to `QueueException` / `OutboxWriteException` / `WorkerException` at their boundary. Migration engine untouched. This is consolidation only — behaviour, transaction semantics, and test coverage must remain unchanged.
+
+**Rationale:** Core owns reusable runtime infrastructure; subsystems must not each reinvent it. Capping proliferation at three and consolidating at the freeze gate avoids refactor risk during active implementation while preventing the pattern from entrenching.
 
 ---
 
