@@ -1,0 +1,17 @@
+{
+    "name": "hsp/headless-sync",
+    "description": "Headless Sync Platform — WordPress to PostgreSQL event-driven sync pipeline",
+    "type": "wordpress-plugin",
+    "autoload": {
+        "psr-4": {
+            "HSP\\Bootstrap\\": "bootstrap/",
+            "HSP\\Core\\": "core/",
+            "Psr\\Container\\": "core/Psr/Container/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "HSP\\Tests\\": "tests/"
+        }
+    }
+}

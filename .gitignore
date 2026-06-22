@@ -1,0 +1,13 @@
+# Plugin dependencies — regenerate with: composer dump-autoload in headless-sync/
+headless-sync/vendor/
+
+# Plugin runtime storage
+headless-sync/storage/*
+!headless-sync/storage/.gitkeep
+
+# Future Next.js frontend
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+namespace HSP\Core\Container;
+
+use HSP\Core\Container\Definitions\CoreServiceProvider;
+
+/**
+ * Builds and wires the DI container.
+ *
+ * This is the composition root: service providers are registered here,
+ * the container is built, and the two-phase lifecycle (register → boot) runs.
+ *
+ * Adding bindings: add a ServiceProvider under core/Container/Definitions/ and
+ * register it here. Module service providers are added by the module registry (P0-S3).
+ */
+final class ContainerBuilder
+{
+    public function build(array $config): Container
+    {
+        $container = new Container();
+
+        $container->instance('config', (object) $config);
+
+        $registry = new ServiceRegistry();
+        $registry->addProvider(new CoreServiceProvider($config));
+
+        $registry->registerAll($container);
+        $registry->bootAll($container);
+
+        return $container;
+    }
+}
