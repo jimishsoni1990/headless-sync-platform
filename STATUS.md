@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 0 — Foundation  
-**Last updated:** 2026-06-22 (housekeeping — FLAG-MONOREPO-SSH resolved)  
-**Next session: P0-S4 — Outbox capture + RelayWorkerStrategy**
+**Last updated:** 2026-06-22 (P0-S4 — reviewer sign-off)  
+**Next session: P0-S5 — DB queue provider**
 
 ---
 
@@ -21,7 +21,7 @@
 - [x] P0-S1 Bootstrap + DI container + configuration system
 - [x] P0-S2 Migration engine
 - [x] P0-S3 Module registry / discovery / lifecycle
-- [ ] P0-S4 Outbox capture + RelayWorkerStrategy
+- [x] P0-S4 Outbox capture + RelayWorkerStrategy
 - [ ] P0-S5 DB queue provider
 - [ ] P0-S6 Worker engine + strategies + event/adapter registries
 - [ ] P0-S7 Phase 0 DoD gate verification
@@ -94,6 +94,36 @@ Doc 2 §10 uses `core/Modules/` (plural). IMPLEMENTATION_PLAN.md §5b P0-S3 and 
 
 ---
 
+### FLAG-P0S4-1 — `'relaying'` intermediate outbox status not in frozen DDL ENUM
+
+**Raised:** 2026-06-22 | **Session:** P0-S4 | **Status:** Resolved — P0-S4 follow-up (2026-06-22)
+
+**Resolution:** Redesigned by removing the intermediate status entirely. `RelayWorkerStrategy` now holds the MySQL `FOR UPDATE` row lock for the entire batch duration: `BEGIN` → SELECT FOR UPDATE SKIP LOCKED → (PG insert + MySQL mark-`'relayed'` per row) → `COMMIT`. The row lock is the claim guard; no status transition to `'relaying'` is needed. OPEN-6 v1.3 frozen `ENUM('pending','relayed')` DDL is correct as-is — no migration change. 91/91 unit tests pass; a negative-assertion test (`test_tick_does_not_use_relaying_intermediate_status`) confirms `'relaying'` never appears in emitted SQL.
+
+---
+
+### FLAG-P0S4-2 — Integration tests self-skipped; live-DB DoD items unproven
+
+**Raised:** 2026-06-22 | **Session:** P0-S4 follow-up | **Status:** Fully resolved — 2026-06-22
+
+**Counter test (item 1): RESOLVED.** `ConcurrentAggregateVersionTest` ran against live MySQL (localhost:10053, db `local`) and passed 3/3. Bug found and fixed: `VALUES (%s, %s, 1)` → `VALUES (%s, %s, LAST_INSERT_ID(1))` so `LAST_INSERT_ID()` returns `1` on first insert.
+
+**Relay end-to-end test (item 2): RESOLVED.** `RelayEndToEndTest` written and passed 5/5 against live MySQL (localhost:10053) + live PostgreSQL (Docker 127.0.0.1:5432, headless-sync-platform-postgres). All four P0-S4 DoD items proven: (1) happy-path relay, (2) idempotent re-relay via ON CONFLICT DO NOTHING, (3) crash-safety — PG row survives MySQL rollback, recovery tick produces no duplicate, (4) SKIP LOCKED concurrency — Worker B finds zero rows while Worker A holds locks. Full suite: 99/99 tests pass.
+
+---
+
+### FLAG-P0S4-3 — `created_at` UTC fidelity on relay: binding and assertion both weak
+
+**Raised:** 2026-06-22 | **Session:** P0-S4 close | **Status:** Open — resolve by P0-S7 gate
+
+`RelayWorkerStrategy` binds `created_at` from the outbox row as a plain string (MySQL `DATETIME`, no timezone). PostgreSQL stores it as `TIMESTAMPTZ` but interprets a bare datetime string in the session timezone, which may not be UTC. The relay should cast or suffix the value with `AT TIME ZONE 'UTC'` (or bind via an explicit UTC-suffixed string) to guarantee the stored TIMESTAMPTZ reflects capture time in UTC.
+
+Additionally, `RelayEndToEndTest::test_pending_row_is_relayed_and_marked_relayed` asserts only that the PG `created_at` value contains today's date substring (`assertStringContainsString(gmdate('Y-m-d'), ...)`). This does not verify UTC offset is preserved.
+
+**Resolution by P0-S7:** (1) Verify (or fix) that `MysqliOutboxConnection`/`RelayWorkerStrategy` appends `+00` or binds `AT TIME ZONE 'UTC'` when inserting `created_at` into `system.events`. (2) Strengthen the assertion to compare the full UTC datetime, not just the date substring.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
@@ -102,4 +132,5 @@ Doc 2 §10 uses `core/Modules/` (plural). IMPLEMENTATION_PLAN.md §5b P0-S3 and 
 2026-06-22 | P0-S2 | Shipped: core/Migrations/ engine (MigrationRunner with UUIDv7 per ADR-015, AbstractSqlMigration, MigrationRecord, ConnectionInterface + WpdbMysqlConnection + PgsqlConnection + ConnectionFactory, MigrationException); 12 concrete migration classes (2 MySQL, 10 PgSQL) in database/Core/; MigrationServiceProvider wired into ContainerBuilder; phpunit.xml; tests/Unit/Migrations/ (MigrationRunnerTest, AbstractSqlMigrationTest, FakeConnection, FakeMigration); composer.json + vendor stubs updated (HSP\Database\, HSP\Tests\ namespaces). Review corrections applied: UUIDv7 replaces UUIDv4, bootstrap() single-sourced to 0008 SQL file (no inline DDL copy), CHAR(64) confirmed correct per OPEN-6 v1.3 for MySQL only, numeric-prefix ordering guard test added, checksum prefix-stability tests added, idempotency tests added. All DoD Gates 1–6 verified and approved. | No new flags.
 2026-06-22 | P0-S3 | Shipped: core/Module/ (ModuleManifest, ModuleDiscovery, ModuleLoader, ModuleRegistry, ModuleRegistrar, Exception/InvalidManifestException), core/Contracts/ModuleInterface.php (OPEN-9 union shape), core/Container/Definitions/ModuleServiceProvider.php, modules/Content/module.json fixture, tests/Unit/Module/ (35 tests). 57/57 unit tests pass. Two-phase register-then-boot ordering verified across modules. | Flags: FLAG-P0S3-1 (core/Module singular, session map wins — no action); FLAG-P0S3-2 (phpunit ^11.5 require-dev, Accepted); BOM fix in MigrationRunner.php (P0-S2 file, benign).
 2026-06-22 | housekeeping | Committed P0-S2+P0-S3 (close ritual had been skipped; tree was dirty). SSH verified; pushed to origin/main (608fb27). FLAG-MONOREPO-SSH resolved.
+2026-06-22 | P0-S4 | Shipped: core/Contracts/ (OutboxWriterInterface, AggregateVersionCounterInterface), core/Events/Outbox/ (OutboxEvent, OutboxWriter, AggregateVersionCounter, Exception/OutboxWriteException, Connection/OutboxConnectionInterface + MysqliOutboxConnection + PgsqlOutboxConnection), core/Workers/Strategies/RelayWorkerStrategy, core/Container/Definitions/OutboxServiceProvider (wired into ContainerBuilder), tests/bootstrap.php (wpdb stub), tests/Unit/Events/Outbox/ (FakeWpdb, FakeOutboxConnection, AggregateVersionCounterTest ×5, OutboxWriterTest ×8, RelayWorkerStrategyTest ×21), tests/Integration/Events/Outbox/ (ConcurrentAggregateVersionTest ×3 live MySQL, RelayEndToEndTest ×5 live MySQL + live PG). Bugs fixed: bare VALUES(1) → LAST_INSERT_ID(1) in AggregateVersionCounter; \wpdb type hint → object for structural test compatibility; bind_param type-string mismatch in test setup. All four P0-S4 DoD items proved against live DBs: happy-path relay, idempotent re-relay (ON CONFLICT DO NOTHING), crash-safety (CommitSaboteurMysqlConnection — PG row survives MySQL rollback, recovery tick produces no duplicate), SKIP LOCKED concurrency. RelayWorkerStrategy redesigned mid-session: removed 'relaying' intermediate status; MySQL FOR UPDATE lock spans entire batch (BEGIN→SELECT SKIP LOCKED→PG insert+mark-relayed→COMMIT). Full suite: 99/99 tests pass (91 unit + 8 integration). Reviewer approved. | FLAG-P0S4-1: resolved by redesign (no DDL change). FLAG-P0S4-2: resolved (live-DB integration tests pass). FLAG-P0S4-3: open — created_at UTC fidelity on relay binding and assertion; resolve by P0-S7 gate.
 
