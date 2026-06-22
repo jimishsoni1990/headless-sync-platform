@@ -50,13 +50,13 @@ Namespace root: `HSP\` — mirrors folder structure (`HSP\Core\`, `HSP\Modules\C
 
 > No `composer.json` exists yet. Commands below are TBD — confirm before use.
 
-| Task | Command |
-|---|---|
-| Install dependencies | `composer install` |
-| Run all tests | TBD — confirm |
-| Run unit tests | TBD — confirm |
-| Run a single test | TBD — confirm |
-| Lint / static analysis | TBD — confirm |
+| Task                    | Command                        |
+| ----------------------- | ------------------------------ |
+| Install dependencies    | `composer install`             |
+| Run all tests           | TBD — confirm                  |
+| Run unit tests          | TBD — confirm                  |
+| Run a single test       | TBD — confirm                  |
+| Lint / static analysis  | TBD — confirm                  |
 | Run worker (production) | WP-CLI command — TBD — confirm |
 
 Workers run under **systemd / Supervisor / container runtime** in production.
@@ -95,7 +95,7 @@ enforcing style rules.
 > See `docs/ARCHITECTURE_DECISIONS.md` for full rationale. These are Accepted and frozen.
 
 - **Outbox table:** `wp_hsp_outbox` lives in WordPress MySQL and is the capture point.
-  `system.events` in PostgreSQL is the *relayed copy*, not the capture point (OPEN-6).
+  `system.events` in PostgreSQL is the _relayed copy_, not the capture point (OPEN-6).
 - **Capture model:** near-atomic post-commit write to `wp_hsp_outbox` + reconciliation backstop
   (DECISION 1 / ADR-029 revised). A true cross-DB atomic write is impossible; do not attempt it.
 - **Event naming:** fully-qualified `<domain>.<aggregate>.<action>`
@@ -105,23 +105,28 @@ enforcing style rules.
   is superseded — those tables have no unique key on `(object_id, meta_key)` and a bare UPDATE
   on a missing row affects zero rows, reintroducing the duplicate-version race. Atomic increment
   in one round-trip (DECISION 2 v1.1):
-  ```sql
-  INSERT INTO wp_hsp_aggregate_counters (aggregate_type, aggregate_id, version)
-  VALUES (?, ?, 1)
-  ON DUPLICATE KEY UPDATE version = LAST_INSERT_ID(version + 1);
-  -- then: SELECT LAST_INSERT_ID();
-  ```
+    ```sql
+    INSERT INTO wp_hsp_aggregate_counters (aggregate_type, aggregate_id, version)
+    VALUES (?, ?, 1)
+    ON DUPLICATE KEY UPDATE version = LAST_INSERT_ID(version + 1);
+    -- then: SELECT LAST_INSERT_ID();
+    ```
 - **Column-type canon** (supersedes Doc 3 types — OPEN-3/4/5/7 v1.1): all timestamps are
   `TIMESTAMPTZ`; all checksums are `VARCHAR(64)` (sha256); all worker-identity columns are
   `UUID` (UUIDv7 self-assigned at worker startup).
 - **Worker state:** workers reload current WordPress state on each event (state sync, not event
   sourcing). Workers are stateless (ADR-044).
-- **Write-suppress logic:** compare a freshly-computed *projection* checksum against the stored
+- **Write-suppress logic:** compare a freshly-computed _projection_ checksum against the stored
   checksum in the target store. Never compare against the event's own checksum — that is for
   traceability only (DECISION 3).
 - **Atomicity:** projection upsert + `system.processed_events` insert +
   `system.aggregate_versions` upsert **must** commit in one PostgreSQL transaction (DECISION 3).
 - **WordPress wins reconciliation** (ADR-045). Never repair WordPress from PostgreSQL state.
+- **Runtime PG connection layer:** runtime DML subsystems (relay, queue, worker) share one
+  PostgreSQL connection abstraction; the migration engine keeps its own DDL-only abstraction.
+  The three existing `pg_*` wrappers are accepted temporary duplication — no new raw `pg_*`
+  wrapper may be introduced in P0-S6. Consolidation to a shared `DatabaseConnectionInterface`
+  under `core/Database/` is authorized in P0-S7 only (DECISION E).
 
 ---
 
@@ -131,6 +136,7 @@ In scope: Posts, Pages, Categories + the full platform pipeline (outbox, queue, 
 transformer, PostgreSQL projection, REST Delivery API).
 
 Out of scope for MVP (do not introduce):
+
 - WooCommerce, Membership, LMS, Directory, Booking
 - GraphQL, OpenSearch
 - Redis as a hard requirement (optional only)
@@ -173,4 +179,5 @@ Before ending a session:
    resolve a conflict with a frozen doc — stop and flag it.
 6. Append one dated line to the Session Log at the bottom of `STATUS.md`: session ID, what
    shipped, any flags raised.
-7. Leave the working tree clean and reviewable. Do NOT begin the next session's work.
+7. Present the session summary for the approval to commit.
+8. Once approved, commit to github. Leave the working tree clean and reviewable. Do NOT begin the next session's work.
