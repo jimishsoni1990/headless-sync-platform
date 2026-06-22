@@ -7,6 +7,11 @@ $baseDir = dirname($vendorDir);
 
 return array(
     'Psr\\Container\\' => array($baseDir . '/core/Psr/Container'),
+    'PhpParser\\' => array($vendorDir . '/nikic/php-parser/lib/PhpParser'),
+    'HSP\\Tests\\' => array($baseDir . '/tests'),
+    'HSP\\Modules\\' => array($baseDir . '/modules'),
+    'HSP\\Database\\' => array($baseDir . '/database'),
     'HSP\\Core\\' => array($baseDir . '/core'),
     'HSP\\Bootstrap\\' => array($baseDir . '/bootstrap'),
+    'DeepCopy\\' => array($vendorDir . '/myclabs/deep-copy/src/DeepCopy'),
 );

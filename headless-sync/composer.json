@@ -6,6 +6,8 @@
         "psr-4": {
             "HSP\\Bootstrap\\": "bootstrap/",
             "HSP\\Core\\": "core/",
+            "HSP\\Database\\": "database/",
+            "HSP\\Modules\\": "modules/",
             "Psr\\Container\\": "core/Psr/Container/"
         }
     },
@@ -13,5 +15,8 @@
         "psr-4": {
             "HSP\\Tests\\": "tests/"
         }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
     }
 }

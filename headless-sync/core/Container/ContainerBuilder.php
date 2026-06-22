@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace HSP\Core\Container;
 
 use HSP\Core\Container\Definitions\CoreServiceProvider;
+use HSP\Core\Container\Definitions\MigrationServiceProvider;
+use HSP\Core\Container\Definitions\ModuleServiceProvider;
 
 /**
  * Builds and wires the DI container.
@@ -17,7 +19,7 @@ use HSP\Core\Container\Definitions\CoreServiceProvider;
  */
 final class ContainerBuilder
 {
-    public function build(array $config): Container
+    public function build(array $config, string $modulesBasePath = ''): Container
     {
         $container = new Container();
 
@@ -25,6 +27,8 @@ final class ContainerBuilder
 
         $registry = new ServiceRegistry();
         $registry->addProvider(new CoreServiceProvider($config));
+        $registry->addProvider(new MigrationServiceProvider($config));
+        $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 
         $registry->registerAll($container);
         $registry->bootAll($container);

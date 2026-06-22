@@ -1,7 +1,7 @@
 -- Migration: 0001_create_hsp_outbox
 -- Authority: ARCHITECTURE_DECISIONS.md v1.3 — OPEN-6 (v1.3) frozen DDL, OPEN-3 (v1.2) type canon
 -- Timestamps: DATETIME UTC (MySQL; TIMESTAMPTZ is a PostgreSQL type — v1.2 canon)
--- Checksum:   CHAR(64) (sha256, fixed width)
+-- Checksum:   CHAR(64) per OPEN-6 v1.3 frozen DDL (MySQL only; relay casts to PG VARCHAR(64))
 -- id:         CHAR(36) — the event_id, born here; preserved unchanged on relay to system.events
 -- status:     ENUM('pending','relayed') — relay claim path
 --

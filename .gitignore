@@ -1,6 +1,10 @@
 # Plugin dependencies — regenerate with: composer dump-autoload in headless-sync/
 headless-sync/vendor/
 
+# PHPUnit test cache
+.phpunit.result.cache
+**/.phpunit.result.cache
+
 # Plugin runtime storage
 headless-sync/storage/*
 !headless-sync/storage/.gitkeep

@@ -1,0 +1,7 @@
+{
+  "name": "content",
+  "version": "1.0.0",
+  "module_class": "HSP\\Modules\\Content\\ContentModule",
+  "schema_version": "1.0.0",
+  "requires": []
+}

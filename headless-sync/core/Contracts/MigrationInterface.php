@@ -17,7 +17,7 @@ interface MigrationInterface
     /** Unique monotonic migration name, e.g. '0001_create_hsp_outbox'. */
     public function getName(): string;
 
-    /** Schema context recorded in system.schema_versions, e.g. 'core', 'content'. */
+    /** Engine-qualified schema context recorded in system.schema_versions, e.g. 'core/mysql', 'core/pgsql', 'content/pgsql'. */
     public function getSchemaContext(): string;
 
     /** Apply the migration. Must be idempotent. */
