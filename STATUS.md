@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 0 — Foundation  
-**Last updated:** 2026-06-22 (P0-S4 — reviewer sign-off)  
-**Next session: P0-S5 — DB queue provider**
+**Last updated:** 2026-06-22 (P0-S5 — DB queue provider)  
+**Next session: P0-S6 — Worker engine + strategies + event/adapter registries**
 
 ---
 
@@ -22,7 +22,7 @@
 - [x] P0-S2 Migration engine
 - [x] P0-S3 Module registry / discovery / lifecycle
 - [x] P0-S4 Outbox capture + RelayWorkerStrategy
-- [ ] P0-S5 DB queue provider
+- [x] P0-S5 DB queue provider
 - [ ] P0-S6 Worker engine + strategies + event/adapter registries
 - [ ] P0-S7 Phase 0 DoD gate verification
 
@@ -133,4 +133,5 @@ Additionally, `RelayEndToEndTest::test_pending_row_is_relayed_and_marked_relayed
 2026-06-22 | P0-S3 | Shipped: core/Module/ (ModuleManifest, ModuleDiscovery, ModuleLoader, ModuleRegistry, ModuleRegistrar, Exception/InvalidManifestException), core/Contracts/ModuleInterface.php (OPEN-9 union shape), core/Container/Definitions/ModuleServiceProvider.php, modules/Content/module.json fixture, tests/Unit/Module/ (35 tests). 57/57 unit tests pass. Two-phase register-then-boot ordering verified across modules. | Flags: FLAG-P0S3-1 (core/Module singular, session map wins — no action); FLAG-P0S3-2 (phpunit ^11.5 require-dev, Accepted); BOM fix in MigrationRunner.php (P0-S2 file, benign).
 2026-06-22 | housekeeping | Committed P0-S2+P0-S3 (close ritual had been skipped; tree was dirty). SSH verified; pushed to origin/main (608fb27). FLAG-MONOREPO-SSH resolved.
 2026-06-22 | P0-S4 | Shipped: core/Contracts/ (OutboxWriterInterface, AggregateVersionCounterInterface), core/Events/Outbox/ (OutboxEvent, OutboxWriter, AggregateVersionCounter, Exception/OutboxWriteException, Connection/OutboxConnectionInterface + MysqliOutboxConnection + PgsqlOutboxConnection), core/Workers/Strategies/RelayWorkerStrategy, core/Container/Definitions/OutboxServiceProvider (wired into ContainerBuilder), tests/bootstrap.php (wpdb stub), tests/Unit/Events/Outbox/ (FakeWpdb, FakeOutboxConnection, AggregateVersionCounterTest ×5, OutboxWriterTest ×8, RelayWorkerStrategyTest ×21), tests/Integration/Events/Outbox/ (ConcurrentAggregateVersionTest ×3 live MySQL, RelayEndToEndTest ×5 live MySQL + live PG). Bugs fixed: bare VALUES(1) → LAST_INSERT_ID(1) in AggregateVersionCounter; \wpdb type hint → object for structural test compatibility; bind_param type-string mismatch in test setup. All four P0-S4 DoD items proved against live DBs: happy-path relay, idempotent re-relay (ON CONFLICT DO NOTHING), crash-safety (CommitSaboteurMysqlConnection — PG row survives MySQL rollback, recovery tick produces no duplicate), SKIP LOCKED concurrency. RelayWorkerStrategy redesigned mid-session: removed 'relaying' intermediate status; MySQL FOR UPDATE lock spans entire batch (BEGIN→SELECT SKIP LOCKED→PG insert+mark-relayed→COMMIT). Full suite: 99/99 tests pass (91 unit + 8 integration). Reviewer approved. | FLAG-P0S4-1: resolved by redesign (no DDL change). FLAG-P0S4-2: resolved (live-DB integration tests pass). FLAG-P0S4-3: open — created_at UTC fidelity on relay binding and assertion; resolve by P0-S7 gate.
+2026-06-22 | P0-S5 | Shipped: core/Queue/Exception/QueueException, core/Queue/Providers/Database/ (QueueConnectionInterface, DatabaseQueueConnection, DatabaseQueueProvider), core/Container/Definitions/QueueServiceProvider (wired into ContainerBuilder), tests/Unit/Queue/ (FakeQueueConnection, FakeEvent, DatabaseQueueProviderTest ×37), tests/Integration/Queue/DatabaseQueueProviderIntegrationTest ×9 (live PG). Bug found and fixed mid-session: DatabaseQueueConnection was final — extracted QueueConnectionInterface so DatabaseQueueProvider is testable without a real PG handle. Second bug: pg_connect() pooling caused SKIP LOCKED test to use the same connection for both locker and claimant — fixed with PGSQL_CONNECT_FORCE_NEW on all provider connections. All five P0-S5 DoD items proved: SKIP LOCKED concurrency (providerB finds null while lockConn holds lock), visibility-timeout recovery (requeueTimedOut revives backdated jobs), idempotent requeue race (two concurrent calls requeue exactly 1 row), retry-limit → dead-letter with payload_snapshot NOT NULL (DECISION A coercion for null/invalid/array/string payloads), partition isolation (commerce claim ignores content jobs). Full suite: 144/144 tests pass (127 unit + 9 PG integration + 8 pre-existing relay integration). | No new flags.
 

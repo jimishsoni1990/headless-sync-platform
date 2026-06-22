@@ -8,6 +8,7 @@ use HSP\Core\Container\Definitions\CoreServiceProvider;
 use HSP\Core\Container\Definitions\MigrationServiceProvider;
 use HSP\Core\Container\Definitions\ModuleServiceProvider;
 use HSP\Core\Container\Definitions\OutboxServiceProvider;
+use HSP\Core\Container\Definitions\QueueServiceProvider;
 
 /**
  * Builds and wires the DI container.
@@ -30,6 +31,7 @@ final class ContainerBuilder
         $registry->addProvider(new CoreServiceProvider($config));
         $registry->addProvider(new MigrationServiceProvider($config));
         $registry->addProvider(new OutboxServiceProvider($config));
+        $registry->addProvider(new QueueServiceProvider($config));
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 
         $registry->registerAll($container);
