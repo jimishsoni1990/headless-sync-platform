@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.5  
+Version: 1.8  
 Status: Accepted  
 Owner: Architecture  
 
@@ -18,12 +18,14 @@ Owner: Architecture
 | 1.4 | 2026-06-21 | DECISION A: `dead_letter_jobs.payload_snapshot` changed to `NOT NULL`; raw payload must always be preserved. OPEN-8: froze `system.schema_versions`, `system.module_versions`, `system.security_events` DDL (were Doc-3-underspecified). OPEN-9: `ModuleInterface` is the union of declarative discovery + WP lifecycle methods, supersedes Doc 2 §12. DECISION D: `AdapterInterface` adds `bulkPersist()` per Doc 7 §19. |
 | 1.5 | 2026-06-22 | DECISION E: shared runtime PostgreSQL connection layer; resolves FLAG-P0S5-1. Consolidation deferred to P0-S7; P0-S6 binding constraint (no new raw `pg_*` wrapper). |
 | 1.6 | 2026-06-23 | DECISION E: resolved FLAG-P0S7-1 (Option 1 — Split). Queue collapses fully into `DatabaseConnectionInterface`. Outbox splits by persistence technology: PG delivery path on shared `DatabaseConnectionInterface`; MySQL capture path on a new `MysqlOutboxConnectionInterface` that does NOT extend or reference `DatabaseConnectionInterface`. `OutboxConnectionInterface` and `QueueConnectionInterface` deleted. |
+| 1.7 | 2026-06-23 | OPEN-11: Option A — Phase 1A projection is a lossless representation of the canonical model; adapter persists the canonical checksum directly; no second checksum path; divergent projections require a future ADR. Resolves FLAG-P1AS3-1. |
+| 1.8 | 2026-06-23 | FLAG-P1AS4-1 resolved (architect ruling): content.entity_taxonomies is a pure join table — (entity_id UUID, taxonomy_id UUID) composite PK only; no timestamps/checksums/metadata unless a future ADR adds relationship attributes. FLAG-P1AS4-2 resolved (architect ruling): system.aggregate_versions uses a monotonic guarded upsert — stored version only ever advances (max(current, incoming)); worker owns stale-event detection; DB guard is defense-in-depth. |
 
 ---
 
 ## Table of Contents
 
-1. [Open Items (OPEN-1 through OPEN-9)](#open-items)
+1. [Open Items (OPEN-1 through OPEN-11)](#open-items)
 2. [Decisions (DECISION 1 through DECISION 3, DECISION A, DECISION D, DECISION E)](#decisions)
 3. [Implications Carried into Schema](#implications-carried-into-schema)
 
@@ -264,6 +266,59 @@ WordPress lifecycle (called by the module registry in order):
 
 ---
 
+### OPEN-11 — Canonical Checksum vs Projection Checksum
+
+| Field | Value |
+|---|---|
+| **Status** | **Accepted (2026-06-23)** |
+| **Raised** | 2026-06-23 — P1A-S3 close |
+| **Resolves** | FLAG-P1AS3-1 |
+
+#### Ruling (Option A — Phase 1A projection is a lossless representation of the canonical model)
+
+**Phase 1A projection rule:** The delivery projection contains exactly the delivery fields represented by the canonical model — no canonical field omitted, no derived columns added. Explicitly excluded from Phase 1A projections: precomputed URI variants, search vectors, denormalized aggregates, analytics/ranking columns.
+
+**Checksum rule:** The adapter persists `model.getChecksum()` (the canonical checksum) **directly** as the stored `content.*` checksum. Write-suppression compares the stored `content.*` checksum against the canonical checksum. No second/projection-shaped checksum path is permitted in Phase 1A.
+
+**Scope and limits:** This ruling does NOT establish that all schemas must always mirror canonical models. It establishes that WHERE a projection is a lossless representation of the canonical model, the canonical checksum is the authoritative checksum. When a future projection intentionally diverges (search/analytics/cache/reporting/denormalized read models), that projection becomes responsible for computing and persisting its own projection checksum — and that divergence requires a future ADR before implementation.
+
+**Relationship to DECISION 3:** OPEN-11 clarifies, does not supersede, DECISION 3. DECISION 3's "freshly-computed projection checksum" equals the canonical checksum for Phase 1A precisely because the projection is lossless. The three-op single-PG-transaction rule (projection upsert + `system.processed_events` insert + `system.aggregate_versions` upsert) is unchanged.
+
+---
+
+### FLAG-P1AS4-1 — content.entity_taxonomies Column Shape
+
+| Field | Value |
+|---|---|
+| **Status** | **Resolved — architect ruling 2026-06-23** |
+| **Raised** | 2026-06-23 — P1A-S4 kickoff |
+
+**Ruling (architect, 2026-06-23):** `content.entity_taxonomies` is a pure join table for Phase 1A — exactly `(entity_id UUID, taxonomy_id UUID)`, composite PK, no timestamps/checksums/metadata unless a future ADR adds relationship attributes.
+
+---
+
+### FLAG-P1AS4-2 — aggregate_versions Upsert Monotonicity
+
+| Field | Value |
+|---|---|
+| **Status** | **Resolved — architect ruling 2026-06-23** |
+| **Raised** | 2026-06-23 — P1A-S4 kickoff |
+
+**Ruling (architect, 2026-06-23):** `system.aggregate_versions` uses a monotonic guarded upsert — stored version only ever advances (max(current, incoming)). Worker owns stale-event detection; the DB guard is defense-in-depth so aggregate progress can never regress.
+
+---
+
+### FLAG-P1AS4-3 — `bulkPersist()` version guard and event recording
+
+| Field | Value |
+|---|---|
+| **Status** | **Resolved — architect ruling 2026-06-23** |
+| **Raised** | 2026-06-23 — P1A-S4 close |
+
+**Ruling (architect, 2026-06-23):** `persist()` is the ONLY supported persistence entry point in Phase 1A. `bulkPersist()` stays on `AdapterInterface` as a declared future capability (signature unchanged) but performs NO projection writes in Phase 1A. All three Phase 1A adapters (PageAdapter, PostAdapter, CategoryAdapter) implement `bulkPersist()` as a fail-fast stub: `throw new \LogicException('bulkPersist() is not implemented in Phase 1A.');` — no transaction, no projection write, no partial path. The correct guarded batch path (events + version context, same guarantees as `persist()`) is deferred to a future ADR that lands with the first batch-with-events caller. No reconciliation, replay, or worker path may call `bulkPersist()` in Phase 1A.
+
+---
+
 ## Decisions
 
 ### DECISION 1 — Near-Atomic Capture + Reconciliation Backstop (ADR-029 Revised)
@@ -325,6 +380,8 @@ WordPress lifecycle (called by the module registry in order):
 | **Implements** | ADR-025 |
 
 **Ruling:** `system.processed_events` is retained. Write-suppression logic compares a **freshly-computed projection checksum** against the stored `content.*` checksum in the target store — **not** the event's own checksum (which is traceability only, not dedup). The worker's three operations — projection upsert, `system.processed_events` insert, and `system.aggregate_versions` upsert — **must** commit inside a single PostgreSQL transaction.
+
+> **See OPEN-11:** For Phase 1A lossless projections, "freshly-computed projection checksum" equals `canonical.getChecksum()`. The three-op transaction rule is unchanged.
 
 **Rationale:** Event-checksum dedup fails for legitimate re-deliveries carrying different event IDs; projection-checksum dedup correctly suppresses writes whose observable output would be identical.
 
@@ -463,5 +520,7 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `system.security_events` | Frozen DDL: `id UUID PK`, `event_type VARCHAR(100) NOT NULL` (`security.<aggregate>.<action>`), `severity VARCHAR(20) NOT NULL`, `actor_type VARCHAR(50) NULL`, `actor_id VARCHAR(255) NULL`, `ip_address VARCHAR(45) NULL`, `metadata JSONB NOT NULL`, `created_at TIMESTAMPTZ NOT NULL`, `INDEX(event_type, created_at)` | OPEN-8 (v1.4) |
 
 > **Note (v1.2):** Module-owned `content.*` tables (`content.pages`, `content.posts`, `content.taxonomies`, `content.media`, and any future module projection tables) are not listed here because they are generated in Phase 1A, not Phase 0. However, they **must** follow the v1.2 type canon: `TIMESTAMPTZ` for all timestamp columns, `VARCHAR(64)` for all checksum columns. Their freeze check occurs at the Phase 1A DoD gate. Doc 3 §9–11, which show bare `TIMESTAMP` for these tables, is superseded by OPEN-3 (v1.2).
+
+> **Note (v1.8 — P1A-S4 delivery):** `content.pages`, `content.posts`, `content.taxonomies`, and `content.entity_taxonomies` migrations were delivered in P1A-S4. All timestamp columns use `TIMESTAMPTZ`; all checksum columns use `VARCHAR(64)`. `content.entity_taxonomies` is a pure join table — (entity_id UUID, taxonomy_id UUID) composite PK only (FLAG-P1AS4-1). The freeze check for all `content.*` tables occurs at the Phase 1A DoD gate (end-to-end validation in P1A-S6) per the v1.2 rule. `content.media` remains OUT of MVP scope (Phase 1B).
 
 > **Migration freeze rule:** no schema migration that touches any table or column in the tables above may be merged unless it is consistent with the ruling in the referenced OPEN / DECISION item, or this document is formally amended with a new versioned entry.

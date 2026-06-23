@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-23 (P1A-S3 close — transformers + canonical models complete)  
-**Next session: P1A-S4 — Content migrations + PostgreSQL adapters**
+**Last updated:** 2026-06-23  
+**Next session: P1A-S5 — REST Delivery API**
 
 ---
 
@@ -31,7 +31,7 @@
 - [x] P1A-S1 Content events + WP hook wiring + EventProvider
 - [x] P1A-S2 Extractors + source models + validators
 - [x] P1A-S3 Transformers + canonical models
-- [ ] P1A-S4 Content migrations + PostgreSQL adapters
+- [x] P1A-S4 Content migrations + PostgreSQL adapters
 - [ ] P1A-S5 REST Delivery API
 - [ ] P1A-S6 Next.js validation + end-to-end DoD
 
@@ -156,7 +156,7 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 
 ### FLAG-P1AS3-1 — `CanonicalModelInterface::getChecksum()` scope and DECISION 3 write-suppress compatibility
 
-**Raised:** 2026-06-23 | **Session:** P1A-S3 | **Status:** Open — deferred to P1A-S4 kickoff
+**Raised:** 2026-06-23 | **Session:** P1A-S3 | **Status:** Resolved — OPEN-11 (2026-06-23)
 
 `CanonicalModelInterface::getChecksum()` doc-comment states: *"sha256 checksum of the canonical representation; used for write-suppress comparison against the stored projection checksum — DECISION 3."* DECISION 3 requires write-suppress to compare a **freshly-computed projection checksum** against the stored `content.*` checksum.
 
@@ -166,7 +166,31 @@ These two are compatible **only if** the canonical model and the PostgreSQL proj
 - **Option A** — The adapter uses `canonical.getChecksum()` directly as the stored checksum. The projection schema must be a lossless reshape of every canonical field. No adapter-side field additions or omissions contribute to the stored checksum.
 - **Option B** — The adapter computes a separate projection-shaped checksum over only the columns it writes to `content.*`. The stored checksum diverges from `canonical.getChecksum()`. `CanonicalModelInterface::getChecksum()` becomes unused or repurposed.
 
-Do not wire write-suppress in P1A-S4 without an explicit ruling. Resolving this silently in either direction is prohibited.
+**Resolution:** Option A approved (OPEN-11, 2026-06-23). The Phase 1A delivery projection is a lossless reshape of the canonical model: no canonical field omitted, no derived columns added (precomputed URI variants, search vectors, denormalized aggregates, and analytics/ranking columns are explicitly excluded from Phase 1A). The adapter persists `canonical.getChecksum()` directly as the stored `content.*` checksum. Write-suppression compares the stored checksum against the canonical checksum — no second projection-shaped checksum path exists in Phase 1A. When a future projection intentionally diverges, it must compute and persist its own projection checksum, and that divergence requires a future ADR before implementation.
+
+---
+
+### FLAG-P1AS4-1 — content.entity_taxonomies column shape
+
+**Raised:** 2026-06-23 | **Session:** P1A-S4 | **Status:** Resolved — ARCHITECTURE_DECISIONS.md v1.8 (2026-06-23)
+
+**Resolution:** Pure join table. `(entity_id UUID, taxonomy_id UUID)` composite PK only. No timestamps, checksums, or metadata unless a future ADR explicitly requires relationship attributes. Migration `0005_create_content_entity_taxonomies.sql` frozen accordingly.
+
+---
+
+### FLAG-P1AS4-2 — aggregate_versions upsert monotonicity
+
+**Raised:** 2026-06-23 | **Session:** P1A-S4 | **Status:** Resolved — ARCHITECTURE_DECISIONS.md v1.8 (2026-06-23)
+
+**Resolution:** Monotonic guard adopted. The `system.aggregate_versions` upsert in all three adapters uses `GREATEST()` so `latest_processed_version` only ever advances. Worker Resolve step remains the primary stale-event guard; the database GREATEST() guard provides defense-in-depth. Integration test `test_aggregate_versions_never_regresses_on_out_of_order_delivery` confirms the guard holds against live PostgreSQL.
+
+---
+
+### FLAG-P1AS4-3 — `bulkPersist()` version guard and event recording
+
+**Raised:** 2026-06-23 | **Session:** P1A-S4 close | **Status:** Resolved — architect ruling 2026-06-23
+
+**Resolution (architect, 2026-06-23):** Option B approved. `persist()` is the ONLY supported persistence entry point in Phase 1A. `bulkPersist()` stays on `AdapterInterface` (signature unchanged) but performs NO projection writes in Phase 1A. All three adapters implement it as `throw new \LogicException('bulkPersist() is not implemented in Phase 1A.');` — no transaction, no execute, no partial path. The correct guarded batch path (events + version context, same guarantees as `persist()`) is deferred to a future ADR that lands with the first batch-with-events caller. Recorded in `docs/ARCHITECTURE_DECISIONS.md` under FLAG-P1AS4-3.
 
 ---
 
@@ -186,4 +210,6 @@ Do not wire write-suppress in P1A-S4 without an explicit ruling. Resolving this 
 2026-06-23 | P1A-S1 | Shipped: modules/Content/Events/ContentEventTypes.php (9 OPEN-1 constants + ALL list), modules/Content/EventProvider.php (implements EventProviderInterface, delegates to OutboxWriterInterface), modules/Content/HookWiring.php (7 WP hooks, membership-based public-set capture per OPEN-10), modules/Content/ContentModule.php (implements ModuleInterface). Tests: tests/Unit/Content/ (ContentEventTypesTest ×57, ContentEventProviderTest ×36, HookWiringTest ×48, FakeOutboxWriter). OPEN-10 ruling applied: transition matrix uses $wasPublic/$isPublic booleans; all exit transitions emit .deleted; wp_trash_post suppressed by $handledByTransition guard when transition already fired. Full suite: 363 unit, 0 failed. | FLAG-P1AS1-1 resolved (OPEN-10 Resolved).
 2026-06-23 | P1A-S2 | Shipped: modules/Content/SourceModels/ (PageSourceModel, PostSourceModel, CategorySourceModel — all readonly/immutable, strongly typed, no canonical model shape); modules/Content/Extractors/ (PageExtractor, PostExtractor, CategoryExtractor — accept already-loaded raw data arrays, no global WP calls, no DB, delegate to validators); modules/Content/Validation/ (PageValidator, PostValidator, CategoryValidator — fail-fast on missing ID/slug/status/type, collect multiple violations into ValidationException.getViolations(); ValidationException typed exception). Tests: tests/Unit/Content/SourceModels/ (PageSourceModelTest ×4, PostSourceModelTest ×4, CategorySourceModelTest ×4); tests/Unit/Content/Extractors/ (PageExtractorTest ×20, PostExtractorTest ×22, CategoryExtractorTest ×17); tests/Unit/Content/Validation/ (PageValidatorTest ×10, PostValidatorTest ×13, CategoryValidatorTest ×11). P1A-S2 tests: 247 clean, 0 deprecations. Full unit suite: 451 tests, 0 failed, 1 pre-existing deprecation (@dataProvider doc-comment in DatabaseQueueProviderTest, carried from P0-S5). No DB dependency; no WordPress function calls in any unit path. | No new flags.
 2026-06-23 | P1A-S3 | Shipped: CanonicalPost/Page/Category (implement CanonicalModelInterface; order-insensitive sha256 getChecksum — sort categoryIds, ksort meta, ATOM timestamps, \0 separator, pinned digests); PostTransformer/PageTransformer/CategoryTransformer (pure SourceModel→CanonicalModel, title trimmed, other strings verbatim); tests/Unit/Content/Transformers/ (PostTransformerTest ×13, PageTransformerTest ×14, CategoryTransformerTest ×14) + tests/Unit/Content/CanonicalModels/ (CanonicalPostTest ×11, CanonicalPageTest ×11, CanonicalCategoryTest ×10, incl. order-independence + pinned-digest tests). meta flat-scalar invariant confirmed enforced at extraction boundary (P1A-S2 extractors cast all values to string; ksort sufficient, no recursive normalisation needed). 528 tests, 0 failed, 0 skipped, 1 pre-existing deprecation. | FLAG-P1AS3-1 raised: open, deferred to P1A-S4 kickoff — DECISION 3 write-suppress compatibility: architect must rule Option A (adapter uses canonical.getChecksum() directly) or Option B (adapter computes separate projection-shaped checksum) before wiring write-suppress.
+2026-06-23 | housekeeping | OPEN-11 recorded in ADR (Option A, lossless Phase 1A projection, canonical checksum authoritative); FLAG-P1AS3-1 resolved. No code change.
+2026-06-23 | P1A-S4 | Shipped: modules/Content/Migrations/ (content schema; pages/posts/taxonomies/entity_taxonomies; TIMESTAMPTZ + VARCHAR(64) canon; entity_taxonomies pure join table) and modules/Content/Adapters/ (Page/Post/Category persist() — DECISION 3 three-op atomic txn; OPEN-11 Option A canonical-checksum write-suppress; in-txn lockAggregateVersion() FOR UPDATE guard; monotonic GREATEST() aggregate_versions; full-replace entity_taxonomies rewrite). bulkPersist() fail-fast LogicException stub (Phase 1A). Tests: unit adapter suites + live-PG atomicity/idempotency/join-rewrite/interleave integration. Item-6 TOCTOU race fixed (version guard moved inside txn behind FOR UPDATE). Suite 598/598. | Flags resolved: FLAG-P1AS4-1 (pure join table), FLAG-P1AS4-2 (monotonic guard), FLAG-P1AS4-3 (bulkPersist Phase 1A throwing stub) — all architect-ruled 2026-06-23.
 
