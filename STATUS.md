@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-23 (P1A-S2 close — Extractors + source models + validators complete)  
-**Next session: P1A-S3 — Transformers + canonical models**
+**Last updated:** 2026-06-23 (P1A-S3 close — transformers + canonical models complete)  
+**Next session: P1A-S4 — Content migrations + PostgreSQL adapters**
 
 ---
 
@@ -30,7 +30,7 @@
 
 - [x] P1A-S1 Content events + WP hook wiring + EventProvider
 - [x] P1A-S2 Extractors + source models + validators
-- [ ] P1A-S3 Transformers + canonical models
+- [x] P1A-S3 Transformers + canonical models
 - [ ] P1A-S4 Content migrations + PostgreSQL adapters
 - [ ] P1A-S5 REST Delivery API
 - [ ] P1A-S6 Next.js validation + end-to-end DoD
@@ -154,6 +154,22 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 
 ---
 
+### FLAG-P1AS3-1 — `CanonicalModelInterface::getChecksum()` scope and DECISION 3 write-suppress compatibility
+
+**Raised:** 2026-06-23 | **Session:** P1A-S3 | **Status:** Open — deferred to P1A-S4 kickoff
+
+`CanonicalModelInterface::getChecksum()` doc-comment states: *"sha256 checksum of the canonical representation; used for write-suppress comparison against the stored projection checksum — DECISION 3."* DECISION 3 requires write-suppress to compare a **freshly-computed projection checksum** against the stored `content.*` checksum.
+
+These two are compatible **only if** the canonical model and the PostgreSQL projection are a lossless reshape of the same fields — i.e. the adapter stores exactly what the canonical model contains and nothing else contributes to the stored checksum. If the adapter projection adds, drops, or transforms any field relative to the canonical model (e.g. computes a `uri` column from `slug`, or omits `meta` from the stored checksum), then `canonical.getChecksum()` will diverge from a write-side recomputed projection checksum, and write-suppress will either falsely skip writes or falsely execute them on every sync.
+
+**P1A-S4 entry condition:** Before wiring write-suppress in the adapter, the architect must rule on one of:
+- **Option A** — The adapter uses `canonical.getChecksum()` directly as the stored checksum. The projection schema must be a lossless reshape of every canonical field. No adapter-side field additions or omissions contribute to the stored checksum.
+- **Option B** — The adapter computes a separate projection-shaped checksum over only the columns it writes to `content.*`. The stored checksum diverges from `canonical.getChecksum()`. `CanonicalModelInterface::getChecksum()` becomes unused or repurposed.
+
+Do not wire write-suppress in P1A-S4 without an explicit ruling. Resolving this silently in either direction is prohibited.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
@@ -169,4 +185,5 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 2026-06-23 | P0-S7 (continued) | DECISION E v1.6 — Split ruling applied: OutboxConnectionInterface and QueueConnectionInterface deleted; QueueConnectionInterface collapsed fully into DatabaseConnectionInterface; MysqlOutboxConnectionInterface introduced (MySQL capture path, no PG dependency); PgsqlOutboxConnection now implements DatabaseConnectionInterface via composition; DatabaseQueueConnection implements DatabaseConnectionInterface via composition; RelayWorkerStrategy holds explicit MysqlOutboxConnectionInterface + DatabaseConnectionInterface; PostgresDatabaseConnection::rollback() swallow semantics verified and unit-tested; all fakes split (FakeMysqlOutboxConnection, FakePgsqlOutboxConnection, FakeQueueConnection updated); CommitSaboteurMysqlConnection + integration test QueueConnectionInterface references updated; ARCHITECTURE_DECISIONS.md DECISION E bumped to v1.6 with full ruling. PostgresDatabaseConnectionTest added (8 tests including rollback swallow invariant). Full suite: 204 unit / 18 integration — 222 total, 0 failed, 0 skipped. | FLAG-P0S7-1 closed — DECISION E v1.6.
 2026-06-23 | P1A-S1 | Shipped: modules/Content/Events/ContentEventTypes.php (9 OPEN-1 constants + ALL list), modules/Content/EventProvider.php (implements EventProviderInterface, delegates to OutboxWriterInterface), modules/Content/HookWiring.php (7 WP hooks, membership-based public-set capture per OPEN-10), modules/Content/ContentModule.php (implements ModuleInterface). Tests: tests/Unit/Content/ (ContentEventTypesTest ×57, ContentEventProviderTest ×36, HookWiringTest ×48, FakeOutboxWriter). OPEN-10 ruling applied: transition matrix uses $wasPublic/$isPublic booleans; all exit transitions emit .deleted; wp_trash_post suppressed by $handledByTransition guard when transition already fired. Full suite: 363 unit, 0 failed. | FLAG-P1AS1-1 resolved (OPEN-10 Resolved).
 2026-06-23 | P1A-S2 | Shipped: modules/Content/SourceModels/ (PageSourceModel, PostSourceModel, CategorySourceModel — all readonly/immutable, strongly typed, no canonical model shape); modules/Content/Extractors/ (PageExtractor, PostExtractor, CategoryExtractor — accept already-loaded raw data arrays, no global WP calls, no DB, delegate to validators); modules/Content/Validation/ (PageValidator, PostValidator, CategoryValidator — fail-fast on missing ID/slug/status/type, collect multiple violations into ValidationException.getViolations(); ValidationException typed exception). Tests: tests/Unit/Content/SourceModels/ (PageSourceModelTest ×4, PostSourceModelTest ×4, CategorySourceModelTest ×4); tests/Unit/Content/Extractors/ (PageExtractorTest ×20, PostExtractorTest ×22, CategoryExtractorTest ×17); tests/Unit/Content/Validation/ (PageValidatorTest ×10, PostValidatorTest ×13, CategoryValidatorTest ×11). P1A-S2 tests: 247 clean, 0 deprecations. Full unit suite: 451 tests, 0 failed, 1 pre-existing deprecation (@dataProvider doc-comment in DatabaseQueueProviderTest, carried from P0-S5). No DB dependency; no WordPress function calls in any unit path. | No new flags.
+2026-06-23 | P1A-S3 | Shipped: CanonicalPost/Page/Category (implement CanonicalModelInterface; order-insensitive sha256 getChecksum — sort categoryIds, ksort meta, ATOM timestamps, \0 separator, pinned digests); PostTransformer/PageTransformer/CategoryTransformer (pure SourceModel→CanonicalModel, title trimmed, other strings verbatim); tests/Unit/Content/Transformers/ (PostTransformerTest ×13, PageTransformerTest ×14, CategoryTransformerTest ×14) + tests/Unit/Content/CanonicalModels/ (CanonicalPostTest ×11, CanonicalPageTest ×11, CanonicalCategoryTest ×10, incl. order-independence + pinned-digest tests). meta flat-scalar invariant confirmed enforced at extraction boundary (P1A-S2 extractors cast all values to string; ksort sufficient, no recursive normalisation needed). 528 tests, 0 failed, 0 skipped, 1 pre-existing deprecation. | FLAG-P1AS3-1 raised: open, deferred to P1A-S4 kickoff — DECISION 3 write-suppress compatibility: architect must rule Option A (adapter uses canonical.getChecksum() directly) or Option B (adapter computes separate projection-shaped checksum) before wiring write-suppress.
 
