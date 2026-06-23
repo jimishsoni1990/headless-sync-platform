@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-23 (P0-S7 continued — DECISION E v1.6 consolidation complete)  
-**Next session: P1A-S1 — Content events + WP hook wiring + EventProvider**
+**Last updated:** 2026-06-23 (P1A-S1 close — Content events + WP hook wiring + EventProvider complete)  
+**Next session: P1A-S2 — Extractors + source models + validators**
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### Phase 1A — Blog MVP
 
-- [ ] P1A-S1 Content events + WP hook wiring + EventProvider
+- [x] P1A-S1 Content events + WP hook wiring + EventProvider
 - [ ] P1A-S2 Extractors + source models + validators
 - [ ] P1A-S3 Transformers + canonical models
 - [ ] P1A-S4 Content migrations + PostgreSQL adapters
@@ -146,6 +146,14 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 
 ---
 
+### FLAG-P1AS1-1 — Unpublish transition (publish→draft/pending/private/future) emits zero events
+
+**Raised:** 2026-06-23 | **Session:** P1A-S1 review | **Status:** Resolved — OPEN-10 ruling applied, P1A-S1 close (2026-06-23)
+
+**Resolution:** OPEN-10 (Resolved) — Option A approved. Membership-based capture: public set = `{publish}` only. `HookWiring::onTransitionPostStatus` updated with `$wasPublic`/`$isPublic` booleans; all four exit transitions (`publish → draft/pending/private/future`) now emit `content.{type}.deleted`. `wp_trash_post` suppressed by `$handledByTransition` guard when `transition_post_status` already handled the post_id (double-emit prevention). All nine new OPEN-10 tests pass. Full suite: 363 tests, 0 failures.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
@@ -159,4 +167,5 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 2026-06-22 | P0-S6 | Shipped: core/Workers/WorkerStrategyInterface, WorkerExecutionContext, HeartbeatRecord, HeartbeatPublisherInterface, NullHeartbeatPublisher, WorkerEngine; core/Workers/Strategies/ EventWorkerStrategy (full Doc 8 §7 pipeline: Claim→Load→Validate→Resolve→Execute→Commit→Ack, retry/backoff/deadLetter), ReplayWorkerStrategy stub, ReconciliationWorkerStrategy stub, MaintenanceWorkerStrategy stub; core/Events/EventRegistry (explicit registration, OPEN-1 naming validation); core/Delivery/AdapterRegistry (explicit registration, last-wins on duplicate); core/Container/Definitions/WorkerServiceProvider (wired into ContainerBuilder). Tests: tests/Unit/Workers/ (WorkerEngineTest ×14, EventWorkerStrategyTest ×14, FakeHeartbeatPublisher, FakeWorkerStrategy, FakeQueueProvider), tests/Unit/Events/EventRegistryTest ×15, tests/Unit/Delivery/ (AdapterRegistryTest ×12, FakeAdapter). Full suite: 179/179 unit tests pass. No new pg_* wrapper introduced (DECISION E enforced). Pre-existing PHPUnit 12 deprecation in DatabaseQueueProviderTest (@dataProvider doc-comment) carried over unchanged. | No new flags.
 2026-06-22 | P0-S7 | Gate verification: all 6 DoD Gate items confirmed pass (type canon, LAST_INSERT_ID counter, no postmeta refs, TIMESTAMPTZ/DATETIME split, VARCHAR(64)/CHAR(64) checksums, UUID worker-identity). DECISION E consolidation: core/Database/ introduced (DatabaseConnectionInterface, PostgresDatabaseConnection, DatabaseException); OutboxConnectionInterface and QueueConnectionInterface collapsed to extend DatabaseConnectionInterface; PgsqlOutboxConnection and DatabaseQueueConnection now delegate to shared PostgresDatabaseConnection (no duplicate pg_* logic); migration engine untouched. FLAG-P0S4-3 resolved: RelayWorkerStrategy '+00:00' binding confirmed; RelayEndToEndTest assertion strengthened to full UTC datetime + explicit offset regex. Full suite: 198 tests, 180 pass, 18 skipped (integration, live DB not in CI), 0 failures. | FLAG-P0S7-1 raised: DECISION E collapse interpretation ambiguity.
 2026-06-23 | P0-S7 (continued) | DECISION E v1.6 — Split ruling applied: OutboxConnectionInterface and QueueConnectionInterface deleted; QueueConnectionInterface collapsed fully into DatabaseConnectionInterface; MysqlOutboxConnectionInterface introduced (MySQL capture path, no PG dependency); PgsqlOutboxConnection now implements DatabaseConnectionInterface via composition; DatabaseQueueConnection implements DatabaseConnectionInterface via composition; RelayWorkerStrategy holds explicit MysqlOutboxConnectionInterface + DatabaseConnectionInterface; PostgresDatabaseConnection::rollback() swallow semantics verified and unit-tested; all fakes split (FakeMysqlOutboxConnection, FakePgsqlOutboxConnection, FakeQueueConnection updated); CommitSaboteurMysqlConnection + integration test QueueConnectionInterface references updated; ARCHITECTURE_DECISIONS.md DECISION E bumped to v1.6 with full ruling. PostgresDatabaseConnectionTest added (8 tests including rollback swallow invariant). Full suite: 204 unit / 18 integration — 222 total, 0 failed, 0 skipped. | FLAG-P0S7-1 closed — DECISION E v1.6.
+2026-06-23 | P1A-S1 | Shipped: modules/Content/Events/ContentEventTypes.php (9 OPEN-1 constants + ALL list), modules/Content/EventProvider.php (implements EventProviderInterface, delegates to OutboxWriterInterface), modules/Content/HookWiring.php (7 WP hooks, membership-based public-set capture per OPEN-10), modules/Content/ContentModule.php (implements ModuleInterface). Tests: tests/Unit/Content/ (ContentEventTypesTest ×57, ContentEventProviderTest ×36, HookWiringTest ×48, FakeOutboxWriter). OPEN-10 ruling applied: transition matrix uses $wasPublic/$isPublic booleans; all exit transitions emit .deleted; wp_trash_post suppressed by $handledByTransition guard when transition already fired. Full suite: 363 unit, 0 failed. | FLAG-P1AS1-1 resolved (OPEN-10 Resolved).
 

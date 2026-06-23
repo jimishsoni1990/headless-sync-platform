@@ -394,6 +394,43 @@ Consolidation is deferred to P0-S7. No consolidation occurs during P0-S5 or P0-S
 
 ---
 
+### OPEN-10 — Unpublish Transition Capture: event action and projection model for post_status leaving the public set
+
+| Field | Value |
+|---|---|
+| **Status** | **Resolved — P1A-S1 close (2026-06-23)** |
+| **Raised** | 2026-06-23 — P1A-S1 review |
+| **Resolved** | 2026-06-23 — architect ruling, implemented in P1A-S1 |
+| **Blocks** | ~~`HookWiring::onTransitionPostStatus` guard completion~~ — resolved |
+
+#### Ruling (Option A — public-set membership, `*.deleted` on exit)
+
+**Public set = `{publish}` only.** `draft`, `auto-draft`, `pending`, `private`, `future`, `inherit`, `trash` are all non-public.
+
+**Approved transition matrix (implemented in `HookWiring::onTransitionPostStatus`):**
+
+| Old status | New status | Event emitted |
+|---|---|---|
+| non-public | `publish` | `content.{type}.created` (entry) |
+| `publish` | `publish` | `content.{type}.updated` (in-set) |
+| `publish` | non-public (any) | `content.{type}.deleted` (exit) |
+| non-public | non-public | NO event |
+
+`wp_trash_post` is suppressed when `transition_post_status` already handled the post_id in the same request (transition is authoritative for trash). `after_delete_post` always emits `*.deleted` independently (permanent hard-delete path, no overlap with transition).
+
+**Sub-question rulings:**
+1. Option A governs all exit transitions for MVP.
+2. `private` is NOT in the public set — `publish → private` emits `*.deleted`.
+3. `future` is NOT in the public set — `publish → future` emits `*.deleted`; when the cron fires and status moves to `publish`, that transition emits `*.created`.
+4. `wp_trash_post` and `after_delete_post` remain as separate wired hooks. `wp_trash_post` is suppressed by the `$handledByTransition` guard when `transition_post_status` already fired (avoiding double-emit for a trash action). `after_delete_post` is NOT suppressed (it is the hard-delete path, fires independently of transition for permanent deletes from the trash screen).
+5. Sub-question 5 (Option B adapter branching) is moot — Option A was chosen.
+
+#### Problem statement (retained for context)
+
+`HookWiring::onTransitionPostStatus` previously bailed on every transition whose `$newStatus !== 'publish'`. This dropped four WordPress post-status changes that are not trash operations and are not caught by `wp_trash_post` or `after_delete_post`: `publish → draft`, `publish → pending`, `publish → private`, `publish → future`. The result was a lost sync — a stale published row in the delivery projection with no delete event emitted.
+
+---
+
 ## Implications Carried into Schema
 
 > **This table is ADDITIVE: it lists only deltas from Doc 3. Base table DDL remains governed by Doc 3 §4/§20–24. Migrations must compose Doc 3 base + these deltas; freeze checks verify both.**
