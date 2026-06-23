@@ -4,96 +4,91 @@ declare(strict_types=1);
 
 namespace HSP\Core\Events\Outbox\Connection;
 
+use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Database\Exception\DatabaseException;
+use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
 
 /**
- * PostgreSQL connection for the outbox relay, backed by a pg_connect() handle.
+ * PostgreSQL connection for the outbox relay (PG delivery path).
  *
- * Implements OutboxConnectionInterface so the relay strategy can commit the
- * PostgreSQL transaction before marking the outbox row 'relayed' in MySQL.
+ * Implements DatabaseConnectionInterface via composition over
+ * PostgresDatabaseConnection and translates DatabaseException to
+ * OutboxWriteException at the relay boundary (DECISION E v1.6).
+ *
+ * Accepts either a raw pg_connect() handle (production) or an
+ * already-constructed PostgresDatabaseConnection (test injection).
  */
-final class PgsqlOutboxConnection implements OutboxConnectionInterface
+final class PgsqlOutboxConnection implements DatabaseConnectionInterface
 {
-    /** @var \PgSql\Connection */
-    private mixed $conn;
+    private PostgresDatabaseConnection $inner;
 
-    public function __construct(mixed $conn)
+    public function __construct(mixed $connOrInstance)
     {
-        if (! is_resource($conn) && ! ($conn instanceof \PgSql\Connection)) {
-            throw new OutboxWriteException(
-                'PgsqlOutboxConnection requires a valid pg_connect() handle.'
-            );
+        if ($connOrInstance instanceof PostgresDatabaseConnection) {
+            $this->inner = $connOrInstance;
+        } else {
+            try {
+                $this->inner = new PostgresDatabaseConnection($connOrInstance);
+            } catch (DatabaseException $e) {
+                throw new OutboxWriteException(
+                    'PgsqlOutboxConnection: ' . $e->getMessage(),
+                    previous: $e,
+                );
+            }
         }
-        $this->conn = $conn;
     }
 
     public function execute(string $sql, array $params = []): int
     {
-        if (empty($params)) {
-            $result = pg_query($this->conn, $sql);
-        } else {
-            $result = pg_query_params($this->conn, $sql, $params);
-        }
-
-        if ($result === false) {
+        try {
+            return $this->inner->execute($sql, $params);
+        } catch (DatabaseException $e) {
             throw new OutboxWriteException(
-                'PostgreSQL outbox execute failed: ' . pg_last_error($this->conn)
+                'PostgreSQL outbox execute failed: ' . $e->getMessage(),
+                previous: $e,
             );
         }
-
-        $affected = pg_affected_rows($result);
-        pg_free_result($result);
-
-        return $affected;
     }
 
     public function query(string $sql, array $params = []): array
     {
-        if (empty($params)) {
-            $result = pg_query($this->conn, $sql);
-        } else {
-            $result = pg_query_params($this->conn, $sql, $params);
-        }
-
-        if ($result === false) {
+        try {
+            return $this->inner->query($sql, $params);
+        } catch (DatabaseException $e) {
             throw new OutboxWriteException(
-                'PostgreSQL outbox query failed: ' . pg_last_error($this->conn)
+                'PostgreSQL outbox query failed: ' . $e->getMessage(),
+                previous: $e,
             );
         }
-
-        $rows = pg_fetch_all($result) ?: [];
-        pg_free_result($result);
-
-        return $rows;
     }
 
     public function beginTransaction(): void
     {
-        $result = pg_query($this->conn, 'BEGIN');
-        if ($result === false) {
+        try {
+            $this->inner->beginTransaction();
+        } catch (DatabaseException $e) {
             throw new OutboxWriteException(
-                'PostgreSQL BEGIN failed: ' . pg_last_error($this->conn)
+                'PostgreSQL outbox BEGIN failed: ' . $e->getMessage(),
+                previous: $e,
             );
         }
-        pg_free_result($result);
     }
 
     public function commit(): void
     {
-        $result = pg_query($this->conn, 'COMMIT');
-        if ($result === false) {
+        try {
+            $this->inner->commit();
+        } catch (DatabaseException $e) {
             throw new OutboxWriteException(
-                'PostgreSQL COMMIT failed: ' . pg_last_error($this->conn)
+                'PostgreSQL outbox COMMIT failed: ' . $e->getMessage(),
+                previous: $e,
             );
         }
-        pg_free_result($result);
     }
 
     public function rollback(): void
     {
-        $result = pg_query($this->conn, 'ROLLBACK');
-        if ($result !== false) {
-            pg_free_result($result);
-        }
+        $this->inner->rollback();
     }
 }

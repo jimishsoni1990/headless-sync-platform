@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Queue;
 
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueConnection;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
-use HSP\Core\Queue\Providers\Database\QueueConnectionInterface;
 use HSP\Core\Queue\Exception\QueueException;
 use HSP\Tests\Unit\Queue\FakeEvent;
 use PHPUnit\Framework\TestCase;
@@ -481,17 +481,19 @@ final class DatabaseQueueProviderIntegrationTest extends TestCase
     }
 
     /**
-     * Returns a QueueConnectionInterface implementation that rewrites system.* references
+     * Returns a DatabaseConnectionInterface implementation that rewrites system.* references
      * to the test schema so all SQL executes against isolated test tables.
+     *
+     * DECISION E v1.6: QueueConnectionInterface deleted; queue depends on DatabaseConnectionInterface.
      */
-    private function makeSchemaScopedConnection(): QueueConnectionInterface
+    private function makeSchemaScopedConnection(): DatabaseConnectionInterface
     {
         $conn = $this->connectPgsqlForceNew();
         pg_query($conn, "SET search_path TO {$this->schema}");
         $inner  = new DatabaseQueueConnection($conn);
         $schema = $this->schema;
 
-        return new class($inner, $schema) implements QueueConnectionInterface {
+        return new class($inner, $schema) implements DatabaseConnectionInterface {
             public function __construct(
                 private readonly DatabaseQueueConnection $inner,
                 private readonly string $schema,

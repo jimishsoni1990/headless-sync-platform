@@ -4,20 +4,23 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Queue;
 
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Queue\Exception\QueueException;
-use HSP\Core\Queue\Providers\Database\QueueConnectionInterface;
 
 /**
- * In-memory test double for QueueConnectionInterface.
+ * In-memory test double for DatabaseConnectionInterface (queue path).
  *
  * Records all calls; supports pre-seeded query results and simulated failures.
  * Allows DatabaseQueueProvider unit tests to run without a real database.
+ *
+ * DECISION E v1.6: QueueConnectionInterface deleted; queue depends directly on
+ * DatabaseConnectionInterface. FakeQueueConnection implements the shared interface.
  *
  * Usage pattern:
  *   $fake->queryResultQueue[] = [['id' => 'abc', ...]];  // one result-set per query call
  *   $fake->failNextExecute = true;
  */
-class FakeQueueConnection implements QueueConnectionInterface
+class FakeQueueConnection implements DatabaseConnectionInterface
 {
     /** @var list<array{sql: string, params: list<mixed>}> */
     public array $executeCalls = [];

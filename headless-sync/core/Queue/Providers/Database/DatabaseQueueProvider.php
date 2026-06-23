@@ -6,6 +6,7 @@ namespace HSP\Core\Queue\Providers\Database;
 
 use HSP\Core\Contracts\EventInterface;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Queue\Exception\QueueException;
 
 /**
@@ -58,7 +59,7 @@ final class DatabaseQueueProvider implements QueueProviderInterface
      *                                            backoff_base_seconds, backoff_cap_seconds
      */
     public function __construct(
-        private readonly QueueConnectionInterface $conn,
+        private readonly DatabaseConnectionInterface $conn,
         array $config = [],
     ) {
         $this->retryLimit               = (int) ($config['retry_limit']               ?? self::DEFAULT_RETRY_LIMIT);

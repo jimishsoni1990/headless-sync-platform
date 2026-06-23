@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace HSP\Core\Workers\Strategies;
 
 use HSP\Core\Contracts\WorkerInterface;
-use HSP\Core\Events\Outbox\Connection\OutboxConnectionInterface;
+use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Events\Outbox\Connection\MysqlOutboxConnectionInterface;
 use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
 
 /**
@@ -17,6 +18,8 @@ use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
  *   OPEN-6 v1.3  — relay fidelity; status 'relayed' set only after PG insert succeeds
  *   OPEN-4       — SELECT … FOR UPDATE SKIP LOCKED claim protocol
  *   DECISION 1   — no cross-DB transaction; PG insert committed independently
+ *   DECISION E v1.6 — MySQL capture path on MysqlOutboxConnectionInterface;
+ *                     PG delivery path on DatabaseConnectionInterface
  *
  * Claim and relay protocol (one MySQL transaction per batch):
  *
@@ -44,10 +47,10 @@ final class RelayWorkerStrategy implements WorkerInterface
     private string $workerId;
 
     public function __construct(
-        private readonly OutboxConnectionInterface $mysqlConn,
-        private readonly OutboxConnectionInterface $pgsqlConn,
-        private readonly string                    $tablePrefix,
-        private readonly int                       $batchSize = 100,
+        private readonly MysqlOutboxConnectionInterface $mysqlConn,
+        private readonly DatabaseConnectionInterface    $pgsqlConn,
+        private readonly string                        $tablePrefix,
+        private readonly int                           $batchSize = 100,
     ) {
         $this->workerId = $this->uuidv7();
     }
@@ -142,10 +145,6 @@ final class RelayWorkerStrategy implements WorkerInterface
      *   - causation_id may be NULL (root events — Doc 8 §19-20)
      *   - ON CONFLICT (id) DO NOTHING — safe for re-relay after crash
      *
-     * The PG insert is committed by the PG connection independently (auto-commit /
-     * single-statement implicit transaction). This is intentional per DECISION 1:
-     * the PG insert and the MySQL txn are separate; there is no distributed transaction.
-     *
      * @param array<string, mixed> $row
      */
     private function insertIntoSystemEvents(array $row): void
@@ -182,10 +181,6 @@ final class RelayWorkerStrategy implements WorkerInterface
 
     /**
      * Mark one outbox row as 'relayed' inside the open MySQL transaction.
-     *
-     * This executes within the still-open MySQL BEGIN … COMMIT block, so it is
-     * committed atomically with all other row updates in the batch. The MySQL
-     * row lock (held since the FOR UPDATE SELECT) protects this update.
      */
     private function markRelayed(string $id, string $outbox): void
     {

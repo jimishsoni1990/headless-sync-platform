@@ -8,9 +8,9 @@
 
 ---
 
-**Current phase:** Phase 0 — Foundation  
-**Last updated:** 2026-06-22 (P0-S6 — Worker engine + strategies + registries)  
-**Next session: P0-S7 — Phase 0 DoD gate verification**
+**Current phase:** Phase 1A — Blog MVP  
+**Last updated:** 2026-06-23 (P0-S7 continued — DECISION E v1.6 consolidation complete)  
+**Next session: P1A-S1 — Content events + WP hook wiring + EventProvider**
 
 ---
 
@@ -24,7 +24,7 @@
 - [x] P0-S4 Outbox capture + RelayWorkerStrategy
 - [x] P0-S5 DB queue provider
 - [x] P0-S6 Worker engine + strategies + event/adapter registries
-- [ ] P0-S7 Phase 0 DoD gate verification
+- [x] P0-S7 Phase 0 DoD gate verification
 
 ### Phase 1A — Blog MVP
 
@@ -114,13 +114,9 @@ Doc 2 §10 uses `core/Modules/` (plural). IMPLEMENTATION_PLAN.md §5b P0-S3 and 
 
 ### FLAG-P0S4-3 — `created_at` UTC fidelity on relay: binding and assertion both weak
 
-**Raised:** 2026-06-22 | **Session:** P0-S4 close | **Status:** Open — resolve by P0-S7 gate
+**Raised:** 2026-06-22 | **Session:** P0-S4 close | **Status:** Resolved — P0-S7 (2026-06-22)
 
-`RelayWorkerStrategy` binds `created_at` from the outbox row as a plain string (MySQL `DATETIME`, no timezone). PostgreSQL stores it as `TIMESTAMPTZ` but interprets a bare datetime string in the session timezone, which may not be UTC. The relay should cast or suffix the value with `AT TIME ZONE 'UTC'` (or bind via an explicit UTC-suffixed string) to guarantee the stored TIMESTAMPTZ reflects capture time in UTC.
-
-Additionally, `RelayEndToEndTest::test_pending_row_is_relayed_and_marked_relayed` asserts only that the PG `created_at` value contains today's date substring (`assertStringContainsString(gmdate('Y-m-d'), ...)`). This does not verify UTC offset is preserved.
-
-**Resolution by P0-S7:** (1) Verify (or fix) that `MysqliOutboxConnection`/`RelayWorkerStrategy` appends `+00` or binds `AT TIME ZONE 'UTC'` when inserting `created_at` into `system.events`. (2) Strengthen the assertion to compare the full UTC datetime, not just the date substring.
+**Resolution:** (1) `RelayWorkerStrategy::insertIntoSystemEvents()` already appended `'+00:00'` to both `source_updated_at` and `created_at` bindings (`$row['created_at'] . '+00:00'`), cast via `$12::timestamptz`. PostgreSQL interprets the `+00:00` suffix as UTC, guaranteeing the stored TIMESTAMPTZ reflects capture time in UTC regardless of session timezone. (2) `RelayEndToEndTest::test_pending_row_is_relayed_and_marked_relayed` strengthened: now asserts the full captured UTC datetime string (`assertStringContainsString($captureUtc, ...)`) AND that the PG value ends with an explicit UTC offset (`assertMatchesRegularExpression('/\+00(:00)?$/', ...)`). The `insertOutboxRow()` helper gains an optional `captureAt` parameter so the test can pin the timestamp before insertion.
 
 ---
 
@@ -136,6 +132,20 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 
 ---
 
+### FLAG-P0S7-1 — DECISION E collapse interpretation: marker-interface vs full split
+
+**Raised:** 2026-06-23 | **Session:** P0-S7 | **Status:** Resolved — DECISION E v1.6 (2026-06-23)
+
+**Resolution (architect's ruling, DECISION E v1.6 — Split):**
+- QUEUE: collapsed fully — `QueueConnectionInterface` deleted; `DatabaseQueueConnection` and `DatabaseQueueProvider` now depend on `DatabaseConnectionInterface` directly.
+- OUTBOX: split by persistence technology — `PgsqlOutboxConnection` implements `DatabaseConnectionInterface` (PG delivery path); `MysqliOutboxConnection` implements new `MysqlOutboxConnectionInterface` (MySQL capture path). `OutboxConnectionInterface` deleted. The two contracts share no inheritance; `DatabaseConnectionInterface` is PostgreSQL-only.
+- `RelayWorkerStrategy` holds one `MysqlOutboxConnectionInterface` + one `DatabaseConnectionInterface`, treating them as explicitly distinct abstractions.
+- Rollback swallow semantics preserved: `PostgresDatabaseConnection::rollback()` matches historical behaviour from git commit 084456a — false return from `pg_query('ROLLBACK')` silently discarded, no exception thrown.
+- All split fakes, service providers, integration tests, and the `FakeQueueConnection` updated to match.
+- 204 unit + 18 integration tests pass; 0 skipped.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
@@ -147,4 +157,6 @@ wrapper may be introduced. P0-S7 authorised scope: collapse `OutboxConnectionInt
 2026-06-22 | P0-S4 | Shipped: core/Contracts/ (OutboxWriterInterface, AggregateVersionCounterInterface), core/Events/Outbox/ (OutboxEvent, OutboxWriter, AggregateVersionCounter, Exception/OutboxWriteException, Connection/OutboxConnectionInterface + MysqliOutboxConnection + PgsqlOutboxConnection), core/Workers/Strategies/RelayWorkerStrategy, core/Container/Definitions/OutboxServiceProvider (wired into ContainerBuilder), tests/bootstrap.php (wpdb stub), tests/Unit/Events/Outbox/ (FakeWpdb, FakeOutboxConnection, AggregateVersionCounterTest ×5, OutboxWriterTest ×8, RelayWorkerStrategyTest ×21), tests/Integration/Events/Outbox/ (ConcurrentAggregateVersionTest ×3 live MySQL, RelayEndToEndTest ×5 live MySQL + live PG). Bugs fixed: bare VALUES(1) → LAST_INSERT_ID(1) in AggregateVersionCounter; \wpdb type hint → object for structural test compatibility; bind_param type-string mismatch in test setup. All four P0-S4 DoD items proved against live DBs: happy-path relay, idempotent re-relay (ON CONFLICT DO NOTHING), crash-safety (CommitSaboteurMysqlConnection — PG row survives MySQL rollback, recovery tick produces no duplicate), SKIP LOCKED concurrency. RelayWorkerStrategy redesigned mid-session: removed 'relaying' intermediate status; MySQL FOR UPDATE lock spans entire batch (BEGIN→SELECT SKIP LOCKED→PG insert+mark-relayed→COMMIT). Full suite: 99/99 tests pass (91 unit + 8 integration). Reviewer approved. | FLAG-P0S4-1: resolved by redesign (no DDL change). FLAG-P0S4-2: resolved (live-DB integration tests pass). FLAG-P0S4-3: open — created_at UTC fidelity on relay binding and assertion; resolve by P0-S7 gate.
 2026-06-22 | P0-S5 | Shipped: core/Queue/Exception/QueueException, core/Queue/Providers/Database/ (QueueConnectionInterface, DatabaseQueueConnection, DatabaseQueueProvider), core/Container/Definitions/QueueServiceProvider (wired into ContainerBuilder), tests/Unit/Queue/ (FakeQueueConnection, FakeEvent, DatabaseQueueProviderTest ×37), tests/Integration/Queue/DatabaseQueueProviderIntegrationTest ×10 (live PG). Bugs fixed: (1) DatabaseQueueConnection was final — extracted QueueConnectionInterface; (2) pg_connect() pooling on SKIP LOCKED test — fixed with PGSQL_CONNECT_FORCE_NEW; (3) ownership-fencing bug — complete(), release(), deadLetter() were fenced only on status='claimed', not worker_id — fixed by adding AND worker_id=$workerId fence, returning bool (false=lease lost, abandon), moving deadLetter() ownership UPDATE first inside the transaction. New integration test proves fencing: A claims, lease expires, requeueTimedOut revives, B claims, A's complete() and release() both return false, J remains owned by B with attempts=2. Full suite: 145/145 tests pass (127 unit + 10 PG integration + 8 pre-existing relay integration). | FLAG-P0S5-1 raised and resolved same session via DECISION E (v1.5): three pg_* wrappers are accepted temporary duplication; consolidate to shared DatabaseConnectionInterface in P0-S7; P0-S6 must introduce no new raw pg_* wrapper.
 2026-06-22 | P0-S6 | Shipped: core/Workers/WorkerStrategyInterface, WorkerExecutionContext, HeartbeatRecord, HeartbeatPublisherInterface, NullHeartbeatPublisher, WorkerEngine; core/Workers/Strategies/ EventWorkerStrategy (full Doc 8 §7 pipeline: Claim→Load→Validate→Resolve→Execute→Commit→Ack, retry/backoff/deadLetter), ReplayWorkerStrategy stub, ReconciliationWorkerStrategy stub, MaintenanceWorkerStrategy stub; core/Events/EventRegistry (explicit registration, OPEN-1 naming validation); core/Delivery/AdapterRegistry (explicit registration, last-wins on duplicate); core/Container/Definitions/WorkerServiceProvider (wired into ContainerBuilder). Tests: tests/Unit/Workers/ (WorkerEngineTest ×14, EventWorkerStrategyTest ×14, FakeHeartbeatPublisher, FakeWorkerStrategy, FakeQueueProvider), tests/Unit/Events/EventRegistryTest ×15, tests/Unit/Delivery/ (AdapterRegistryTest ×12, FakeAdapter). Full suite: 179/179 unit tests pass. No new pg_* wrapper introduced (DECISION E enforced). Pre-existing PHPUnit 12 deprecation in DatabaseQueueProviderTest (@dataProvider doc-comment) carried over unchanged. | No new flags.
+2026-06-22 | P0-S7 | Gate verification: all 6 DoD Gate items confirmed pass (type canon, LAST_INSERT_ID counter, no postmeta refs, TIMESTAMPTZ/DATETIME split, VARCHAR(64)/CHAR(64) checksums, UUID worker-identity). DECISION E consolidation: core/Database/ introduced (DatabaseConnectionInterface, PostgresDatabaseConnection, DatabaseException); OutboxConnectionInterface and QueueConnectionInterface collapsed to extend DatabaseConnectionInterface; PgsqlOutboxConnection and DatabaseQueueConnection now delegate to shared PostgresDatabaseConnection (no duplicate pg_* logic); migration engine untouched. FLAG-P0S4-3 resolved: RelayWorkerStrategy '+00:00' binding confirmed; RelayEndToEndTest assertion strengthened to full UTC datetime + explicit offset regex. Full suite: 198 tests, 180 pass, 18 skipped (integration, live DB not in CI), 0 failures. | FLAG-P0S7-1 raised: DECISION E collapse interpretation ambiguity.
+2026-06-23 | P0-S7 (continued) | DECISION E v1.6 — Split ruling applied: OutboxConnectionInterface and QueueConnectionInterface deleted; QueueConnectionInterface collapsed fully into DatabaseConnectionInterface; MysqlOutboxConnectionInterface introduced (MySQL capture path, no PG dependency); PgsqlOutboxConnection now implements DatabaseConnectionInterface via composition; DatabaseQueueConnection implements DatabaseConnectionInterface via composition; RelayWorkerStrategy holds explicit MysqlOutboxConnectionInterface + DatabaseConnectionInterface; PostgresDatabaseConnection::rollback() swallow semantics verified and unit-tested; all fakes split (FakeMysqlOutboxConnection, FakePgsqlOutboxConnection, FakeQueueConnection updated); CommitSaboteurMysqlConnection + integration test QueueConnectionInterface references updated; ARCHITECTURE_DECISIONS.md DECISION E bumped to v1.6 with full ruling. PostgresDatabaseConnectionTest added (8 tests including rollback swallow invariant). Full suite: 204 unit / 18 integration — 222 total, 0 failed, 0 skipped. | FLAG-P0S7-1 closed — DECISION E v1.6.
 

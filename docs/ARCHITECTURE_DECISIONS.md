@@ -17,6 +17,7 @@ Owner: Architecture
 | 1.3 | 2026-06-21 | OPEN-6: froze `wp_hsp_outbox` column-level DDL (previously "new table" only). Added `source_updated_at` (was missing — required to populate `system.events` OPEN-5 column). Pinned relay fidelity: `event_id` and `created_at` (capture time) are preserved unchanged from outbox into `system.events`. Implications table MySQL row updated to reference v1.3 frozen DDL. |
 | 1.4 | 2026-06-21 | DECISION A: `dead_letter_jobs.payload_snapshot` changed to `NOT NULL`; raw payload must always be preserved. OPEN-8: froze `system.schema_versions`, `system.module_versions`, `system.security_events` DDL (were Doc-3-underspecified). OPEN-9: `ModuleInterface` is the union of declarative discovery + WP lifecycle methods, supersedes Doc 2 §12. DECISION D: `AdapterInterface` adds `bulkPersist()` per Doc 7 §19. |
 | 1.5 | 2026-06-22 | DECISION E: shared runtime PostgreSQL connection layer; resolves FLAG-P0S5-1. Consolidation deferred to P0-S7; P0-S6 binding constraint (no new raw `pg_*` wrapper). |
+| 1.6 | 2026-06-23 | DECISION E: resolved FLAG-P0S7-1 (Option 1 — Split). Queue collapses fully into `DatabaseConnectionInterface`. Outbox splits by persistence technology: PG delivery path on shared `DatabaseConnectionInterface`; MySQL capture path on a new `MysqlOutboxConnectionInterface` that does NOT extend or reference `DatabaseConnectionInterface`. `OutboxConnectionInterface` and `QueueConnectionInterface` deleted. |
 
 ---
 
@@ -374,7 +375,22 @@ Consolidation is deferred to P0-S7. No consolidation occurs during P0-S5 or P0-S
 
 **P0-S7 authorized scope:** introduce a shared runtime `DatabaseConnectionInterface` (`execute`/`query`/`beginTransaction`/`commit`/`rollback`) + one shared PG implementation under `core/Database/`; collapse `OutboxConnectionInterface` and `QueueConnectionInterface` into it; replace the duplicated runtime wrappers with the shared implementation; the connection layer throws a single infrastructure `DatabaseException`, which subsystems may translate to `QueueException` / `OutboxWriteException` / `WorkerException` at their boundary. Migration engine untouched. This is consolidation only — behaviour, transaction semantics, and test coverage must remain unchanged.
 
-**Rationale:** Core owns reusable runtime infrastructure; subsystems must not each reinvent it. Capping proliferation at three and consolidating at the freeze gate avoids refactor risk during active implementation while preventing the pattern from entrenching.
+> **Amendment (v1.6 — 2026-06-23 — FLAG-P0S7-1 Option 1 — Split):**
+>
+> `DatabaseConnectionInterface` is **PostgreSQL-only**. No MySQL connection may implement or extend it.
+>
+> **Queue (collapse):** `QueueConnectionInterface` is deleted. `DatabaseQueueConnection` and `DatabaseQueueProvider` depend directly on `DatabaseConnectionInterface`. `DatabaseException` is translated to `QueueException` at the `DatabaseQueueConnection` boundary.
+>
+> **Outbox (split by persistence technology):** `OutboxConnectionInterface` is deleted. The dual-technology outbox path is split into two distinct abstractions:
+>
+> - **PG delivery path:** `PgsqlOutboxConnection` implements `DatabaseConnectionInterface` directly (same shared layer as queue). `DatabaseException` is translated to `OutboxWriteException` at the `PgsqlOutboxConnection` boundary.
+> - **MySQL capture path:** `MysqliOutboxConnection` implements a new `MysqlOutboxConnectionInterface` scoped to `core/Events/Outbox/Connection/`. This interface does NOT extend or reference `DatabaseConnectionInterface` — it is MySQL-only and carries its own `OutboxWriteException` error semantics.
+>
+> `RelayWorkerStrategy` holds one `MysqlOutboxConnectionInterface` (MySQL capture) + one `DatabaseConnectionInterface` (PG delivery) and coordinates the two explicitly — it does not treat them as one abstraction.
+>
+> **Rollback semantics (historical, binding):** Both original `PgsqlOutboxConnection::rollback()` (P0-S4, commit `084456a`) and `DatabaseQueueConnection::rollback()` (P0-S5, commit `084456a`) swallowed `pg_query('ROLLBACK')` failures silently — false return was ignored, no exception thrown. `PostgresDatabaseConnection::rollback()` preserves this behaviour exactly.
+
+**Rationale:** Core owns reusable runtime infrastructure; subsystems must not each reinvent it. Capping proliferation at three and consolidating at the freeze gate avoids refactor risk during active implementation while preventing the pattern from entrenching. The split (v1.6) reflects that MySQL and PostgreSQL have fundamentally different connection, transaction, and error models — a single interface spanning both would be a leaky abstraction.
 
 ---
 

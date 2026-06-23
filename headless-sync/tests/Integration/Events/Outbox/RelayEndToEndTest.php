@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Tests\Integration\Events\Outbox;
 
 use HSP\Core\Events\Outbox\Connection\MysqliOutboxConnection;
-use HSP\Core\Events\Outbox\Connection\OutboxConnectionInterface;
+use HSP\Core\Events\Outbox\Connection\MysqlOutboxConnectionInterface;
 use HSP\Core\Events\Outbox\Connection\PgsqlOutboxConnection;
 use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
 use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
@@ -68,7 +68,10 @@ final class RelayEndToEndTest extends TestCase
 
     public function test_pending_row_is_relayed_and_marked_relayed(): void
     {
-        $id = $this->insertOutboxRow();
+        // Capture the UTC timestamp before insertion so we can verify relay fidelity.
+        $captureUtc = gmdate('Y-m-d H:i:s');
+
+        $id = $this->insertOutboxRow(captureAt: $captureUtc);
 
         $relay = $this->makeRelay();
         $result = $relay->tick();
@@ -86,10 +89,15 @@ final class RelayEndToEndTest extends TestCase
         self::assertSame('relayed', $outboxRow['status']);
         self::assertNotNull($outboxRow['relayed_at'], 'relayed_at must be set');
 
-        // created_at must be preserved from the outbox row (capture time, not relay time — OPEN-6 v1.3).
-        // The outbox stores DATETIME UTC; PG stores TIMESTAMPTZ. Compare the date portion.
-        $expectedDate = gmdate('Y-m-d');
-        self::assertStringContainsString($expectedDate, $pgRows[0]['created_at']);
+        // created_at must be preserved from the outbox row as UTC (OPEN-6 v1.3 relay fidelity;
+        // FLAG-P0S4-3). The relay appends '+00:00' so PG stores TIMESTAMPTZ in UTC.
+        // Assert the full captured UTC datetime appears in the PG value with explicit offset,
+        // not just the date portion. PG returns TIMESTAMPTZ as 'YYYY-MM-DD HH:MM:SS+00'.
+        $pgCreatedAt = $pgRows[0]['created_at'];
+        self::assertStringContainsString($captureUtc, $pgCreatedAt,
+            'created_at in system.events must preserve the exact capture datetime (OPEN-6 v1.3)');
+        self::assertMatchesRegularExpression('/\+00(:00)?$/', $pgCreatedAt,
+            'created_at in system.events must carry an explicit UTC offset — FLAG-P0S4-3');
     }
 
     public function test_tick_returns_false_when_queue_empty(): void
@@ -268,15 +276,18 @@ final class RelayEndToEndTest extends TestCase
 
     /**
      * Insert one row into the test outbox. Returns the event_id.
+     *
+     * @param string|null $captureAt UTC datetime for created_at (DATETIME UTC); defaults to now.
      */
     private function insertOutboxRow(
         string $eventType     = 'content.post.created',
         string $aggregateType = 'post',
         string $aggregateId   = '42',
+        ?string $captureAt    = null,
     ): string {
         $id            = $this->uuidv7();
         $correlationId = $this->uuidv7();
-        $now           = gmdate('Y-m-d H:i:s');
+        $now           = $captureAt ?? gmdate('Y-m-d H:i:s');
         $checksum      = hash('sha256', '{"title":"Hello"}');
         $payload       = '{"title":"Hello"}';
 
@@ -465,17 +476,19 @@ final class RelayEndToEndTest extends TestCase
 // =============================================================================
 
 /**
- * Decorates OutboxConnectionInterface and throws on commit() to simulate a process
+ * Decorates MysqlOutboxConnectionInterface and throws on commit() to simulate a process
  * crash that occurs after the PostgreSQL insert has committed but before the MySQL
  * transaction commits — the exact crash scenario for test 3.
  *
  * All methods except commit() delegate to the real connection; commit() calls
  * rollback() on the real connection first (so the MySQL txn is cleanly aborted)
  * then throws OutboxWriteException to simulate the crash.
+ *
+ * DECISION E v1.6: MySQL capture path is MysqlOutboxConnectionInterface only.
  */
-final class CommitSaboteurMysqlConnection implements OutboxConnectionInterface
+final class CommitSaboteurMysqlConnection implements MysqlOutboxConnectionInterface
 {
-    public function __construct(private readonly OutboxConnectionInterface $inner) {}
+    public function __construct(private readonly MysqlOutboxConnectionInterface $inner) {}
 
     public function execute(string $sql, array $params = []): int
     {

@@ -14,10 +14,11 @@ use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
  * Registers the database queue provider and its connection.
  *
  * Bindings:
- *   'queue.connection.pgsql'  — DatabaseQueueConnection (dedicated PG handle)
+ *   'queue.connection.pgsql'  — DatabaseQueueConnection (DatabaseConnectionInterface)
  *   QueueProviderInterface    — DatabaseQueueProvider
  *
  * Constructor injection only — ADR-012.
+ * DECISION E v1.6: queue collapses fully into DatabaseConnectionInterface.
  * Config keys (under 'queue'): retry_limit, visibility_timeout_seconds,
  *                              backoff_base_seconds, backoff_cap_seconds.
  */

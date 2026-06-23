@@ -6,7 +6,11 @@ namespace HSP\Tests\Unit\Events\Outbox;
 
 use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
 use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
+use HSP\Core\Database\Exception\DatabaseException;
 use PHPUnit\Framework\TestCase;
+
+// Load the split fake classes — defined in FakeOutboxConnection.php.
+require_once __DIR__ . '/FakeOutboxConnection.php';
 
 /**
  * Unit tests for RelayWorkerStrategy.
@@ -17,19 +21,21 @@ use PHPUnit\Framework\TestCase;
  *   - Single-transaction design: BEGIN … (PG insert + MySQL mark-relayed per row) … COMMIT
  *   - No intermediate 'relaying' status — ENUM('pending','relayed') only
  *   - DECISION 1: PG insert executed independently; no shared cross-DB transaction
+ *   - DECISION E v1.6: MySQL capture path on FakeMysqlOutboxConnection;
+ *                       PG delivery path on FakePgsqlOutboxConnection
  *
- * All tests use FakeOutboxConnection — no real database.
+ * All tests use split fakes — no real database.
  */
 final class RelayWorkerStrategyTest extends TestCase
 {
-    private FakeOutboxConnection $mysql;
-    private FakeOutboxConnection $pgsql;
-    private RelayWorkerStrategy  $relay;
+    private FakeMysqlOutboxConnection $mysql;
+    private FakePgsqlOutboxConnection $pgsql;
+    private RelayWorkerStrategy       $relay;
 
     protected function setUp(): void
     {
-        $this->mysql = new FakeOutboxConnection();
-        $this->pgsql = new FakeOutboxConnection();
+        $this->mysql = new FakeMysqlOutboxConnection();
+        $this->pgsql = new FakePgsqlOutboxConnection();
         $this->relay = new RelayWorkerStrategy($this->mysql, $this->pgsql, 'wp_', 10);
     }
 
@@ -195,13 +201,9 @@ final class RelayWorkerStrategyTest extends TestCase
 
     public function test_tick_mark_relayed_happens_before_commit(): void
     {
-        // The FakeOutboxConnection records calls in order. We verify that the
+        // The FakeMysqlOutboxConnection records calls in order. We verify that the
         // mark-relayed execute call appears before the commit counter increments.
-        // Since FakeOutboxConnection::commit() just increments a counter (no flush),
-        // we verify order by checking that executeCalls is non-empty when commit fires.
-        // We instrument this by subclassing the fake.
-
-        $mysql = new class extends FakeOutboxConnection {
+        $mysql = new class extends FakeMysqlOutboxConnection {
             public array $executeCallsAtCommit = [];
             public function commit(): void {
                 $this->executeCallsAtCommit = $this->executeCalls;
@@ -319,7 +321,7 @@ final class RelayWorkerStrategyTest extends TestCase
 
     public function test_tick_rolls_back_on_pg_insert_failure(): void
     {
-        $this->mysql->nextQueryRows = [$this->makeRow()];
+        $this->mysql->nextQueryRows   = [$this->makeRow()];
         $this->pgsql->failNextExecute = true;
 
         $this->expectException(OutboxWriteException::class);

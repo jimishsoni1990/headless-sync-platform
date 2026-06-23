@@ -18,13 +18,14 @@ use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
  * Registers outbox capture and relay bindings.
  *
  * Bindings:
- *   'outbox.connection.mysql'  — MysqliOutboxConnection (transactional; for relay claim)
- *   'outbox.connection.pgsql'  — PgsqlOutboxConnection  (for relay insert to system.events)
+ *   'outbox.connection.mysql'  — MysqliOutboxConnection (MysqlOutboxConnectionInterface)
+ *   'outbox.connection.pgsql'  — PgsqlOutboxConnection  (DatabaseConnectionInterface)
  *   AggregateVersionCounterInterface — AggregateVersionCounter
  *   OutboxWriterInterface            — OutboxWriter
  *   'relay.worker'             — RelayWorkerStrategy
  *
  * Constructor injection only — ADR-012.
+ * DECISION E v1.6: MySQL capture path and PG delivery path are distinct contracts.
  */
 final class OutboxServiceProvider extends ServiceProvider
 {

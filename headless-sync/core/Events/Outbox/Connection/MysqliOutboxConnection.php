@@ -14,9 +14,13 @@ use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
  * $wpdb does not expose transaction primitives, making it unsuitable for the
  * SKIP LOCKED claim protocol required by OPEN-4 / OPEN-6.
  *
+ * Implements MysqlOutboxConnectionInterface — the MySQL-only capture-path
+ * contract (DECISION E v1.6). Does NOT implement DatabaseConnectionInterface,
+ * which is PostgreSQL-only.
+ *
  * The mysqli handle is injected — its lifecycle (connect/close) belongs to the caller.
  */
-final class MysqliOutboxConnection implements OutboxConnectionInterface
+final class MysqliOutboxConnection implements MysqlOutboxConnectionInterface
 {
     public function __construct(private readonly \mysqli $mysqli) {}
 
