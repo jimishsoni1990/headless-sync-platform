@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Module;
 
+use HSP\Core\Container\Container;
 use HSP\Core\Contracts\ModuleInterface;
 use HSP\Core\Module\Exception\InvalidManifestException;
 use HSP\Core\Module\ModuleDiscovery;
@@ -71,21 +72,28 @@ final class ModuleRegistryTest extends TestCase
     /**
      * Returns a ModuleLoader that maps module_class strings to FakeModule instances.
      *
+     * The parent constructor now requires a Container; the anonymous subclass
+     * overrides load() entirely so the container is never used, but we must
+     * satisfy the parent constructor signature.
+     *
      * @param array<string, FakeModule> $map
      */
     private function loaderWith(array $map): ModuleLoader
     {
-        return new class($map) extends ModuleLoader {
-            public function __construct(private readonly array $map) {}
+        return new class(new Container(), $map) extends ModuleLoader {
+            public function __construct(Container $container, private readonly array $moduleMap)
+            {
+                parent::__construct($container);
+            }
 
             public function load(ModuleManifest $manifest): ModuleInterface
             {
-                if (! isset($this->map[$manifest->moduleClass])) {
+                if (! isset($this->moduleMap[$manifest->moduleClass])) {
                     throw new InvalidManifestException(
                         "No stub for '{$manifest->moduleClass}'"
                     );
                 }
-                return $this->map[$manifest->moduleClass];
+                return $this->moduleMap[$manifest->moduleClass];
             }
         };
     }
@@ -93,7 +101,7 @@ final class ModuleRegistryTest extends TestCase
     /** Returns a ModuleLoader that always throws InvalidManifestException. */
     private function loaderAlwaysThrowing(): ModuleLoader
     {
-        return new class extends ModuleLoader {
+        return new class(new Container()) extends ModuleLoader {
             public function load(ModuleManifest $manifest): ModuleInterface
             {
                 throw new InvalidManifestException(

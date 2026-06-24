@@ -10,6 +10,7 @@ use HSP\Core\Container\Definitions\ModuleServiceProvider;
 use HSP\Core\Container\Definitions\OutboxServiceProvider;
 use HSP\Core\Container\Definitions\QueueServiceProvider;
 use HSP\Core\Container\Definitions\WorkerServiceProvider;
+use HSP\Modules\Content\ContentServiceProvider;
 
 /**
  * Builds and wires the DI container.
@@ -34,6 +35,7 @@ final class ContainerBuilder
         $registry->addProvider(new OutboxServiceProvider($config));
         $registry->addProvider(new QueueServiceProvider($config));
         $registry->addProvider(new WorkerServiceProvider());
+        $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 
         $registry->registerAll($container);

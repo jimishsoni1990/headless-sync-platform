@@ -34,8 +34,8 @@ final class ModuleServiceProvider extends ServiceProvider
             new ModuleDiscovery($this->modulesBasePath)
         );
 
-        $container->singleton('module.loader', fn() =>
-            new ModuleLoader()
+        $container->singleton('module.loader', fn(Container $c) =>
+            new ModuleLoader($c)
         );
 
         $container->singleton('module.registry', fn(Container $c) =>

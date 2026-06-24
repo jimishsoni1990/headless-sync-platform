@@ -9,6 +9,7 @@ use HSP\Core\Contracts\MigrationInterface;
 use HSP\Core\Contracts\ModuleInterface;
 use HSP\Core\Contracts\ServiceProviderInterface;
 use HSP\Modules\Content\Events\ContentEventTypes;
+use HSP\Modules\Content\Rest\ContentRestRegistrarFactory;
 
 /**
  * Content module entry point — implements the ModuleInterface union shape (OPEN-9 v1.4).
@@ -21,8 +22,9 @@ use HSP\Modules\Content\Events\ContentEventTypes;
 final class ContentModule implements ModuleInterface
 {
     public function __construct(
-        private readonly HookWiring            $hookWiring,
-        private readonly EventProviderInterface $eventProvider,
+        private readonly HookWiring                    $hookWiring,
+        private readonly EventProviderInterface        $eventProvider,
+        private readonly ContentRestRegistrarFactory   $restRegistrarFactory,
     ) {}
 
     // -------------------------------------------------------------------------
@@ -72,7 +74,13 @@ final class ContentModule implements ModuleInterface
 
     public function boot(): void
     {
-        // Nothing to do at boot for P1A-S1 scope.
+        // Invoke the factory inside rest_api_init so the PG connection is only
+        // opened when WordPress fires the hook — not at module load time
+        // (FLAG-P1AS6-2 Gap C fix; FLAG-P1AS6A-5 fix; Doc 9 §7).
+        $factory = $this->restRegistrarFactory;
+        add_action('rest_api_init', static function () use ($factory): void {
+            ($factory)()->register();
+        });
     }
 
     public function activate(): void

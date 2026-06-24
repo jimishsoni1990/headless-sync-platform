@@ -49,7 +49,13 @@ final class Application
         $containerBuilder = new ContainerBuilder();
         $bootstrapper     = new Bootstrapper($configLoader, $containerBuilder);
 
-        $this->container = $bootstrapper->bootstrap();
+        $modulesBasePath = defined('HSP_PLUGIN_DIR') ? HSP_PLUGIN_DIR . 'modules/' : '';
+        $this->container = $bootstrapper->bootstrap($modulesBasePath);
+
+        // Run the module lifecycle: discover → register → boot (FLAG-P1AS6-2 Gap A fix).
+        // The composition root may call container->get() — ADR-012 prohibits it in
+        // business logic, not here.
+        $this->container->get('module.registrar')->registerAll();
     }
 
     public function activate(): void

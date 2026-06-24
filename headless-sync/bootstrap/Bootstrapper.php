@@ -21,12 +21,12 @@ final class Bootstrapper
         private readonly ContainerBuilder $containerBuilder,
     ) {}
 
-    public function bootstrap(): \HSP\Core\Container\Container
+    public function bootstrap(string $modulesBasePath = ''): \HSP\Core\Container\Container
     {
         Environment::load();
 
         $config = $this->configLoader->load();
 
-        return $this->containerBuilder->build($config);
+        return $this->containerBuilder->build($config, $modulesBasePath);
     }
 }

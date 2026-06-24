@@ -66,7 +66,7 @@ final class OutboxServiceProvider extends ServiceProvider
                 $cfg['user']     ?? '',
                 $cfg['password'] ?? '',
             );
-            $conn = pg_connect($dsn);
+            $conn = \pg_connect($dsn);
 
             if ($conn === false) {
                 throw new \RuntimeException('Outbox PostgreSQL connect failed.');
