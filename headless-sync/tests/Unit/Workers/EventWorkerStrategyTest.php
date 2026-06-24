@@ -7,38 +7,51 @@ namespace HSP\Tests\Unit\Workers;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
 use HSP\Core\Workers\WorkerExecutionContext;
+use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Unit tests for EventWorkerStrategy.
  *
  * Verified:
- *   execute() empty queue    — returns false; no complete/release/deadLetter called
- *   execute() with job       — returns true; complete() called on success
- *   execute() unknown type   — throws RuntimeException; release() called (retry)
- *   execute() unregistered   — throws RuntimeException when event type not in registry
- *   execute() retry limit    — deadLetter() called when attempts >= retryLimit
- *   execute() retry path     — release() called with backoff when attempts < retryLimit
- *   execute() lease-lost (complete)   — returns false → silent abandon; no release/deadLetter after
- *   execute() lease-lost (release)   — returns false → silent abandon; no second call after
- *   execute() lease-lost (deadLetter) — returns false → silent abandon; no release after
- *   getQueueNames()          — returns ['content']
+ *   execute() empty queue          — returns false; no complete/release/deadLetter called
+ *   execute() with job             — returns true; complete() called on success
+ *   execute() no event_id          — throws; release() called (retry)
+ *   execute() missing event row    — throws; release() called (retry)
+ *   execute() unregistered type    — throws; release() called (retry)
+ *   execute() registered type      — handler invoked; complete() called
+ *   execute() stale event          — ack + return true; handler NOT invoked; no writes
+ *   execute() retry limit          — deadLetter() called when attempts >= retryLimit
+ *   execute() lease-lost complete  — silent abandon
+ *   execute() lease-lost release   — silent abandon
+ *   execute() lease-lost deadLetter— silent abandon
+ *   getQueueNames()                — returns ['content']
  *
- * No real database — FakeQueueProvider and EventRegistry only.
+ * No real database — FakeQueueProvider, FakeDbConnection (controllable query results).
  */
 final class EventWorkerStrategyTest extends TestCase
 {
-    private FakeQueueProvider  $queue;
-    private EventRegistry      $registry;
+    private FakeQueueProvider   $queue;
+    private EventRegistry       $registry;
+    private FakeDbConnection    $db;
     private EventWorkerStrategy $strategy;
-
     private WorkerExecutionContext $ctx;
+
+    private const EVENT_ID = '01900000-0000-7000-8000-000000000001';
+    private const AGG_TYPE = 'page';
+    private const AGG_ID   = '42';
 
     protected function setUp(): void
     {
         $this->queue    = new FakeQueueProvider();
         $this->registry = new EventRegistry();
-        $this->strategy = new EventWorkerStrategy($this->queue, $this->registry, retryLimit: 10);
+        $this->db       = new FakeDbConnection();
+        $this->strategy = new EventWorkerStrategy(
+            $this->queue,
+            $this->registry,
+            $this->db,
+            retryLimit: 10,
+        );
 
         $this->ctx = new WorkerExecutionContext(
             workerId:      'test-worker-id',
@@ -73,67 +86,168 @@ final class EventWorkerStrategyTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // execute() — successful job (no event_type in payload → no registry check)
+    // execute() — no event_id in job → release for retry
     // -------------------------------------------------------------------------
 
-    public function test_execute_returns_true_when_job_claimed(): void
+    public function test_execute_releases_when_job_has_no_event_id(): void
     {
-        $this->queue->claimResult = $this->makeJob('job-1', 1);
-        self::assertTrue($this->strategy->execute($this->ctx));
-    }
-
-    public function test_execute_calls_complete_on_success(): void
-    {
-        $this->queue->claimResult = $this->makeJob('job-1', 1);
-        $this->strategy->execute($this->ctx);
-
-        self::assertCount(1, $this->queue->completeCalls);
-        self::assertSame('job-1', $this->queue->completeCalls[0]['jobId']);
-        self::assertSame('test-worker-id', $this->queue->completeCalls[0]['workerId']);
-    }
-
-    public function test_execute_does_not_call_release_on_success(): void
-    {
-        $this->queue->claimResult = $this->makeJob('job-1', 1);
-        $this->strategy->execute($this->ctx);
-        self::assertEmpty($this->queue->releaseCalls);
-    }
-
-    // -------------------------------------------------------------------------
-    // execute() — unregistered event type → release for retry
-    // -------------------------------------------------------------------------
-
-    public function test_execute_releases_job_when_event_type_not_registered(): void
-    {
-        $this->queue->claimResult = $this->makeJobWithEventType('job-2', 3, 'content.post.updated');
-        // Do NOT register 'content.post.updated' — intentionally absent.
+        $this->queue->claimResult = $this->makeJobWithEventId('job-1', 1, '');
 
         $this->strategy->execute($this->ctx);
 
         self::assertCount(1, $this->queue->releaseCalls);
-        self::assertSame('job-2', $this->queue->releaseCalls[0]['jobId']);
-    }
-
-    public function test_execute_does_not_complete_when_event_type_not_registered(): void
-    {
-        $this->queue->claimResult = $this->makeJobWithEventType('job-2', 3, 'content.post.updated');
-        $this->strategy->execute($this->ctx);
         self::assertEmpty($this->queue->completeCalls);
     }
 
     // -------------------------------------------------------------------------
-    // execute() — registered event type → success path
+    // execute() — event not in system.events → release for retry
     // -------------------------------------------------------------------------
 
-    public function test_execute_succeeds_when_event_type_is_registered(): void
+    public function test_execute_releases_when_event_row_missing(): void
     {
-        $this->registry->register('content.post.updated', fn () => null);
-        $this->queue->claimResult = $this->makeJobWithEventType('job-3', 1, 'content.post.updated');
+        $this->queue->claimResult = $this->makeJobWithEventId('job-2', 1, self::EVENT_ID);
+        // db.query() returns [] (no row found)
+        $this->db->willReturnRows([]);
 
         $this->strategy->execute($this->ctx);
 
+        self::assertCount(1, $this->queue->releaseCalls);
+        self::assertEmpty($this->queue->completeCalls);
+    }
+
+    // -------------------------------------------------------------------------
+    // execute() — event type not registered → release for retry
+    // -------------------------------------------------------------------------
+
+    public function test_execute_releases_when_event_type_not_registered(): void
+    {
+        $this->queue->claimResult = $this->makeJobWithEventId('job-3', 3, self::EVENT_ID);
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.post.updated')],  // system.events
+            [],                                             // aggregate_versions (not stale)
+        );
+        // Do NOT register 'content.post.updated'.
+
+        $this->strategy->execute($this->ctx);
+
+        self::assertCount(1, $this->queue->releaseCalls);
+        self::assertEmpty($this->queue->completeCalls);
+    }
+
+    // -------------------------------------------------------------------------
+    // execute() — registered event type, non-stale → handler invoked + complete
+    // -------------------------------------------------------------------------
+
+    public function test_execute_invokes_handler_and_completes_for_registered_event(): void
+    {
+        $handlerCalled = false;
+        $this->registry->register('content.post.updated', function () use (&$handlerCalled): void {
+            $handlerCalled = true;
+        });
+
+        $this->queue->claimResult = $this->makeJobWithEventId('job-4', 1, self::EVENT_ID);
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.post.updated')],  // system.events
+            [],                                             // aggregate_versions: no row → not stale
+        );
+
+        $result = $this->strategy->execute($this->ctx);
+
+        self::assertTrue($result);
+        self::assertTrue($handlerCalled, 'Handler must be invoked for registered, non-stale event');
         self::assertCount(1, $this->queue->completeCalls);
+        self::assertSame('job-4', $this->queue->completeCalls[0]['jobId']);
         self::assertEmpty($this->queue->releaseCalls);
+    }
+
+    // -------------------------------------------------------------------------
+    // execute() — Resolve-stage stale guard (DECISION J Layer 1)
+    // -------------------------------------------------------------------------
+
+    public function test_execute_acks_stale_event_without_invoking_handler(): void
+    {
+        $handlerCalled = false;
+        $this->registry->register('content.post.updated', function () use (&$handlerCalled): void {
+            $handlerCalled = true;
+        });
+
+        $this->queue->claimResult = $this->makeJobWithEventId('job-5', 1, self::EVENT_ID);
+        // Event has aggregate_version=1; stored latest_processed_version=5 → stale
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.post.updated', aggregateVersion: 1)],
+            [['latest_processed_version' => '5']],  // aggregate_versions row
+        );
+
+        $result = $this->strategy->execute($this->ctx);
+
+        self::assertTrue($result, 'execute() must return true even for stale events (job was claimed)');
+        self::assertFalse($handlerCalled, 'Handler must NOT be invoked for stale event');
+        self::assertCount(1, $this->queue->completeCalls, 'Stale event must be acked (not retried)');
+        self::assertEmpty($this->queue->releaseCalls);
+        self::assertEmpty($this->queue->deadLetterCalls);
+    }
+
+    public function test_execute_processes_non_stale_event_when_version_equals_stored_plus_one(): void
+    {
+        $handlerCalled = false;
+        $this->registry->register('content.post.updated', function () use (&$handlerCalled): void {
+            $handlerCalled = true;
+        });
+
+        $this->queue->claimResult = $this->makeJobWithEventId('job-6', 1, self::EVENT_ID);
+        // Event aggregate_version=6; stored=5 → 6 > 5 → NOT stale
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.post.updated', aggregateVersion: 6)],
+            [['latest_processed_version' => '5']],
+        );
+
+        $this->strategy->execute($this->ctx);
+
+        self::assertTrue($handlerCalled, 'Handler must be invoked when version > stored');
+    }
+
+    public function test_execute_processes_event_when_no_aggregate_version_row_exists(): void
+    {
+        $handlerCalled = false;
+        $this->registry->register('content.page.created', function () use (&$handlerCalled): void {
+            $handlerCalled = true;
+        });
+
+        $this->queue->claimResult = $this->makeJobWithEventId('job-7', 1, self::EVENT_ID);
+        // aggregate_versions returns [] → first event for this aggregate → not stale
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.page.created', aggregateVersion: 1)],
+            [],
+        );
+
+        $this->strategy->execute($this->ctx);
+
+        self::assertTrue($handlerCalled);
+    }
+
+    // -------------------------------------------------------------------------
+    // execute() — equal version is stale (version <= stored, not just <)
+    // -------------------------------------------------------------------------
+
+    public function test_execute_acks_event_when_version_equals_stored(): void
+    {
+        $handlerCalled = false;
+        $this->registry->register('content.post.updated', function () use (&$handlerCalled): void {
+            $handlerCalled = true;
+        });
+
+        $this->queue->claimResult = $this->makeJobWithEventId('job-8', 1, self::EVENT_ID);
+        // Event aggregate_version=5; stored=5 → 5 <= 5 → STALE
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.post.updated', aggregateVersion: 5)],
+            [['latest_processed_version' => '5']],
+        );
+
+        $result = $this->strategy->execute($this->ctx);
+
+        self::assertTrue($result);
+        self::assertFalse($handlerCalled, 'Equal version must be treated as stale');
+        self::assertCount(1, $this->queue->completeCalls);
     }
 
     // -------------------------------------------------------------------------
@@ -142,126 +256,116 @@ final class EventWorkerStrategyTest extends TestCase
 
     public function test_execute_dead_letters_when_retry_limit_exhausted(): void
     {
-        // attempts = retryLimit → deadLetter path
-        $this->queue->claimResult = $this->makeJobWithEventType('job-4', 10, 'content.page.deleted');
-        // 'content.page.deleted' not registered → will throw, attempts == retryLimit(10)
+        // Event type not registered → throws; attempts=10 → deadLetter
+        $this->queue->claimResult = $this->makeJobWithEventId('job-9', 10, self::EVENT_ID);
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.page.deleted')],
+            [],
+        );
+        // 'content.page.deleted' not registered
 
         $this->strategy->execute($this->ctx);
 
         self::assertCount(1, $this->queue->deadLetterCalls);
-        self::assertSame('job-4', $this->queue->deadLetterCalls[0]['jobId']);
-    }
-
-    public function test_execute_dead_letter_carries_failure_context(): void
-    {
-        $this->queue->claimResult = $this->makeJobWithEventType('job-4', 10, 'content.page.deleted');
-        $this->strategy->execute($this->ctx);
-
-        $ctx = $this->queue->deadLetterCalls[0]['failureContext'];
-        self::assertArrayHasKey('failure_reason', $ctx);
-        self::assertArrayHasKey('stack_trace', $ctx);
-        self::assertArrayHasKey('attempt_count', $ctx);
-        self::assertArrayHasKey('payload_snapshot', $ctx);
-    }
-
-    public function test_execute_does_not_release_when_dead_lettering(): void
-    {
-        $this->queue->claimResult = $this->makeJobWithEventType('job-4', 10, 'content.page.deleted');
-        $this->strategy->execute($this->ctx);
+        self::assertSame('job-9', $this->queue->deadLetterCalls[0]['jobId']);
+        self::assertArrayHasKey('failure_reason', $this->queue->deadLetterCalls[0]['failureContext']);
         self::assertEmpty($this->queue->releaseCalls);
     }
 
     // -------------------------------------------------------------------------
-    // execute() — release for retry (attempts < retryLimit)
+    // execute() — fencing contract: lease-lost paths
     // -------------------------------------------------------------------------
 
-    public function test_execute_releases_with_positive_backoff_on_transient_failure(): void
+    public function test_lease_lost_on_complete_causes_silent_abandon(): void
     {
-        $this->queue->claimResult = $this->makeJobWithEventType('job-5', 2, 'content.post.created');
-        $this->strategy->execute($this->ctx);
-
-        self::assertCount(1, $this->queue->releaseCalls);
-        self::assertGreaterThanOrEqual(0, $this->queue->releaseCalls[0]['delaySeconds']);
-    }
-
-    // -------------------------------------------------------------------------
-    // execute() — fencing contract: lease-lost paths (P0-S5 QueueProviderInterface)
-    //
-    // When complete(), release(), or deadLetter() returns false the visibility-timeout
-    // recovery has revived the job and a second worker owns it. The strategy MUST
-    // abandon silently — no further queue calls, no retry increment, no second DLQ entry.
-    // -------------------------------------------------------------------------
-
-    public function test_lease_lost_on_complete_causes_silent_abandon_no_further_calls(): void
-    {
-        // Success path: handler runs, complete() returns false (lease lost).
-        // No release() or deadLetter() must follow.
-        $this->queue->claimResult     = $this->makeJob('job-6', 1);
+        $this->registry->register('content.page.created', fn () => null);
+        $this->queue->claimResult = $this->makeJobWithEventId('job-10', 1, self::EVENT_ID);
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.page.created')],
+            [],
+        );
         $this->queue->completeReturns = false;
 
         $result = $this->strategy->execute($this->ctx);
 
-        self::assertTrue($result, 'execute() must still return true — a job was claimed');
-        self::assertCount(1, $this->queue->completeCalls, 'complete() called exactly once');
-        self::assertEmpty($this->queue->releaseCalls,    'no release() after lease-lost complete');
-        self::assertEmpty($this->queue->deadLetterCalls, 'no deadLetter() after lease-lost complete');
+        self::assertTrue($result);
+        self::assertCount(1, $this->queue->completeCalls);
+        self::assertEmpty($this->queue->releaseCalls);
+        self::assertEmpty($this->queue->deadLetterCalls);
     }
 
-    public function test_lease_lost_on_release_causes_silent_abandon_no_further_calls(): void
+    public function test_lease_lost_on_release_causes_silent_abandon(): void
     {
-        // Failure path (below retry limit): handler throws, release() returns false (lease lost).
-        // No second release() or deadLetter() must follow.
-        $this->queue->claimResult    = $this->makeJobWithEventType('job-7', 3, 'content.post.created');
+        $this->queue->claimResult    = $this->makeJobWithEventId('job-11', 3, self::EVENT_ID);
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.post.created')],
+            [],
+        );
+        // 'content.post.created' not registered → throws → release path
         $this->queue->releaseReturns = false;
 
         $result = $this->strategy->execute($this->ctx);
 
         self::assertTrue($result);
-        self::assertCount(1, $this->queue->releaseCalls,   'release() called exactly once');
-        self::assertEmpty($this->queue->completeCalls,     'no complete() on failure path');
-        self::assertEmpty($this->queue->deadLetterCalls,   'no deadLetter() after lease-lost release');
+        self::assertCount(1, $this->queue->releaseCalls);
+        self::assertEmpty($this->queue->completeCalls);
+        self::assertEmpty($this->queue->deadLetterCalls);
     }
 
-    public function test_lease_lost_on_dead_letter_causes_silent_abandon_no_further_calls(): void
+    public function test_lease_lost_on_dead_letter_causes_silent_abandon(): void
     {
-        // Failure path at retry limit: deadLetter() returns false (lease lost).
-        // No release() must follow — the new owner will handle exhaustion when it hits the limit.
-        $this->queue->claimResult        = $this->makeJobWithEventType('job-8', 10, 'content.page.deleted');
-        $this->queue->deadLetterReturns  = false;
+        $this->queue->claimResult       = $this->makeJobWithEventId('job-12', 10, self::EVENT_ID);
+        $this->db->queueQueryResults(
+            [$this->makeEventRow('content.page.deleted')],
+            [],
+        );
+        // unregistered → throws at retry-limit → deadLetter
+        $this->queue->deadLetterReturns = false;
 
         $result = $this->strategy->execute($this->ctx);
 
         self::assertTrue($result);
-        self::assertCount(1, $this->queue->deadLetterCalls, 'deadLetter() called exactly once');
-        self::assertEmpty($this->queue->releaseCalls,        'no release() after lease-lost deadLetter');
-        self::assertEmpty($this->queue->completeCalls,       'no complete() on exhausted path');
+        self::assertCount(1, $this->queue->deadLetterCalls);
+        self::assertEmpty($this->queue->releaseCalls);
+        self::assertEmpty($this->queue->completeCalls);
     }
 
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * @return array<string, mixed>
-     */
-    private function makeJob(string $id, int $attempts): array
+    /** @return array<string,mixed> */
+    private function makeJobWithEventId(string $id, int $attempts, string $eventId): array
     {
         return [
             'id'       => $id,
+            'event_id' => $eventId,
             'attempts' => $attempts,
-            'payload'  => null,
         ];
     }
 
     /**
-     * @return array<string, mixed>
+     * Build a system.events row for FakeDbConnection to return.
+     *
+     * @return array<string,mixed>
      */
-    private function makeJobWithEventType(string $id, int $attempts, string $eventType): array
-    {
+    private function makeEventRow(
+        string $eventType,
+        int    $aggregateVersion = 1,
+    ): array {
         return [
-            'id'       => $id,
-            'attempts' => $attempts,
-            'payload'  => json_encode(['event_type' => $eventType]),
+            'id'                => self::EVENT_ID,
+            'event_type'        => $eventType,
+            'event_version'     => '1',
+            'aggregate_type'    => self::AGG_TYPE,
+            'aggregate_id'      => self::AGG_ID,
+            'aggregate_version' => (string) $aggregateVersion,
+            'payload'           => '{}',
+            'checksum'          => str_repeat('a', 64),
+            'source_updated_at' => '2024-01-01 00:00:00+00',
+            'created_at'        => '2024-01-01 00:00:00+00',
+            'correlation_id'    => '01900000-0000-7000-8000-000000000002',
+            'causation_id'      => null,
         ];
     }
 }

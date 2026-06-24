@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace HSP\Core\Workers\Strategies;
 
+use HSP\Core\Contracts\EventInterface;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
+use HSP\Core\Events\Outbox\OutboxEvent;
 use HSP\Core\Workers\WorkerExecutionContext;
 use HSP\Core\Workers\WorkerStrategyInterface;
 
@@ -14,35 +17,45 @@ use HSP\Core\Workers\WorkerStrategyInterface;
  *
  * Implements the Doc 8 §7 standard execution pipeline:
  *   1. Claim         — claim a job via QueueProviderInterface (OPEN-4 SKIP LOCKED)
- *   2. Load Event    — resolve the event record from the claimed job payload
+ *   2. Load Event    — load full EventInterface from system.events via event_id
  *   3. Create Context — WorkerExecutionContext already supplied by WorkerEngine
- *   4. Validate      — verify the event type is registered; check required fields
- *   5. Resolve       — look up the registered handler for the event type
- *   6. Execute       — invoke the handler
- *   7. Commit State  — handler is responsible for its own PG transaction (DECISION 3)
+ *   4. Validate      — verify the event type is registered in EventRegistry
+ *   5. Resolve       — PRIMARY stale-event guard: read system.aggregate_versions;
+ *                      if event.aggregate_version <= stored → ack + skip (DECISION J)
+ *   6. Execute       — invoke all registered handlers for the event type
+ *   7. Commit State  — each handler commits its own PG transaction (DECISION 3)
  *   8. Acknowledge   — complete() on success; release() on transient failure;
  *                      deadLetter() on retry-limit exhaustion (ADR-022)
  *
+ * Stale-event guard (DECISION J):
+ *   Layer 1 (PRIMARY) — here at Resolve stage: non-locking SELECT on system.aggregate_versions.
+ *     If event.aggregate_version <= stored latest_processed_version → terminate cleanly
+ *     (ack job, no handler invocation, no writes).
+ *   Layer 2 (defense-in-depth) — inside adapter write transaction (FLAG-P1AS4-2 / GREATEST guard).
+ *   Both layers are mandatory and non-interchangeable.
+ *
+ * PG read for Resolve guard uses DatabaseConnectionInterface (shared delivery connection —
+ * DECISION E v1.6). Non-locking SELECT (no FOR UPDATE at Resolve time — lock taken only
+ * inside the adapter write txn at Layer 2). Does NOT reuse the queue's SKIP LOCKED
+ * connection (queue uses 'queue.connection.pgsql' with PGSQL_CONNECT_FORCE_NEW).
+ *
  * Authority:
  *   Doc 8 §7         — standard execution pipeline
- *   ADR-044          — stateless; reloads WP state per event
+ *   ADR-044          — stateless; reloads WP state per event (via handlers)
  *   ADR-022          — retry limit default 10; exhaustion → dead-letter
- *   DECISION E       — no new pg_* wrapper; PostgreSQL access only via QueueProviderInterface
+ *   DECISION E v1.6  — DatabaseConnectionInterface; no new raw pg_* wrapper
+ *   DECISION J       — Resolve-stage stale guard is PRIMARY; adapter guard is defense-in-depth
  *   CLAUDE.md Rule 7 — constructor injection only
- *
- * NOTE: Handler resolution and execution are stubs in P0-S6. The EventRegistry
- * lookup, subscriber resolution, and handler invocation are wired in P1A-S1 when
- * module subscribers are registered. The claim → ack lifecycle IS fully implemented
- * here and is test-proven.
  */
 final class EventWorkerStrategy implements WorkerStrategyInterface
 {
     private const QUEUE_NAME = 'content';
 
     public function __construct(
-        private readonly QueueProviderInterface $queue,
-        private readonly EventRegistry          $eventRegistry,
-        private readonly int                    $retryLimit = 10,
+        private readonly QueueProviderInterface      $queue,
+        private readonly EventRegistry               $eventRegistry,
+        private readonly DatabaseConnectionInterface $db,
+        private readonly int                         $retryLimit = 10,
     ) {}
 
     public function execute(WorkerExecutionContext $context): bool
@@ -55,49 +68,45 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
 
         $jobId        = (string) $job['id'];
         $attemptCount = (int) $job['attempts'];
-        $eventType    = $this->extractEventType($job);
 
         try {
+            // Step 2 — Load Event: hydrate full EventInterface from system.events.
+            $event = $this->loadEvent((string) ($job['event_id'] ?? ''));
+
+            $eventType = $event->getEventType();
+
             // Step 4 — Validate: event type must be registered.
-            if ($eventType !== null && ! $this->eventRegistry->has($eventType)) {
+            if (! $this->eventRegistry->has($eventType)) {
                 throw new \RuntimeException(
                     "Event type '{$eventType}' is not registered in the EventRegistry."
                 );
             }
 
-            // Steps 5–7 — Resolve subscriber → Execute handler → Commit state.
-            // Stub in P0-S6: subscriber wiring and handler invocation happen in P1A-S1.
-            // The engine tick, claim lifecycle, and registry validation ARE exercised here.
-            $this->executeHandler($eventType, $job, $context);
+            // Step 5 — Resolve: PRIMARY stale-event guard (DECISION J Layer 1).
+            // Non-locking SELECT; fires before any handler or WP-state reload.
+            if ($this->isStale($event)) {
+                // Stale event: ack the job (no DLQ, no retry), make no writes.
+                $this->queue->complete($jobId, $context->workerId);
+                return true;
+            }
+
+            // Steps 6–7 — Execute handlers → each commits its own PG txn (DECISION 3).
+            $this->executeHandler($eventType, $event, $context);
 
             // Step 8a — Acknowledge: job completed successfully.
-            // complete() returns false when the lease was lost (visibility-timeout recovery
-            // reassigned the job to another worker). On false we abandon silently — the new
-            // owner is responsible; no second call must be made (P0-S5 fencing contract).
             $this->queue->complete($jobId, $context->workerId);
-            // Return value intentionally not checked: false = lease lost = silent abandon.
-            // The job was already processed; no harm in the new owner reprocessing it
-            // (at-least-once + idempotent — CLAUDE.md Rule 4).
 
         } catch (\Throwable $e) {
             if ($attemptCount >= $this->retryLimit) {
-                // Retry limit exhausted — move to DLQ (ADR-022).
-                // deadLetter() returns false when the lease was lost. On false we abandon
-                // silently — the new owner will dead-letter the job when its own limit is hit.
-                // No second call (release/complete) must follow a false return.
                 $this->queue->deadLetter($jobId, $context->workerId, [
                     'failure_reason'   => $e->getMessage(),
                     'stack_trace'      => $e->getTraceAsString(),
                     'attempt_count'    => $attemptCount,
                     'payload_snapshot' => $job,
                 ]);
-                // Return value intentionally not checked: false = lease lost = abandon.
             } else {
-                // Transient failure — release for retry with backoff (ADR-022).
-                // release() returns false when the lease was lost; abandon silently.
                 $backoff = $this->computeBackoffSeconds($attemptCount);
                 $this->queue->release($jobId, $context->workerId, $backoff);
-                // Return value intentionally not checked: false = lease lost = abandon.
             }
         }
 
@@ -114,39 +123,95 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
     // -------------------------------------------------------------------------
 
     /**
-     * @param array<string, mixed> $job
+     * Load a full EventInterface from system.events by event_id.
+     *
+     * @throws \RuntimeException if the event row is missing or malformed
      */
-    private function extractEventType(array $job): ?string
+    private function loadEvent(string $eventId): EventInterface
     {
-        // The event_type is expected inside the job payload JSONB field.
-        // In P1A-S1 this will be hydrated from system.events via event_id.
-        // For P0-S6 we read it directly from the job row if present.
-        if (isset($job['payload']) && is_string($job['payload'])) {
-            $payload = json_decode($job['payload'], true);
-            if (is_array($payload) && isset($payload['event_type'])) {
-                return (string) $payload['event_type'];
+        if ($eventId === '') {
+            throw new \RuntimeException('Job has no event_id; cannot load event from system.events.');
+        }
+
+        $rows = $this->db->query(
+            'SELECT id, event_type, event_version, aggregate_type, aggregate_id,
+                    aggregate_version, payload, checksum, source_updated_at,
+                    created_at, correlation_id, causation_id
+             FROM   system.events
+             WHERE  id = $1::uuid',
+            [$eventId]
+        );
+
+        if (empty($rows)) {
+            throw new \RuntimeException(
+                "Event '{$eventId}' not found in system.events."
+            );
+        }
+
+        $row = $rows[0];
+
+        $payload = [];
+        if (isset($row['payload']) && is_string($row['payload'])) {
+            $decoded = json_decode($row['payload'], true);
+            if (is_array($decoded)) {
+                $payload = $decoded;
             }
         }
 
-        return null;
+        return new OutboxEvent(
+            id:               (string) $row['id'],
+            eventType:        (string) $row['event_type'],
+            eventVersion:     (int) $row['event_version'],
+            aggregateType:    (string) $row['aggregate_type'],
+            aggregateId:      (string) $row['aggregate_id'],
+            aggregateVersion: (int) $row['aggregate_version'],
+            payload:          $payload,
+            checksum:         (string) $row['checksum'],
+            sourceUpdatedAt:  new \DateTimeImmutable((string) $row['source_updated_at'], new \DateTimeZone('UTC')),
+            createdAt:        new \DateTimeImmutable((string) $row['created_at'], new \DateTimeZone('UTC')),
+            correlationId:    (string) $row['correlation_id'],
+            causationId:      isset($row['causation_id']) && $row['causation_id'] !== '' ? (string) $row['causation_id'] : null,
+        );
     }
 
     /**
-     * Execute the handler for the given event type.
+     * Resolve-stage stale-event guard (DECISION J — Layer 1, PRIMARY).
      *
-     * STUB — P0-S6: no subscribers are registered yet. This method is the hook
-     * point that P1A-S1 will fill in when module event subscribers exist.
-     * The stub logs nothing and returns cleanly so the ack path can be exercised.
+     * Non-locking SELECT on system.aggregate_versions. Returns true when the event
+     * is stale (aggregate_version <= stored latest_processed_version). A missing row
+     * means no event for this aggregate has been processed yet — event is not stale.
+     */
+    private function isStale(EventInterface $event): bool
+    {
+        $rows = $this->db->query(
+            'SELECT latest_processed_version
+             FROM   system.aggregate_versions
+             WHERE  aggregate_type = $1 AND aggregate_id = $2',
+            [$event->getAggregateType(), $event->getAggregateId()]
+        );
+
+        if (empty($rows)) {
+            return false;
+        }
+
+        $stored = (int) $rows[0]['latest_processed_version'];
+        return $event->getAggregateVersion() <= $stored;
+    }
+
+    /**
+     * Invoke all registered handlers for the event type (Steps 6–7).
      *
-     * @param array<string, mixed> $job
+     * Handlers commit their own PG transaction (DECISION 3). Each handler is a
+     * callable registered in EventRegistry — typically a ContentSubscriber instance.
      */
     private function executeHandler(
-        ?string $eventType,
-        array $job,
+        string $eventType,
+        EventInterface $event,
         WorkerExecutionContext $context,
     ): void {
-        // P1A-S1 TODO: resolve subscriber from EventRegistry; invoke handler;
-        // handler commits its own PG transaction (DECISION 3).
+        foreach ($this->eventRegistry->getHandlers($eventType) as $handler) {
+            ($handler)($event);
+        }
     }
 
     /**

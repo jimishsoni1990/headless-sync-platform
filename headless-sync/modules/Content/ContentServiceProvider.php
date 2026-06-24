@@ -9,6 +9,20 @@ use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\EventProviderInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Events\EventRegistry;
+use HSP\Modules\Content\Adapters\CategoryAdapter;
+use HSP\Modules\Content\Adapters\PageAdapter;
+use HSP\Modules\Content\Adapters\PostAdapter;
+use HSP\Modules\Content\Events\ContentEventTypes;
+use HSP\Modules\Content\Extractors\CategoryExtractor;
+use HSP\Modules\Content\Extractors\PageExtractor;
+use HSP\Modules\Content\Extractors\PostExtractor;
+use HSP\Modules\Content\Handlers\CategoryTombstoneHandler;
+use HSP\Modules\Content\Handlers\CategoryUpsertHandler;
+use HSP\Modules\Content\Handlers\PageTombstoneHandler;
+use HSP\Modules\Content\Handlers\PageUpsertHandler;
+use HSP\Modules\Content\Handlers\PostTombstoneHandler;
+use HSP\Modules\Content\Handlers\PostUpsertHandler;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
@@ -17,6 +31,14 @@ use HSP\Modules\Content\Resources\PageResource;
 use HSP\Modules\Content\Resources\PostResource;
 use HSP\Modules\Content\Rest\ContentRestRegistrar;
 use HSP\Modules\Content\Rest\ContentRestRegistrarFactory;
+use HSP\Modules\Content\Subscribers\ContentSubscriber;
+use HSP\Modules\Content\Subscribers\ContentSubscriberRegistrar;
+use HSP\Modules\Content\Transformers\CategoryTransformer;
+use HSP\Modules\Content\Transformers\PageTransformer;
+use HSP\Modules\Content\Transformers\PostTransformer;
+use HSP\Modules\Content\Validation\CategoryValidator;
+use HSP\Modules\Content\Validation\PageValidator;
+use HSP\Modules\Content\Validation\PostValidator;
 
 /**
  * Registers all Content module bindings in the DI container.
@@ -87,9 +109,9 @@ final class ContentServiceProvider extends ServiceProvider
         //
         // ContentRestRegistrarFactory is passed instead of a bare \Closure so that
         // ContentModule holds no Container reference (ADR-012 / FLAG-P1AS6A-5).
-        // Each per-dep factory closure delegates to the already-registered container
-        // singleton at call-time; construction is deferred to rest_api_init so no
-        // PG connection is opened at plugins_loaded:5 module-load time.
+        // ContentSubscriberRegistrar follows the same typed-factory pattern so that
+        // EventRegistry wiring happens during ContentModule::register() without a
+        // Container reference in ContentModule.
         $container->singleton(ContentModule::class, fn (Container $c) =>
             new ContentModule(
                 $c->get(HookWiring::class),
@@ -102,7 +124,116 @@ final class ContentServiceProvider extends ServiceProvider
                     fn () => $c->get(PostResource::class),
                     fn () => $c->get(CategoryResource::class),
                 ),
+                new ContentSubscriberRegistrar(
+                    fn () => $c->get(EventRegistry::class),
+                    fn () => $c->get(ContentSubscriber::class),
+                ),
             )
+        );
+
+        // -------------------------------------------------------------------------
+        // Adapters (P1A-S4 implementations — injected into handlers)
+        // -------------------------------------------------------------------------
+
+        $container->singleton(PageAdapter::class, fn (Container $c) =>
+            new PageAdapter($c->get(DatabaseConnectionInterface::class))
+        );
+
+        $container->singleton(PostAdapter::class, fn (Container $c) =>
+            new PostAdapter($c->get(DatabaseConnectionInterface::class))
+        );
+
+        $container->singleton(CategoryAdapter::class, fn (Container $c) =>
+            new CategoryAdapter($c->get(DatabaseConnectionInterface::class))
+        );
+
+        // -------------------------------------------------------------------------
+        // WpContentLoader — live WP implementation wired here; fake injected in tests.
+        // -------------------------------------------------------------------------
+
+        $container->singleton(WpContentLoader::class, fn () => new WpContentLoaderImpl());
+
+        // -------------------------------------------------------------------------
+        // Validators, extractors, transformers (stateless; safe to share as singletons)
+        // -------------------------------------------------------------------------
+
+        $container->singleton(PageValidator::class,    fn () => new PageValidator());
+        $container->singleton(PostValidator::class,    fn () => new PostValidator());
+        $container->singleton(CategoryValidator::class, fn () => new CategoryValidator());
+
+        $container->singleton(PageExtractor::class,    fn (Container $c) => new PageExtractor($c->get(PageValidator::class)));
+        $container->singleton(PostExtractor::class,    fn (Container $c) => new PostExtractor($c->get(PostValidator::class)));
+        $container->singleton(CategoryExtractor::class, fn (Container $c) => new CategoryExtractor($c->get(CategoryValidator::class)));
+
+        $container->singleton(PageTransformer::class,     fn () => new PageTransformer());
+        $container->singleton(PostTransformer::class,     fn () => new PostTransformer());
+        $container->singleton(CategoryTransformer::class, fn () => new CategoryTransformer());
+
+        // -------------------------------------------------------------------------
+        // Upsert handlers
+        // -------------------------------------------------------------------------
+
+        $container->singleton(PageUpsertHandler::class, fn (Container $c) =>
+            new PageUpsertHandler(
+                $c->get(WpContentLoader::class),
+                $c->get(PageExtractor::class),
+                $c->get(PageTransformer::class),
+                $c->get(PageAdapter::class),
+            )
+        );
+
+        $container->singleton(PostUpsertHandler::class, fn (Container $c) =>
+            new PostUpsertHandler(
+                $c->get(WpContentLoader::class),
+                $c->get(PostExtractor::class),
+                $c->get(PostTransformer::class),
+                $c->get(PostAdapter::class),
+            )
+        );
+
+        $container->singleton(CategoryUpsertHandler::class, fn (Container $c) =>
+            new CategoryUpsertHandler(
+                $c->get(WpContentLoader::class),
+                $c->get(CategoryExtractor::class),
+                $c->get(CategoryTransformer::class),
+                $c->get(CategoryAdapter::class),
+            )
+        );
+
+        // -------------------------------------------------------------------------
+        // Tombstone handlers
+        // -------------------------------------------------------------------------
+
+        $container->singleton(PageTombstoneHandler::class,     fn (Container $c) =>
+            new PageTombstoneHandler($c->get(PageAdapter::class))
+        );
+
+        $container->singleton(PostTombstoneHandler::class,     fn (Container $c) =>
+            new PostTombstoneHandler($c->get(PostAdapter::class))
+        );
+
+        $container->singleton(CategoryTombstoneHandler::class, fn (Container $c) =>
+            new CategoryTombstoneHandler($c->get(CategoryAdapter::class))
+        );
+
+        // -------------------------------------------------------------------------
+        // ContentSubscriber — maps all 9 OPEN-1 event types to their typed handlers.
+        // ContentSubscriberRegistrar (injected into ContentModule) calls register()
+        // during ContentModule::register() to wire this into EventRegistry.
+        // -------------------------------------------------------------------------
+
+        $container->singleton(ContentSubscriber::class, fn (Container $c) =>
+            new ContentSubscriber([
+                ContentEventTypes::PAGE_CREATED     => $c->get(PageUpsertHandler::class),
+                ContentEventTypes::PAGE_UPDATED     => $c->get(PageUpsertHandler::class),
+                ContentEventTypes::PAGE_DELETED     => $c->get(PageTombstoneHandler::class),
+                ContentEventTypes::POST_CREATED     => $c->get(PostUpsertHandler::class),
+                ContentEventTypes::POST_UPDATED     => $c->get(PostUpsertHandler::class),
+                ContentEventTypes::POST_DELETED     => $c->get(PostTombstoneHandler::class),
+                ContentEventTypes::CATEGORY_CREATED => $c->get(CategoryUpsertHandler::class),
+                ContentEventTypes::CATEGORY_UPDATED => $c->get(CategoryUpsertHandler::class),
+                ContentEventTypes::CATEGORY_DELETED => $c->get(CategoryTombstoneHandler::class),
+            ])
         );
     }
 }

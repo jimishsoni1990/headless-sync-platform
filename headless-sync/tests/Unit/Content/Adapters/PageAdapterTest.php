@@ -278,6 +278,91 @@ final class PageAdapterTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // tombstone() — DECISION I (v1.10)
+    // -------------------------------------------------------------------------
+
+    public function test_tombstone_opens_transaction_and_commits(): void
+    {
+        $event = new FakeAdapterEvent(
+            aggregateType: 'page',
+            aggregateId:   '1',
+        );
+
+        $this->adapter->tombstone('page', '1', $event);
+
+        $methods = $this->db->loggedMethods();
+        self::assertContains('beginTransaction', $methods);
+        self::assertContains('commit', $methods);
+        self::assertNotContains('rollback', $methods);
+    }
+
+    public function test_tombstone_updates_deleted_at_on_pages_table(): void
+    {
+        $event = new FakeAdapterEvent(aggregateType: 'page', aggregateId: '1');
+        $this->adapter->tombstone('page', '1', $event);
+
+        self::assertSame(1, $this->db->countExecuteContaining('UPDATE content.pages'));
+    }
+
+    public function test_tombstone_records_processed_event(): void
+    {
+        $event = new FakeAdapterEvent(aggregateType: 'page', aggregateId: '1');
+        $this->adapter->tombstone('page', '1', $event);
+
+        self::assertSame(1, $this->db->countExecuteContaining('processed_events'));
+    }
+
+    public function test_tombstone_upserts_aggregate_version(): void
+    {
+        $event = new FakeAdapterEvent(aggregateType: 'page', aggregateId: '1');
+        $this->adapter->tombstone('page', '1', $event);
+
+        self::assertSame(1, $this->db->countExecuteContaining('aggregate_versions'));
+    }
+
+    public function test_tombstone_deleted_at_derived_from_source_updated_at(): void
+    {
+        $ts = new \DateTimeImmutable('2024-06-15 10:00:00', new \DateTimeZone('UTC'));
+        $event = new FakeAdapterEvent(
+            aggregateType:   'page',
+            aggregateId:     '1',
+            sourceUpdatedAt: $ts,
+        );
+
+        $this->adapter->tombstone('page', '1', $event);
+
+        $updateCall = current(array_filter(
+            $this->db->log,
+            fn ($e) => $e['method'] === 'execute' && str_contains($e['sql'], 'UPDATE content.pages')
+        ));
+        self::assertNotFalse($updateCall);
+        self::assertStringContainsString('2024-06-15', $updateCall['params'][0]);
+    }
+
+    public function test_tombstone_idempotent_on_missing_row(): void
+    {
+        // If the projection row doesn't exist, UPDATE affects 0 rows → still commits (no-op).
+        $event = new FakeAdapterEvent(aggregateType: 'page', aggregateId: '999');
+        $this->adapter->tombstone('page', '999', $event);
+
+        self::assertContains('commit', $this->db->loggedMethods());
+    }
+
+    public function test_tombstone_rollback_on_failure(): void
+    {
+        $this->db->failNextExecute(); // UPDATE throws
+
+        $event = new FakeAdapterEvent(aggregateType: 'page', aggregateId: '1');
+
+        $this->expectException(\HSP\Core\Database\Exception\DatabaseException::class);
+        try {
+            $this->adapter->tombstone('page', '1', $event);
+        } finally {
+            self::assertContains('rollback', $this->db->loggedMethods());
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // bulkPersist() — Phase 1A stub (FLAG-P1AS4-3, architect ruling 2026-06-23)
     // -------------------------------------------------------------------------
 

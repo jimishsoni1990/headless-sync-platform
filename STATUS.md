@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-24 (P1A-S6a approved)  
-**Next session: P1A-S6b — Content Subscriber/Handler spine**
+**Last updated:** 2026-06-24 (P1A-S6b approved)  
+**Next session: P1A-S6 — Next.js validation + end-to-end DoD**
 
 ---
 
@@ -34,7 +34,7 @@
 - [x] P1A-S4 Content migrations + PostgreSQL adapters
 - [x] P1A-S5 REST Delivery API
 - [x] P1A-S6a Bootstrap/DI fix — module boot + REST routes
-- [ ] P1A-S6b Content Subscriber/Handler spine
+- [x] P1A-S6b Content Subscriber/Handler spine
 - [ ] P1A-S6 Next.js validation + end-to-end DoD
 
 ### Early Operational Baseline
@@ -182,9 +182,11 @@ These two are compatible **only if** the canonical model and the PostgreSQL proj
 
 ### FLAG-P1AS4-2 — aggregate_versions upsert monotonicity
 
-**Raised:** 2026-06-23 | **Session:** P1A-S4 | **Status:** Resolved — ARCHITECTURE_DECISIONS.md v1.8 (2026-06-23)
+**Raised:** 2026-06-23 | **Session:** P1A-S4 | **Status:** Resolved — ARCHITECTURE_DECISIONS.md v1.8 (2026-06-23); amended by DECISION J v1.10 (2026-06-24)
 
 **Resolution:** Monotonic guard adopted. The `system.aggregate_versions` upsert in all three adapters uses `GREATEST()` so `latest_processed_version` only ever advances. Worker Resolve step remains the primary stale-event guard; the database GREATEST() guard provides defense-in-depth. Integration test `test_aggregate_versions_never_regresses_on_out_of_order_delivery` confirms the guard holds against live PostgreSQL.
+
+**Amendment (DECISION J, 2026-06-24 — `docs/ARCHITECTURE_DECISIONS.md` v1.10):** The v1.8 ruling said "worker owns stale-event detection" without specifying the exact location in the pipeline. DECISION J clarifies: the **Resolve stage** (Step 4 of the Doc 8 §7 pipeline) is the PRIMARY, authoritative stale-event gate — `EventWorkerStrategy` performs a PG read of `system.aggregate_versions` before handler invocation and terminates early if the event is stale. The adapter-side FOR UPDATE + GREATEST guard is MANDATORY defense-in-depth for the TOCTOU window. Both layers are binding; neither replaces the other.
 
 ---
 
@@ -258,11 +260,13 @@ Option B selected — new session P1A-S6a authorized for all three gaps:
 
 **What changed:** `QueueServiceProvider` received a new `singleton(DatabaseConnectionInterface::class, ...)` binding (lines 38–55) that opens a `\pg_connect()` connection without `PGSQL_CONNECT_FORCE_NEW` and returns a `PostgresDatabaseConnection` wrapper. This was added to satisfy `ContentServiceProvider`'s query-provider dependencies, which need `DatabaseConnectionInterface`.
 
+**Scope extended (P1A-S6b, 2026-06-24):** This binding is now also exercised at runtime by `EventWorkerStrategy`'s Resolve-stage stale-guard read. `WorkerServiceProvider` injects `$c->get(DatabaseConnectionInterface::class)` as the third constructor arg to `EventWorkerStrategy`; the Resolve-stage `isStale()` call performs a non-locking `SELECT` on `system.aggregate_versions` through this shared connection. The blast radius of this flag therefore covers not only REST delivery queries (`ContentRestRegistrar` / query providers) but also the worker Resolve-stage PG read path — both are live in P1A-S6b.
+
 **Frozen sessions / docs touched:**
-- **P0-S5:** Introduced `DatabaseQueueConnection` wrapping a `PGSQL_CONNECT_FORCE_NEW` handle specifically to prevent connection-pool sharing on the `SKIP LOCKED` claim path. The new binding opens a *second* connection via the same DSN without `FORCE_NEW`. PHP's libpq may return a pooled handle for the same DSN if one already exists in the process (e.g., `'outbox.connection.pgsql'` in `OutboxServiceProvider` uses the same DSN). Connection sharing between `DatabaseConnectionInterface` (REST delivery) and any concurrent transactional consumer in the same process would be unsafe.
+- **P0-S5:** Introduced `DatabaseQueueConnection` wrapping a `PGSQL_CONNECT_FORCE_NEW` handle specifically to prevent connection-pool sharing on the `SKIP LOCKED` claim path. The new binding opens a *second* connection via the same DSN without `FORCE_NEW`. PHP's libpq may return a pooled handle for the same DSN if one already exists in the process (e.g., `'outbox.connection.pgsql'` in `OutboxServiceProvider` uses the same DSN). Connection sharing between `DatabaseConnectionInterface` (REST delivery OR Resolve-stage worker read) and any concurrent transactional consumer in the same process would be unsafe.
 - **DECISION E v1.6:** Authorized `DatabaseConnectionInterface` as the shared runtime PG abstraction but scoped consolidation to P0-S7 and declared: *"no new raw `pg_*` wrapper may be introduced in P0-S6."* This binding introduces a new `pg_connect()` call outside the three previously accepted wrappers.
 
-**Ruling needed:** (a) Is opening a second `pg_connect()` without `FORCE_NEW` for REST delivery queries acceptable, given that libpq may pool it with `outbox.connection.pgsql`? (b) Should `DatabaseConnectionInterface` be sourced from an already-authorized connection instead (e.g., share `outbox.connection.pgsql` or a dedicated delivery connection with `FORCE_NEW`)? (c) Does this placement in `QueueServiceProvider` (rather than a dedicated `DeliveryServiceProvider`) violate DECISION E's allocation intent?
+**Ruling needed:** (a) Is opening a second `pg_connect()` without `FORCE_NEW` for REST delivery queries and the worker Resolve-stage read acceptable, given that libpq may pool it with `outbox.connection.pgsql`? (b) Should `DatabaseConnectionInterface` be sourced from an already-authorized connection instead (e.g., share `outbox.connection.pgsql` or a dedicated delivery connection with `FORCE_NEW`)? (c) Does this placement in `QueueServiceProvider` (rather than a dedicated `DeliveryServiceProvider`) violate DECISION E's allocation intent?
 
 ---
 
@@ -315,7 +319,7 @@ Option B selected — new session P1A-S6a authorized for all three gaps:
 
 ### FLAG-P1AS6-1 — Missing Content event handler layer: queue → PG projection never implemented
 
-**Raised:** 2026-06-24 | **Session:** P1A-S6 | **Status:** Open — requires architect ruling
+**Raised:** 2026-06-24 | **Session:** P1A-S6 | **Status:** Partially resolved — architect rulings issued 2026-06-24; implementation deferred to P1A-S6b
 
 **What is missing:**
 
@@ -337,24 +341,15 @@ The following E2E DoD items **cannot be satisfied** without the handler layer:
 
 The live infrastructure (MySQL, PostgreSQL Docker, WordPress, worker engine) is fully available. The gap is in the business logic layer within `modules/Content/` scope.
 
-**Blocked by session brief constraint:**
+**Architect rulings issued 2026-06-24 (pre-P1A-S6b):**
 
-The P1A-S6 brief explicitly states: *"Out of scope (do not touch): any core/ or modules/Content/ business logic."*
+- **Worker State Loading (DECISION H — `docs/ARCHITECTURE_DECISIONS.md` v1.10):** Option B approved. Workers reload current WordPress state via a defined WP bootstrap path in the worker runtime. Event payload enrichment (Option A) rejected. Direct-MySQL reload (Option C) rejected. ADR-044 reaffirmed. Operational bootstrap details deferred to Doc 10 / ops session.
 
-This constraint blocks implementing the handler layer in this session without a ruling.
+- **Delete Processing (DECISION I — `docs/ARCHITECTURE_DECISIONS.md` v1.10):** Option C approved. `content.*.deleted` events follow a dedicated tombstone path consuming only the event envelope (aggregate identity + metadata); performs soft-delete projection; no reload, no extract, no transform. `AdapterInterface` gains `tombstone()` method. Canonical models and OPEN-11 checksum surface UNCHANGED. DECISION 3 three-op atomicity applies to the tombstone path.
 
-**Resolution needed (architect ruling required):**
+- **Stale-Event Guard (DECISION J — `docs/ARCHITECTURE_DECISIONS.md` v1.10):** Resolve-stage guard is PRIMARY, authoritative stale-event gate. Adapter in-txn FOR UPDATE + GREATEST guard is MANDATORY defense-in-depth. Authorized for P1A-S6b: PG read dependency on `EventWorkerStrategy`, `WorkerServiceProvider` wiring, Resolve-stage aggregate-version lookup, early termination before handler execution.
 
-One of:
-- **Option A — Ruling to implement handler layer in P1A-S6:** Authorize writing the Content event handler (Extractor → Transformer → Adapter pipeline wiring) inside `modules/Content/` as in-scope for P1A-S6 E2E. This is the missing connector between queue and PG projection — it calls already-frozen code (Extractors, Transformers, Adapters) and registers handlers in EventRegistry via ContentModule.
-- **Option B — Split P1A-S6:** Implement the handler layer as a new P1A-S6a sub-session (modifying modules/Content/ is authorized), then complete E2E validation as P1A-S6b.
-- **Option C — Defer E2E to P1A-S7:** Declare a new P1A-S7 session that (1) implements the handler layer, (2) adds WP-CLI worker launch command, (3) runs E2E validation. P1A-S6 closes with Next.js app, DoD items that don't require a live projection, and this flag.
-
-**What CAN proceed without a ruling:**
-- Type-canon check (content.* migrations): **PASS** — all timestamps TIMESTAMPTZ, all checksums VARCHAR(64).
-- Module isolation check: **PASS** — no cross-module imports, no service-locator calls in business logic.
-- Next.js consumer app (depends only on API contract, not on live projection data).
-- Doc housekeeping: add GET /api/v1/categories/{slug} to IMPLEMENTATION_PLAN.md §4 (FLAG-P1AS5-1).
+**Resolution trigger:** FLAG is fully resolved when P1A-S6b ships the Content Subscriber/Handler spine implementing all three rulings above.
 
 ---
 
@@ -379,5 +374,6 @@ One of:
 2026-06-23 | P1A-S2 | Shipped: modules/Content/SourceModels/ (PageSourceModel, PostSourceModel, CategorySourceModel — all readonly/immutable, strongly typed, no canonical model shape); modules/Content/Extractors/ (PageExtractor, PostExtractor, CategoryExtractor — accept already-loaded raw data arrays, no global WP calls, no DB, delegate to validators); modules/Content/Validation/ (PageValidator, PostValidator, CategoryValidator — fail-fast on missing ID/slug/status/type, collect multiple violations into ValidationException.getViolations(); ValidationException typed exception). Tests: tests/Unit/Content/SourceModels/ (PageSourceModelTest ×4, PostSourceModelTest ×4, CategorySourceModelTest ×4); tests/Unit/Content/Extractors/ (PageExtractorTest ×20, PostExtractorTest ×22, CategoryExtractorTest ×17); tests/Unit/Content/Validation/ (PageValidatorTest ×10, PostValidatorTest ×13, CategoryValidatorTest ×11). P1A-S2 tests: 247 clean, 0 deprecations. Full unit suite: 451 tests, 0 failed, 1 pre-existing deprecation (@dataProvider doc-comment in DatabaseQueueProviderTest, carried from P0-S5). No DB dependency; no WordPress function calls in any unit path. | No new flags.
 2026-06-23 | P1A-S3 | Shipped: CanonicalPost/Page/Category (implement CanonicalModelInterface; order-insensitive sha256 getChecksum — sort categoryIds, ksort meta, ATOM timestamps, \0 separator, pinned digests); PostTransformer/PageTransformer/CategoryTransformer (pure SourceModel→CanonicalModel, title trimmed, other strings verbatim); tests/Unit/Content/Transformers/ (PostTransformerTest ×13, PageTransformerTest ×14, CategoryTransformerTest ×14) + tests/Unit/Content/CanonicalModels/ (CanonicalPostTest ×11, CanonicalPageTest ×11, CanonicalCategoryTest ×10, incl. order-independence + pinned-digest tests). meta flat-scalar invariant confirmed enforced at extraction boundary (P1A-S2 extractors cast all values to string; ksort sufficient, no recursive normalisation needed). 528 tests, 0 failed, 0 skipped, 1 pre-existing deprecation. | FLAG-P1AS3-1 raised: open, deferred to P1A-S4 kickoff — DECISION 3 write-suppress compatibility: architect must rule Option A (adapter uses canonical.getChecksum() directly) or Option B (adapter computes separate projection-shaped checksum) before wiring write-suppress.
 2026-06-23 | housekeeping | OPEN-11 recorded in ADR (Option A, lossless Phase 1A projection, canonical checksum authoritative); FLAG-P1AS3-1 resolved. No code change.
+2026-06-24 | P1A-S6b | Shipped: WpContentLoader contract + WpContentLoaderImpl (get_post/get_post_meta/get_term/wp_get_post_terms); AdapterInterface::tombstone() + PageAdapter/PostAdapter/CategoryAdapter tombstone impls (soft-delete, DECISION I, DECISION 3 atomicity, deleted_at = source_updated_at); WpContentLoaderImpl shape matched by FakeWpContentLoader (all extractor-consumed keys identical); ContentSubscriber (9-type routing, OPEN-1 types, RuntimeException on missing handler); ContentUpsertHandlerInterface; Page/Post/CategoryUpsertHandler (loader→extractor→transformer→adapter pipeline, DECISION H Option B); Page/Post/CategoryTombstoneHandler (event-envelope-only, no WP reload); EventWorkerStrategy::executeHandler() un-stubbed (EventRegistry handler dispatch); EventWorkerStrategy Resolve-stage stale guard added (PRIMARY gate, DECISION J Layer 1 — non-locking SELECT on system.aggregate_versions, <=stored → ack + zero writes); WorkerServiceProvider wired DatabaseConnectionInterface to EventWorkerStrategy (DECISION E, no new pg_connect, queue FORCE_NEW handle not entangled); ContentModule + ContentServiceProvider wired all 9 handlers + ContentSubscriber into EventRegistry. Integration tests: HandlerSpineIntegrationTest (12 tests — persist×3, tombstone×4, idempotent re-delivery×2, adapter GREATEST guard×1, subscriber routing×2; adapter stale write-set assertions strengthened: stale event's own processed_events row proven by ID, aggregate_versions row count asserted); ResolveStageGuardIntegrationTest (4 tests — zero-writes+no-handler+job-acked on stale event proven on live PG, non-stale does not fire, equal-version treated as stale, missing aggregate_versions row not stale). Unit tests: ContentHandlerTest (9), ContentSubscriberTest (3), adapter tombstone unit tests added to Page/Post/CategoryAdapterTest (6 each = 18 total). Suite: 784 tests, 1664 assertions, 0 failures, 0 errors, 0 skipped, 1 pre-existing deprecation. DECISIONS H/I/J recorded in ARCHITECTURE_DECISIONS.md (step 0 of session). FLAG-P1AS6A-1 blast radius extended: now covers worker Resolve-stage PG read path in addition to REST delivery; still open, still E2E-blocking. FLAG-P1AS6-1 fully resolved. | no new flags.
 2026-06-23 | P1A-S4 | Shipped: modules/Content/Migrations/ (content schema; pages/posts/taxonomies/entity_taxonomies; TIMESTAMPTZ + VARCHAR(64) canon; entity_taxonomies pure join table) and modules/Content/Adapters/ (Page/Post/Category persist() — DECISION 3 three-op atomic txn; OPEN-11 Option A canonical-checksum write-suppress; in-txn lockAggregateVersion() FOR UPDATE guard; monotonic GREATEST() aggregate_versions; full-replace entity_taxonomies rewrite). bulkPersist() fail-fast LogicException stub (Phase 1A). Tests: unit adapter suites + live-PG atomicity/idempotency/join-rewrite/interleave integration. Item-6 TOCTOU race fixed (version guard moved inside txn behind FOR UPDATE). Suite 598/598. | Flags resolved: FLAG-P1AS4-1 (pure join table), FLAG-P1AS4-2 (monotonic guard), FLAG-P1AS4-3 (bulkPersist Phase 1A throwing stub) — all architect-ruled 2026-06-23.
 

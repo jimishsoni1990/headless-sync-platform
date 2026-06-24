@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.8  
+Version: 1.10  
 Status: Accepted  
 Owner: Architecture  
 
@@ -21,13 +21,14 @@ Owner: Architecture
 | 1.7 | 2026-06-23 | OPEN-11: Option A — Phase 1A projection is a lossless representation of the canonical model; adapter persists the canonical checksum directly; no second checksum path; divergent projections require a future ADR. Resolves FLAG-P1AS3-1. |
 | 1.8 | 2026-06-23 | FLAG-P1AS4-1 resolved (architect ruling): content.entity_taxonomies is a pure join table — (entity_id UUID, taxonomy_id UUID) composite PK only; no timestamps/checksums/metadata unless a future ADR adds relationship attributes. FLAG-P1AS4-2 resolved (architect ruling): system.aggregate_versions uses a monotonic guarded upsert — stored version only ever advances (max(current, incoming)); worker owns stale-event detection; DB guard is defense-in-depth. |
 | 1.9 | 2026-06-24 | DECISION F: REST Delivery API contracts — scoped Option A (P1A-S5). Four core contracts added to `core/Contracts/`: `QueryProviderInterface`, `ResourceInterface`, `FilterSet`, `CursorPage`. ADR-038 transport-agnosticism enforced: no WP/HTTP types in contracts, Query Providers, or Resources — WP types confined to REST route registration only. Cursor pagination uses (primary_sort, id) deterministic tiebreaker. status filter constrained to public set {publish} (OPEN-10); non-public values return 400. category filter on /posts resolves via projection-side join (content.taxonomies.slug); never by WP term_id. IMPLEMENTATION_PLAN.md §4 five-bullet undercount flagged (categories/{slug} missing). |
+| 1.10 | 2026-06-24 | DECISION H: Worker State Loading — Option B approved; reaffirms ADR-044 (state-sync, not event-sourcing); workers reload current WordPress state via defined WP bootstrap path in worker runtime; event payload enrichment (Option A) rejected (contradicts ADR-044 + reconciliation principle); direct-MySQL reload (Option C) rejected (bypasses WordPress as authoritative access layer). Resolves FLAG-P1AS6-1 (worker state question). DECISION I: Delete Processing — Option C approved; content.*.deleted events follow dedicated tombstone path consuming only event envelope (aggregate identity + metadata); soft-delete projection performed; no reload, no extract, no transform; canonical models and canonical-checksum surface UNCHANGED; OPEN-11 intact; AdapterInterface gains tombstone/soft-delete method (contract change). DECISION J: Stale-Event Guard — amends FLAG-P1AS4-2; Resolve-stage guard is PRIMARY, authoritative stale-event gate; adapter in-txn FOR UPDATE + GREATEST guard is MANDATORY defense-in-depth (Resolve reads outside write txn and cannot close the Resolve→write TOCTOU window alone); authorizes for P1A-S6b: PG read dependency on EventWorkerStrategy, WorkerServiceProvider wiring, Resolve-stage aggregate-version lookup, early termination before handler execution. |
 
 ---
 
 ## Table of Contents
 
 1. [Open Items (OPEN-1 through OPEN-11)](#open-items)
-2. [Decisions (DECISION 1 through DECISION 3, DECISION A, DECISION D, DECISION E)](#decisions)
+2. [Decisions (DECISION 1 through DECISION 3, DECISION A, DECISION D through DECISION J)](#decisions)
 3. [Implications Carried into Schema](#implications-carried-into-schema)
 
 ---
@@ -486,6 +487,87 @@ Consolidation is deferred to P0-S7. No consolidation occurs during P0-S5 or P0-S
 
 ---
 
+### DECISION H — Worker State Loading (ADR-044 Reaffirmation)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-24 |
+| **Session** | P1A-S6b pre-implementation |
+| **Resolves** | FLAG-P1AS6-1 (worker state loading question) |
+| **Reaffirms** | ADR-044 (stateless workers, state-synchronization model) |
+
+**Ruling — Option B approved:** Workers reload current WordPress state during event processing via a defined WordPress bootstrap path in the worker runtime. The platform is a **state-synchronization** system, not an event-sourcing system (ADR-044). On each event, the worker reads the current authoritative WordPress state and projects it into the delivery store.
+
+**Option A rejected — event payload enrichment:** Enriching the event payload with entity snapshots at capture time is rejected. A captured snapshot represents WordPress state at capture time, not at process time; replaying events with stale snapshots would project outdated state into delivery, contradicting the reconciliation principle (ADR-045, ADR-027). This would also contradict ADR-044 directly.
+
+**Option C rejected — direct-MySQL reload:** Reading WordPress entity state directly from MySQL (bypassing the WordPress object layer) is rejected. WordPress is the authoritative access layer for its own data; a second raw-MySQL path in handlers would introduce a second persistence dependency, bypass WordPress caching, and require handlers to stay synchronized with WordPress schema internals. The WordPress bootstrap path in Option B already provides safe, authoritative entity access.
+
+**Operational bootstrap details:** The exact WP bootstrap sequence within the worker runtime (e.g., which WP functions are available, how `wp-load.php` is invoked, which hooks fire in the worker process) is an operational concern. This detail is deferred to Doc 10 / an ops-focused session. It must not be resolved by assumption in handler code.
+
+**Rationale:** State-synchronization means each event is an instruction to "sync this aggregate" — the handler fetches current state from WordPress and overwrites the projection. This is the correct model for a CMS sync platform where WordPress is system of record. Payload enrichment couples event schema to the handler's data requirements, bloating the event store and preventing the platform from being used for replay-to-current-state scenarios.
+
+---
+
+### DECISION I — Delete Processing via Tombstone Path
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-24 |
+| **Session** | P1A-S6b pre-implementation |
+| **Resolves** | FLAG-P1AS6-1 (delete processing question) |
+| **Amends** | DECISION D (AdapterInterface — new method added) |
+| **Consistent with** | OPEN-11 (canonical models and checksum surface unchanged) |
+
+**Ruling — Option C approved:** `content.*.deleted` events follow a **dedicated tombstone path** that is structurally separate from the create/update path. The tombstone path:
+
+1. Consumes only the **event envelope** (aggregate type + aggregate ID + event metadata). No WordPress state reload occurs.
+2. Performs a **soft-delete projection**: sets `deleted_at = now()` on the target `content.*` row (consistent with DECISION F's `WHERE deleted_at IS NULL` filter invariant).
+3. Does **not** invoke the Extractor, Transformer, or canonical model pipeline. There is no WordPress entity to reload — it may have been permanently deleted or transitioned to a non-public state.
+4. Records the tombstone in `system.processed_events` and updates `system.aggregate_versions`, inside the same single-PostgreSQL-transaction rule (DECISION 3 three-op atomicity — projection upsert → `system.processed_events` insert → `system.aggregate_versions` upsert).
+
+**Canonical models and OPEN-11 checksum surface: UNCHANGED.** The tombstone path never computes a new canonical checksum and never writes the `checksum` column on the target row. The stored checksum from the last create/update event is preserved as-is. OPEN-11 remains fully intact.
+
+**AdapterInterface contract change:** `AdapterInterface` gains a tombstone/soft-delete method:
+
+```php
+public function tombstone(string $aggregateType, string $aggregateId, EventInterface $event): void;
+```
+
+This is an additive contract change. All existing adapter implementations (PageAdapter, PostAdapter, CategoryAdapter) must implement it. The method sets `deleted_at` on the target row inside a single-PG transaction covering all three DECISION 3 ops. If the target row does not exist (e.g., the create event was never processed), the tombstone is a no-op for the projection write but still records in `system.processed_events` and updates `system.aggregate_versions`.
+
+**Rationale:** Routing delete events through the same extract→transform→persist pipeline is unsound: WordPress state may not be available (the post may have been permanently deleted), and the canonical model for a soft-deleted entity is undefined. A dedicated tombstone path with a minimal contract keeps the delete semantic explicit, avoids phantom WordPress reads, and preserves the clean separation between the create/update pipeline and the delete semantic.
+
+---
+
+### DECISION J — Stale-Event Guard: Resolve-Stage Primary + In-Txn Defense-in-Depth (Amends FLAG-P1AS4-2)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-24 |
+| **Session** | P1A-S6b pre-implementation |
+| **Amends** | FLAG-P1AS4-2 (aggregate_versions monotonicity ruling, v1.8) |
+| **Consistent with** | DECISION 3 (three-op single-PG-transaction) |
+
+**Ruling:** The stale-event guard operates at two layers. Both layers are **mandatory**. Their roles are distinct and non-interchangeable.
+
+**Layer 1 — Resolve-stage guard (PRIMARY, authoritative gate):** Before invoking any handler, `EventWorkerStrategy` performs a PostgreSQL read to fetch the current `latest_processed_version` from `system.aggregate_versions` for the event's aggregate. If the incoming event's `aggregate_version` ≤ the stored `latest_processed_version`, the event is **stale**: the strategy terminates early (before handler execution), marks the job complete on the queue (not as a failure), and records the skip in telemetry. This is the authoritative stale-event decision point.
+
+**Layer 2 — Adapter in-txn FOR UPDATE + GREATEST guard (MANDATORY, defense-in-depth):** The existing adapter-side guard (in-transaction `FOR UPDATE` lock on `system.aggregate_versions` + `GREATEST(latest_processed_version, incoming)` upsert, per FLAG-P1AS4-2 ruling) is retained and remains mandatory. It closes the **Resolve→write TOCTOU window**: the Resolve read (Layer 1) occurs outside the write transaction; a concurrent worker processing a higher-version event for the same aggregate could commit between the Resolve read and the adapter's write. The `GREATEST()` guard ensures the stored version can only advance, even if two workers race on the same aggregate in the window between Resolve and write.
+
+**Authorizations for P1A-S6b (binding):**
+
+- `EventWorkerStrategy` may take a PostgreSQL read dependency (via `DatabaseConnectionInterface` or a dedicated aggregate-version query abstraction) for the Resolve-stage lookup.
+- `WorkerServiceProvider` is authorized to wire the aggregate-version query dependency into `EventWorkerStrategy` via constructor injection (ADR-012 compliant — no service-locator calls).
+- The Resolve-stage reads `system.aggregate_versions` using a non-locking SELECT (no `FOR UPDATE` at Resolve time — the lock is taken only inside the adapter's write transaction at Layer 2).
+- Early termination at the Resolve stage does NOT mark the job as a DLQ failure. It is a successful no-op: the event was already superseded by a later version.
+
+**Rationale:** FLAG-P1AS4-2 (v1.8) established the monotonic GREATEST guard as defense-in-depth. However, it left the primary stale-event gate undefined — it said "worker owns stale-event detection" without specifying where in the EventWorkerStrategy pipeline the detection occurs. This ruling fixes the gate at the Resolve stage (Step 4 of the Doc 8 §7 pipeline: Claim→Load→Validate→**Resolve**→Execute→Commit→Ack), which is the earliest safe point after the event is validated but before any handler work begins. Terminating at Resolve avoids unnecessary WordPress state reloads (DECISION H) for events that are already stale.
+
+---
+
 ### OPEN-10 — Unpublish Transition Capture: event action and projection model for post_status leaving the public set
 
 | Field | Value |
@@ -558,4 +640,16 @@ The following tables and columns are affected by the rulings above. Migration fr
 
 > **Note (v1.8 — P1A-S4 delivery):** `content.pages`, `content.posts`, `content.taxonomies`, and `content.entity_taxonomies` migrations were delivered in P1A-S4. All timestamp columns use `TIMESTAMPTZ`; all checksum columns use `VARCHAR(64)`. `content.entity_taxonomies` is a pure join table — (entity_id UUID, taxonomy_id UUID) composite PK only (FLAG-P1AS4-1). The freeze check for all `content.*` tables occurs at the Phase 1A DoD gate (end-to-end validation in P1A-S6) per the v1.2 rule. `content.media` remains OUT of MVP scope (Phase 1B).
 
+> **Note (v1.10 — content.* soft-delete column):** The tombstone path (DECISION I) writes the `deleted_at TIMESTAMPTZ NULL` column that already exists on `content.pages`, `content.posts`, and `content.taxonomies` from the P1A-S4 migrations. DECISION F's default listing filter (`WHERE status = 'publish' AND deleted_at IS NULL`) depends on this same column. No new migration is owed by P1A-S6b — the column is already present.
+
 > **Migration freeze rule:** no schema migration that touches any table or column in the tables above may be merged unless it is consistent with the ruling in the referenced OPEN / DECISION item, or this document is formally amended with a new versioned entry.
+
+### PHP Contracts and Infrastructure
+
+> **This table records non-schema implications: interface changes, class-level dependencies, and wiring obligations introduced by rulings. These are as binding as schema implications.**
+
+| Component | Change | Driven by |
+|---|---|---|
+| `core/Contracts/AdapterInterface` | Gains method `tombstone(string $aggregateType, string $aggregateId, EventInterface $event): void`. All existing adapter implementations (PageAdapter, PostAdapter, CategoryAdapter) must implement it. The tombstone performs a soft-delete (`deleted_at = now()`) inside a single-PG transaction covering all three DECISION 3 ops. If the target row does not exist, the projection write is a no-op but `system.processed_events` and `system.aggregate_versions` are still updated. | DECISION I (v1.10) |
+| `core/Workers/Strategies/EventWorkerStrategy` | Gains a PostgreSQL read dependency for the Resolve-stage aggregate-version lookup (`system.aggregate_versions`). Must be injected via constructor (ADR-012); no service-locator call permitted. Resolves the `system.aggregate_versions` row using a non-locking SELECT before handler invocation. | DECISION J (v1.10) |
+| `core/Container/Definitions/WorkerServiceProvider` | Must wire the aggregate-version read dependency into `EventWorkerStrategy` via constructor injection. | DECISION J (v1.10) |

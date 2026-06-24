@@ -22,6 +22,11 @@ namespace HSP\Core\Contracts;
  * conforming adapter may implement it by looping persist() internally. Bulk SQL,
  * batch upserts, and single-transaction semantics for bulk operations are
  * implementation-defined and specified at the adapter implementation task.
+ *
+ * tombstone() is a DECISION I (v1.10) addition: soft-deletes the target projection row
+ * using only the event envelope (no WP reload, no Extractor, no Transformer). The same
+ * three-op DECISION 3 atomicity applies; idempotency on re-delivery is guaranteed via
+ * processed_events ON CONFLICT DO NOTHING.
  */
 interface AdapterInterface
 {
@@ -32,6 +37,22 @@ interface AdapterInterface
      * @param EventInterface          $event The triggering event envelope
      */
     public function persist(CanonicalModelInterface $model, EventInterface $event): void;
+
+    /**
+     * Soft-delete the projection row for the given aggregate (DECISION I).
+     *
+     * Consumes only the event envelope — no WordPress state reload, no Extractor,
+     * no Transformer, no canonical model. Sets deleted_at = event.source_updated_at
+     * (deterministic; NOT worker wall-clock). If the projection row does not exist
+     * the projection write is a no-op, but system.processed_events and
+     * system.aggregate_versions are still updated.
+     *
+     * All three DECISION 3 ops commit in ONE PostgreSQL transaction:
+     *   1. content.* UPDATE deleted_at (no-op if row absent)
+     *   2. system.processed_events INSERT ON CONFLICT DO NOTHING
+     *   3. system.aggregate_versions upsert (monotonic GREATEST guard)
+     */
+    public function tombstone(string $aggregateType, string $aggregateId, EventInterface $event): void;
 
     /**
      * Persist multiple canonical models for reconciliation, full replay, or bulk import.

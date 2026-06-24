@@ -10,14 +10,14 @@ use HSP\Core\Contracts\ModuleInterface;
 use HSP\Core\Contracts\ServiceProviderInterface;
 use HSP\Modules\Content\Events\ContentEventTypes;
 use HSP\Modules\Content\Rest\ContentRestRegistrarFactory;
+use HSP\Modules\Content\Subscribers\ContentSubscriberRegistrar;
 
 /**
  * Content module entry point — implements the ModuleInterface union shape (OPEN-9 v1.4).
  *
- * P1A-S1 scope: event types + WP hook wiring only.
- * Migrations and full service provider are delivered in later P1A sessions.
- *
  * Constructor injection only (ADR-012); no Container::get() or global access.
+ * ContentSubscriberRegistrar wires all 9 OPEN-1 event handlers into EventRegistry
+ * during register() so EventWorkerStrategy can dispatch events at worker time.
  */
 final class ContentModule implements ModuleInterface
 {
@@ -25,6 +25,7 @@ final class ContentModule implements ModuleInterface
         private readonly HookWiring                    $hookWiring,
         private readonly EventProviderInterface        $eventProvider,
         private readonly ContentRestRegistrarFactory   $restRegistrarFactory,
+        private readonly ContentSubscriberRegistrar    $subscriberRegistrar,
     ) {}
 
     // -------------------------------------------------------------------------
@@ -70,6 +71,7 @@ final class ContentModule implements ModuleInterface
     public function register(): void
     {
         $this->hookWiring->register();
+        $this->subscriberRegistrar->register();
     }
 
     public function boot(): void

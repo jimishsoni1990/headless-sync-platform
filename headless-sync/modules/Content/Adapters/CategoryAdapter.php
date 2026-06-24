@@ -80,6 +80,36 @@ final class CategoryAdapter implements AdapterInterface
     }
 
     /**
+     * Soft-delete the content.taxonomies row for this aggregate (DECISION I).
+     *
+     * Sets deleted_at = event.source_updated_at (deterministic; not worker wall-clock).
+     * Three-op DECISION 3 atomicity; idempotent on re-delivery.
+     * If the row does not exist the UPDATE is a no-op; processed_events and
+     * aggregate_versions are still written.
+     */
+    public function tombstone(string $aggregateType, string $aggregateId, EventInterface $event): void
+    {
+        $now       = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s+00');
+        $deletedAt = $event->getSourceUpdatedAt()
+            ->setTimezone(new \DateTimeZone('UTC'))
+            ->format('Y-m-d H:i:s+00');
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->execute(
+                'UPDATE content.taxonomies SET deleted_at = $1::timestamptz WHERE source_term_id = $2',
+                [$deletedAt, (int) $aggregateId]
+            );
+            $this->insertProcessedEvent($event, $event->getChecksum(), $now);
+            $this->upsertAggregateVersion($event, $now);
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
+    }
+
+    /**
      * Not implemented in Phase 1A — persist() is the only supported entry point.
      *
      * The correct guarded batch path (events + version context, same guarantees as persist())

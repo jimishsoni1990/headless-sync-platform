@@ -7,6 +7,7 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Delivery\AdapterRegistry;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Workers\HeartbeatPublisherInterface;
@@ -31,7 +32,8 @@ use HSP\Core\Workers\WorkerEngine;
  *   'worker.engine.event'           — WorkerEngine driven by EventWorkerStrategy
  *
  * Authority:
- *   DECISION E (v1.5) — no new raw pg_* wrapper introduced here.
+ *   DECISION E (v1.6) — EventWorkerStrategy receives DatabaseConnectionInterface for
+ *                        Resolve-stage stale guard (DECISION J); no new raw pg_* wrapper.
  *   CLAUDE.md Rule 7  — constructor injection only; no Container::get() inside business logic.
  */
 final class WorkerServiceProvider extends ServiceProvider
@@ -52,6 +54,7 @@ final class WorkerServiceProvider extends ServiceProvider
             return new EventWorkerStrategy(
                 $c->get(QueueProviderInterface::class),
                 $c->get(EventRegistry::class),
+                $c->get(DatabaseConnectionInterface::class),
             );
         });
 

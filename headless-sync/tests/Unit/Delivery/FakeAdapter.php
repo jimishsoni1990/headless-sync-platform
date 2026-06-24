@@ -14,6 +14,8 @@ final class FakeAdapter implements AdapterInterface
 
     public function persist(CanonicalModelInterface $model, EventInterface $event): void {}
 
+    public function tombstone(string $aggregateType, string $aggregateId, EventInterface $event): void {}
+
     public function bulkPersist(array $models): void {}
 
     public function getCanonicalModelClass(): string
