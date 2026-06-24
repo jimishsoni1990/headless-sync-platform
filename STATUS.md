@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-23  
-**Next session: P1A-S5 — REST Delivery API**
+**Last updated:** 2026-06-24 (P1A-S5 close)  
+**Next session: P1A-S6 — Next.js validation + end-to-end DoD**
 
 ---
 
@@ -32,7 +32,7 @@
 - [x] P1A-S2 Extractors + source models + validators
 - [x] P1A-S3 Transformers + canonical models
 - [x] P1A-S4 Content migrations + PostgreSQL adapters
-- [ ] P1A-S5 REST Delivery API
+- [x] P1A-S5 REST Delivery API
 - [ ] P1A-S6 Next.js validation + end-to-end DoD
 
 ### Early Operational Baseline
@@ -194,9 +194,27 @@ These two are compatible **only if** the canonical model and the PostgreSQL proj
 
 ---
 
+### FLAG-P1AS5-1 — IMPLEMENTATION_PLAN.md §4 five-bullet undercount
+
+**Raised:** 2026-06-24 | **Session:** P1A-S5
+
+The Phase 1A deliverables list in IMPLEMENTATION_PLAN.md §4 shows only five REST endpoint bullets:
+- GET /api/v1/pages (listing)
+- GET /api/v1/pages/{slug}
+- GET /api/v1/posts (listing)
+- GET /api/v1/posts/{slug}
+- GET /api/v1/categories (listing)
+
+The Session Map row for P1A-S5 says "Six endpoints." The P1A-S5 session brief explicitly confirmed six, including `GET /api/v1/categories/{slug}`. The sixth endpoint was built and tested (Session Map is the authoritative source per IMPLEMENTATION_PLAN.md §1).
+
+**Resolution trigger:** Reconcile IMPLEMENTATION_PLAN.md §4 to add the missing sixth bullet (`GET /api/v1/categories/{slug}`) at the next opportunity. No code change needed — the implementation is correct.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+2026-06-24 | P1A-S5 | REST Delivery API — 6 endpoints, core QueryProvider/Resource/FilterSet/CursorPage contracts (DECISION F v1.9), cursor pagination proven on live PG, status/cursor 400s, single-fetch publish+not-deleted 404 guard, limit clamps. Shipped: core/Contracts/ (QueryProviderInterface, ResourceInterface, FilterSet, CursorPage); modules/Content/Queries/ (PageQueryProvider, PostQueryProvider, CategoryQueryProvider — (sort,id) tiebreaker cursor, DEFAULT/MAX limits, projection-side category join); modules/Content/Resources/ (PageResource, PostResource, CategoryResource — contract fields only, no internal columns); modules/Content/Rest/ContentRestRegistrar (WP-only boundary: sanitize inputs, 400 non-public status, 400 malformed cursor, 404 missing/soft-deleted/non-publish slug, six /api/v1/ routes); tests/bootstrap.php (WP REST stubs). Tests: 664 unit + 58 integration = 722 total, 0 failures. Shared-sort-value cursor edge case proven against live PostgreSQL (pages/posts: shared published_at; categories: shared name). DECISION F recorded in ARCHITECTURE_DECISIONS.md v1.9. | flags: FLAG-P1AS5-1 (IMPLEMENTATION_PLAN.md §4 five-bullet undercount — categories/{slug} missing; Session Map authoritative; reconcile plan text).
 2026-06-22 | P0-S1 | Shipped: headless-sync.php, bootstrap/ (Application, Bootstrapper, Environment, Constants, Version), config/ (7 skeletons), core/Container/ (Container, ContainerBuilder, ServiceRegistry, ServiceProvider, Definitions/CoreServiceProvider), core/Configuration/ConfigLoader, core/Psr/Container/ (PSR-11 stubs), composer.json (autoload only), vendor/autoload.php generated. Config hierarchy (Global→Module→Env), PSR-11 container, and ADR-012 constructor injection all verified via smoke tests. | FLAG-P0S1-1: PSR-11 stubs bundled locally (see flags section below)
 2026-06-22 | housekeeping | Monorepo restructure (DECISION G v1.5): all plugin files moved into headless-sync/; CLAUDE.md, STATUS.md, docs/ remain at root; composer.json PSR-4 fixed to explicit per-prefix maps (FLAG-P0S1-2 resolved); vendor autoload stubs regenerated; workspace-root .gitignore added; git repo initialized, remote wired, committed. Push blocked: SSH key not on this machine (FLAG-MONOREPO-SSH).
 2026-06-22 | P0-S2 | Shipped: core/Migrations/ engine (MigrationRunner with UUIDv7 per ADR-015, AbstractSqlMigration, MigrationRecord, ConnectionInterface + WpdbMysqlConnection + PgsqlConnection + ConnectionFactory, MigrationException); 12 concrete migration classes (2 MySQL, 10 PgSQL) in database/Core/; MigrationServiceProvider wired into ContainerBuilder; phpunit.xml; tests/Unit/Migrations/ (MigrationRunnerTest, AbstractSqlMigrationTest, FakeConnection, FakeMigration); composer.json + vendor stubs updated (HSP\Database\, HSP\Tests\ namespaces). Review corrections applied: UUIDv7 replaces UUIDv4, bootstrap() single-sourced to 0008 SQL file (no inline DDL copy), CHAR(64) confirmed correct per OPEN-6 v1.3 for MySQL only, numeric-prefix ordering guard test added, checksum prefix-stability tests added, idempotency tests added. All DoD Gates 1–6 verified and approved. | No new flags.

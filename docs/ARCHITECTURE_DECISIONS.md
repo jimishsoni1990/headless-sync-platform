@@ -20,6 +20,7 @@ Owner: Architecture
 | 1.6 | 2026-06-23 | DECISION E: resolved FLAG-P0S7-1 (Option 1 — Split). Queue collapses fully into `DatabaseConnectionInterface`. Outbox splits by persistence technology: PG delivery path on shared `DatabaseConnectionInterface`; MySQL capture path on a new `MysqlOutboxConnectionInterface` that does NOT extend or reference `DatabaseConnectionInterface`. `OutboxConnectionInterface` and `QueueConnectionInterface` deleted. |
 | 1.7 | 2026-06-23 | OPEN-11: Option A — Phase 1A projection is a lossless representation of the canonical model; adapter persists the canonical checksum directly; no second checksum path; divergent projections require a future ADR. Resolves FLAG-P1AS3-1. |
 | 1.8 | 2026-06-23 | FLAG-P1AS4-1 resolved (architect ruling): content.entity_taxonomies is a pure join table — (entity_id UUID, taxonomy_id UUID) composite PK only; no timestamps/checksums/metadata unless a future ADR adds relationship attributes. FLAG-P1AS4-2 resolved (architect ruling): system.aggregate_versions uses a monotonic guarded upsert — stored version only ever advances (max(current, incoming)); worker owns stale-event detection; DB guard is defense-in-depth. |
+| 1.9 | 2026-06-24 | DECISION F: REST Delivery API contracts — scoped Option A (P1A-S5). Four core contracts added to `core/Contracts/`: `QueryProviderInterface`, `ResourceInterface`, `FilterSet`, `CursorPage`. ADR-038 transport-agnosticism enforced: no WP/HTTP types in contracts, Query Providers, or Resources — WP types confined to REST route registration only. Cursor pagination uses (primary_sort, id) deterministic tiebreaker. status filter constrained to public set {publish} (OPEN-10); non-public values return 400. category filter on /posts resolves via projection-side join (content.taxonomies.slug); never by WP term_id. IMPLEMENTATION_PLAN.md §4 five-bullet undercount flagged (categories/{slug} missing). |
 
 ---
 
@@ -448,6 +449,40 @@ Consolidation is deferred to P0-S7. No consolidation occurs during P0-S5 or P0-S
 > **Rollback semantics (historical, binding):** Both original `PgsqlOutboxConnection::rollback()` (P0-S4, commit `084456a`) and `DatabaseQueueConnection::rollback()` (P0-S5, commit `084456a`) swallowed `pg_query('ROLLBACK')` failures silently — false return was ignored, no exception thrown. `PostgresDatabaseConnection::rollback()` preserves this behaviour exactly.
 
 **Rationale:** Core owns reusable runtime infrastructure; subsystems must not each reinvent it. Capping proliferation at three and consolidating at the freeze gate avoids refactor risk during active implementation while preventing the pattern from entrenching. The split (v1.6) reflects that MySQL and PostgreSQL have fundamentally different connection, transaction, and error models — a single interface spanning both would be a leaky abstraction.
+
+---
+
+### DECISION F — REST Delivery API Contracts (P1A-S5)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Session** | P1A-S5 (2026-06-24) |
+| **Authority** | Doc 9 §6 (ownership), §12 (filtering), §13 (pagination), ADR-038 (transport-agnostic), ADR-040 (consumer boundary) |
+| **Implements** | Six Phase 1A read endpoints: GET /api/v1/pages, /api/v1/pages/{slug}, /api/v1/posts, /api/v1/posts/{slug}, /api/v1/categories, /api/v1/categories/{slug} |
+
+**Ruling — Option A (scoped):** Four contracts added to `core/Contracts/` to satisfy Doc 9 §6 while keeping scope to what the six read endpoints exercise:
+
+- **`QueryProviderInterface`** — `list(FilterSet): CursorPage` + `findBySlug(string): ?array`. Implementations MUST query delivery projections only (no WordPress reads — ADR-040). Implementations live in modules.
+- **`ResourceInterface`** — `toArray(array): array` + `toCollection(array, ?string): array`. Serialization only; no business logic; no internal columns leaked. Implementations live in modules.
+- **`FilterSet`** — Immutable value object carrying validated filter parameters (slug, status, categorySlug, publishedAfter, cursor, limit). Built by the REST registration boundary from sanitized request parameters.
+- **`CursorPage`** — Immutable value object returned by `list()`; carries `$rows` and opaque `?$nextCursor`.
+
+**Transport-agnosticism (ADR-038 — binding constraint):** No WP_REST_Request, WP_REST_Response, or any HTTP/framework type may appear in Query Providers or Resources. These types are confined to the REST route registration layer (`modules/Content/Rest/ContentRestRegistrar`). This preserves the query and resource layer for future transports (GraphQL, gRPC, etc.) without redesign.
+
+**`TransportContract` and `SecurityContract` deferred:** These are Future/out-of-MVP scope (ADR-038 future transports; Doc 9 §22 authenticated endpoints). Building them now violates the no-Future-Vision rule.
+
+**Cursor pagination design:** Opaque base64url token encoding `{ "s": "<primary_sort_value>", "id": "<uuid>" }`. Seek predicate uses `(primary_sort, id)` composite tiebreaker, proving no skipped or duplicated rows across page boundaries when rows share the primary sort value. Sort keys: `(published_at DESC, id DESC)` for pages/posts; `(name ASC, id ASC)` for categories.
+
+**Default listing behavior:** `WHERE status = 'publish' AND deleted_at IS NULL` (OPEN-10 public set). The `?status=` filter accepts only values in the public set `{publish}`; any other value returns HTTP 400 (do NOT silently coerce). This is validated at the REST boundary, not inside Query Providers.
+
+**Category filter on /posts:** The `?category=` filter resolves by category slug via a projection-side EXISTS subquery (`content.posts → content.entity_taxonomies → content.taxonomies.slug`). Never by WP term_id. Never in the Resource layer. (Architect ruling, P1A-S5.)
+
+**`findBySlug` on missing/soft-deleted row:** returns `null`; REST boundary translates to 404. Empty 200 is prohibited.
+
+**Internal column exclusion (ADR-040):** Resources expose ONLY contract fields. Internal columns (`id UUID`, `source_post_id`, `source_term_id`, `checksum`, `synced_at`, `created_at`, `taxonomy_type`, `*_jsonb` internals unless contractually intended) are never serialized into responses.
+
+**Rationale:** Doc 9 §6 requires core to own API/Query/Serialization/Filtering contracts. Introducing all four contracts now satisfies the architectural principle without violating the MVP scope constraint (no Transport or Security contracts). Keeping WP types out of Query Providers and Resources satisfies ADR-038 without requiring a separate transport abstraction layer at this stage.
 
 ---
 
