@@ -50,6 +50,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         if ($this->pgConn !== null) {
             pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS content CASCADE');
             pg_close($this->pgConn);
+            $this->pgConn = null;
         }
     }
 

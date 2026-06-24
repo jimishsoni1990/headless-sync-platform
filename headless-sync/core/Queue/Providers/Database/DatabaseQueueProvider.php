@@ -94,6 +94,31 @@ final class DatabaseQueueProvider implements QueueProviderInterface
     }
 
     /**
+     * Idempotent enqueue: inserts a queue job for the given event_id, ignoring conflicts.
+     *
+     * Uses ON CONFLICT(event_id) DO NOTHING — requires UNIQUE(event_id) on system.queue_jobs
+     * (migration 0011, DECISION L v1.12). Safe to call multiple times for the same event_id;
+     * the second call is a silent no-op. Used exclusively by the Dispatcher stage.
+     *
+     * Does NOT return a job ID — a conflict means the row already exists and the existing
+     * job's ID is not retrieved (unnecessary for the Dispatcher's at-least-once guarantee).
+     */
+    public function enqueueIdempotent(string $eventId, string $queueName): void
+    {
+        $this->assertValidPartition($queueName);
+
+        $jobId = $this->uuidv7();
+
+        $this->conn->execute(
+            "INSERT INTO system.queue_jobs
+                 (id, event_id, queue_name, status, attempts, available_at)
+             VALUES ($1::uuid, $2::uuid, $3, 'available', 0, NOW())
+             ON CONFLICT (event_id) DO NOTHING",
+            [$jobId, $eventId, $queueName],
+        );
+    }
+
+    /**
      * Claim the next available job using SELECT … FOR UPDATE SKIP LOCKED (OPEN-4).
      *
      * Sets worker_id and visibility_timeout_at on the claimed row.

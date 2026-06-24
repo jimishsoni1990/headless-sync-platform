@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.11  
+Version: 1.13  
 Status: Accepted  
 Owner: Architecture  
 
@@ -23,6 +23,8 @@ Owner: Architecture
 | 1.9 | 2026-06-24 | DECISION F: REST Delivery API contracts — scoped Option A (P1A-S5). Four core contracts added to `core/Contracts/`: `QueryProviderInterface`, `ResourceInterface`, `FilterSet`, `CursorPage`. ADR-038 transport-agnosticism enforced: no WP/HTTP types in contracts, Query Providers, or Resources — WP types confined to REST route registration only. Cursor pagination uses (primary_sort, id) deterministic tiebreaker. status filter constrained to public set {publish} (OPEN-10); non-public values return 400. category filter on /posts resolves via projection-side join (content.taxonomies.slug); never by WP term_id. IMPLEMENTATION_PLAN.md §4 five-bullet undercount flagged (categories/{slug} missing). |
 | 1.10 | 2026-06-24 | DECISION H: Worker State Loading — Option B approved; reaffirms ADR-044 (state-sync, not event-sourcing); workers reload current WordPress state via defined WP bootstrap path in worker runtime; event payload enrichment (Option A) rejected (contradicts ADR-044 + reconciliation principle); direct-MySQL reload (Option C) rejected (bypasses WordPress as authoritative access layer). Resolves FLAG-P1AS6-1 (worker state question). DECISION I: Delete Processing — Option C approved; content.*.deleted events follow dedicated tombstone path consuming only event envelope (aggregate identity + metadata); soft-delete projection performed; no reload, no extract, no transform; canonical models and canonical-checksum surface UNCHANGED; OPEN-11 intact; AdapterInterface gains tombstone/soft-delete method (contract change). DECISION J: Stale-Event Guard — amends FLAG-P1AS4-2; Resolve-stage guard is PRIMARY, authoritative stale-event gate; adapter in-txn FOR UPDATE + GREATEST guard is MANDATORY defense-in-depth (Resolve reads outside write txn and cannot close the Resolve→write TOCTOU window alone); authorizes for P1A-S6b: PG read dependency on EventWorkerStrategy, WorkerServiceProvider wiring, Resolve-stage aggregate-version lookup, early termination before handler execution. |
 | 1.11 | 2026-06-24 | DECISION K: Delivery Connection Isolation — resolves FLAG-P1AS6A-1. A shared non-FORCE_NEW connection that can libpq-reuse the relay/queue handle is not acceptable where it can undermine the Resolve-stage gate (DECISION J). Delivery reads, Resolve-stage reads, and adapter persistence use one dedicated delivery connection with guaranteed physical separation from relay/queue handles (PGSQL_CONNECT_FORCE_NEW). Sequential reuse within a worker tick is acceptable; cross-sharing with relay and queue-claim handles is prohibited. The binding lives in a new `DeliveryServiceProvider`, not `QueueServiceProvider`. No new raw pg_* wrapper — reuses `PostgresDatabaseConnection`. Constrains DECISION E (v1.6) connection-ownership allocation; satisfies DECISION J (v1.10) Resolve-read isolation requirement. |
+| 1.12 | 2026-06-25 | DECISION L: Dispatcher stage — architect ruling 2026-06-25. Dispatcher is a distinct stage in the pipeline (Outbox → Dispatcher → Queue → Worker), implemented as a `WorkerStrategyInterface` on the existing Worker Engine under `core/Events/Dispatcher/`. Dedup via `UNIQUE(event_id)` on `system.queue_jobs` + `ON CONFLICT(event_id) DO NOTHING` on enqueue. Undispatched events claimed by anti-join (`NOT EXISTS (SELECT 1 FROM system.queue_jobs q WHERE q.event_id = e.event_id)`) against `system.queue_jobs`; no dispatch-status column on `system.events`; no watermark. Correct-final-state ordering; no FIFO requirement. <30s SLA unchanged. Dispatcher opens its own dedicated FORCE_NEW handle (`'dispatcher.connection.pgsql'`, via `PostgresDatabaseConnection`) physically distinct from the DECISION K delivery singleton and relay/queue handles; enqueues via `DatabaseQueueProvider::enqueueIdempotent()` (queue-claim handle). No new raw `pg_*` wrapper class (DECISION E). PID-distinctness asserted in integration test. |
+| 1.13 | 2026-06-25 | DECISION L clause (g) reconciled: amended amendment-log entry for v1.12 to correctly state dispatcher opens its own FORCE_NEW `'dispatcher.connection.pgsql'` handle (NOT the DECISION K delivery singleton). The full DECISION L text in §DECISION L already stated this correctly (clause g); only the amendment-log summary row was wrong. Raises FLAG-P1AS6D-1: no container binding exposes a relay/queue runtime PG handle separately from the delivery singleton after S6c; the dispatcher's dedicated handle is a connection-topology decision pending architect ratification. |
 
 ---
 
@@ -595,6 +597,47 @@ The `DatabaseConnectionInterface` singleton binding is removed from `QueueServic
 
 ---
 
+### DECISION L — Dispatcher Stage: system.events → system.queue_jobs (Architect Ruling 2026-06-25)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-25 |
+| **Session** | P1A-S6d |
+| **Authority** | Doc 1 §157/§272; Doc 4 §3 (Outbox→Dispatcher→Queue→Worker); Doc 2 §16 (`core/Events/Dispatcher/`); Doc 11 §24 (<30s SLA); DECISION E v1.6 (no new pg_* wrapper); DECISION K v1.11 (delivery connection) |
+
+**Ruling:**
+
+**(a) Dispatcher is a distinct pipeline stage.** The resolved pipeline is: `wp_hsp_outbox` → `RelayWorkerStrategy` → `system.events` → **Dispatcher** → `system.queue_jobs` → `EventWorkerStrategy` → projection. The Dispatcher is responsible solely for moving relayed events from `system.events` into the queue; it does not process or transform events.
+
+**(b) Implementation as WorkerStrategyInterface.** The Dispatcher is implemented as `DispatcherWorkerStrategy` under `core/Events/Dispatcher/`, plugged into the existing Worker Engine (one `WorkerEngine` instance driven by `DispatcherWorkerStrategy`). No new worker engine infrastructure is introduced.
+
+**(c) Claim model — anti-join, no watermark, no status column.** Each tick selects undispatched events via:
+```sql
+SELECT e.id, e.event_type, e.queue_name, e.aggregate_type, e.aggregate_id
+FROM   system.events e
+WHERE  NOT EXISTS (
+    SELECT 1 FROM system.queue_jobs q WHERE q.event_id = e.id
+)
+FOR UPDATE SKIP LOCKED
+LIMIT  N
+```
+No `dispatch_status` column is added to `system.events` (frozen schema — OPEN-6). No watermark / high-water-mark pointer is maintained. The `NOT EXISTS` anti-join is the authoritative undispatched check.
+
+**(d) Dedup via UNIQUE(event_id) + ON CONFLICT DO NOTHING.** A new forward migration adds `UNIQUE(event_id)` to `system.queue_jobs`. `DatabaseQueueProvider` gains `enqueueIdempotent()` (separate from `enqueue()` to avoid breaking the existing interface): it executes `INSERT … ON CONFLICT(event_id) DO NOTHING`. `completed` rows are retained in `system.queue_jobs` (status update, not DELETE), so the UNIQUE constraint permanently blocks re-dispatch of already-completed events — this is the intended invariant.
+
+**(e) Queue name.** Hardcoded to `'content'` for Phase 1A — all MVP events are content-domain events. Multi-queue routing (event_type-prefix → partition) is not in any frozen doc or the P1A-S6d authority. A future ADR must authorize it before a second domain partition is introduced.
+
+**(f) Ordering.** No FIFO guarantee. The anti-join selects available events; ORDER BY `e.created_at ASC` provides approximate arrival order. Correct-final-state semantics hold regardless of dispatch order.
+
+**(g) Connection constraints.** The Dispatcher is relay/queue-side system DML and MUST NOT use the DECISION K delivery handle (`DatabaseConnectionInterface` singleton, `DeliveryServiceProvider`). It opens its own dedicated FORCE_NEW handle bound as `'dispatcher.connection.pgsql'` (registered in `DispatcherServiceProvider`), following the same pattern as DECISION K. This guarantees the dispatcher handle is physically distinct from both the delivery handle and the relay/queue handles. No new raw `pg_*` wrapper class is introduced (DECISION E constraint is on wrapper classes, not on additional `pg_connect()` calls; `PostgresDatabaseConnection` is an existing class). The dispatcher enqueues via `DatabaseQueueProvider::enqueueIdempotent()`, which uses the queue-claim handle (`queue.connection.pgsql`).
+
+**(g) SLA.** The <30s end-to-end SLA (Doc 11 §24) is unchanged. The Dispatcher adds one hop (system.events → queue_jobs) that must complete within the SLA budget.
+
+**Rationale:** The gap between relay and queue was always implicit in the architecture (Doc 4 §3) but never implemented. Making it a `WorkerStrategyInterface` reuses the existing engine/heartbeat/shutdown infrastructure. Anti-join dedup is the simplest correct model: no state to track on the events table, no new columns, no watermark drift risk. UNIQUE(event_id) provides the database-level idempotency guarantee.
+
+---
+
 ### OPEN-10 — Unpublish Transition Capture: event action and projection model for post_status leaving the public set
 
 | Field | Value |
@@ -682,3 +725,7 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `core/Container/Definitions/WorkerServiceProvider` | Must wire the aggregate-version read dependency into `EventWorkerStrategy` via constructor injection. | DECISION J (v1.10) |
 | `core/Container/Definitions/DeliveryServiceProvider` | New service provider. Binds `DatabaseConnectionInterface::class` as a singleton opened with `PGSQL_CONNECT_FORCE_NEW`, wrapping `PostgresDatabaseConnection`. This is the exclusive binding for delivery reads (REST query providers), Resolve-stage reads (`EventWorkerStrategy`), and adapter persistence. Registered in `ContainerBuilder` before `WorkerServiceProvider` and `ContentServiceProvider`. | DECISION K (v1.11) |
 | `core/Container/Definitions/QueueServiceProvider` | `DatabaseConnectionInterface::class` singleton binding removed. Queue provider binds only `'queue.connection.pgsql'` (its own FORCE_NEW handle) and `QueueProviderInterface`. | DECISION K (v1.11) |
+| `core/Events/Dispatcher/` | New directory. `DispatcherWorkerStrategy` (implements `WorkerStrategyInterface`), `EventDispatcher` (reads `system.events` anti-join, calls `DatabaseQueueProvider::enqueueIdempotent()`), `DispatchBatch` (value object: event rows selected in one tick). | DECISION L (v1.12) |
+| `core/Queue/Providers/Database/DatabaseQueueProvider` | Gains `enqueueIdempotent(EventInterface $event, string $queueName): void` — executes `INSERT … ON CONFLICT(event_id) DO NOTHING`. Does NOT replace or alter `enqueue()`. | DECISION L (v1.12) |
+| `database/Core/pgsql/0011_add_unique_event_id_to_queue_jobs.sql` | New forward migration: `ALTER TABLE system.queue_jobs ADD CONSTRAINT uq_queue_jobs_event_id UNIQUE (event_id)`. Must not edit frozen migration 0003. | DECISION L (v1.12) |
+| `core/Container/Definitions/DispatcherServiceProvider` | New service provider. Binds `'dispatcher.connection.pgsql'` (FORCE_NEW `PostgresDatabaseConnection`), `'dispatcher.strategy'` → `DispatcherWorkerStrategy`, `'dispatcher.engine'` → `WorkerEngine`. The dispatcher connection is physically distinct from the delivery handle (DECISION K) and relay/queue handles. Registered in `ContainerBuilder` after `QueueServiceProvider`. | DECISION L (v1.12) |

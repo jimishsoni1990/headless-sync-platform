@@ -50,6 +50,7 @@ final class AdapterAtomicityIntegrationTest extends TestCase
             pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS system CASCADE');
             pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS content CASCADE');
             pg_close($this->pgConn);
+            $this->pgConn = null;
         }
     }
 
@@ -669,6 +670,13 @@ final class AdapterAtomicityIntegrationTest extends TestCase
 
     private function createSchema(): void
     {
+        // Defensive teardown: drop residue from prior runs before creating fresh schemas.
+        // Necessary because tearDown uses pg_close() — if the physical connection dropped
+        // mid-test the DROP never executed and rows survive into the next suite invocation.
+        pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS content CASCADE');
+        pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS system CASCADE');
+        pg_query($this->pgConn, "DROP SCHEMA IF EXISTS {$this->schema} CASCADE");
+
         // system schema for processed_events and aggregate_versions
         pg_query($this->pgConn, 'CREATE SCHEMA IF NOT EXISTS system');
         pg_query($this->pgConn, '

@@ -6,6 +6,7 @@ namespace HSP\Core\Container;
 
 use HSP\Core\Container\Definitions\CoreServiceProvider;
 use HSP\Core\Container\Definitions\DeliveryServiceProvider;
+use HSP\Core\Container\Definitions\DispatcherServiceProvider;
 use HSP\Core\Container\Definitions\MigrationServiceProvider;
 use HSP\Core\Container\Definitions\ModuleServiceProvider;
 use HSP\Core\Container\Definitions\OutboxServiceProvider;
@@ -39,6 +40,10 @@ final class ContainerBuilder
         // and ContentServiceProvider — both resolve DatabaseConnectionInterface
         // (DECISION K v1.11: dedicated FORCE_NEW delivery connection).
         $registry->addProvider(new DeliveryServiceProvider($config));
+        // DispatcherServiceProvider must follow QueueServiceProvider (DatabaseQueueProvider).
+        // It opens its own FORCE_NEW connection — does NOT use DatabaseConnectionInterface
+        // (DECISION K delivery handle). DECISION L v1.12.
+        $registry->addProvider(new DispatcherServiceProvider($config));
         $registry->addProvider(new WorkerServiceProvider());
         $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));

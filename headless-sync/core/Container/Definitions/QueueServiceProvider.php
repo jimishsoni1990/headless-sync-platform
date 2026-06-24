@@ -61,5 +61,12 @@ final class QueueServiceProvider extends ServiceProvider
                 $queueConfig,
             );
         });
+
+        // Concrete alias so DispatcherServiceProvider can resolve DatabaseQueueProvider
+        // directly and call enqueueIdempotent() (not on QueueProviderInterface — DECISION L).
+        $container->singleton(
+            DatabaseQueueProvider::class,
+            fn (Container $c) => $c->get(QueueProviderInterface::class),
+        );
     }
 }
