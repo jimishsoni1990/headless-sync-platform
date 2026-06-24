@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-25 (P1A-S6d approved)  
-**Next session: P1A-S6 — Next.js validation + end-to-end DoD**
+**Last updated:** 2026-06-25 (P1A-S6 approved)  
+**Next session: OPS-S1**
 
 ---
 
@@ -37,7 +37,7 @@
 - [x] P1A-S6b Content Subscriber/Handler spine
 - [x] P1A-S6c Delivery connection isolation (DECISION K)
 - [x] P1A-S6d Dispatcher stage (system.events → system.queue_jobs, DECISION L)
-- [ ] P1A-S6 Next.js validation + end-to-end DoD
+- [x] P1A-S6 Next.js validation + end-to-end DoD
 
 ### Early Operational Baseline
 
@@ -380,6 +380,7 @@ The live infrastructure (MySQL, PostgreSQL Docker, WordPress, worker engine) is 
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+2026-06-25 | P1A-S6 | shipped (live PG migration apply 16 migrations; smoke_e2e.php dispatcher-tick + grep/BOM/replay fixes; 39/39 smoke; 797/797 tests; DoD-4 via AdapterAtomicityIntegrationTest 11/11, DoD-5 worker-level via HandlerSpineIntegrationTest, DoD-2 inline-tick latency ~50–160ms, production loop latency deferred to OPS-S1) | flags: FLAG-P1AS6D-1 open (carry-over).
 2026-06-24 | P1A-S6a (review pass) | ADR-012 fix for FLAG-P1AS6A-5: replaced bare \Closure capturing Container with typed ContentRestRegistrarFactory (final class, modules/Content/Rest/ContentRestRegistrarFactory.php). Factory receives six per-dep \Closure factories from ContentServiceProvider; holds no Container reference; memoizes ContentRestRegistrar on first __invoke(). ContentModule::$restRegistrarFactory typed ContentRestRegistrarFactory — grep-clean of ContentModule.php for Container::get/global $container. Lazy deferral preserved: DatabaseConnectionInterface not resolved until rest_api_init fires, proven by testContentRestRegistrarIsNotConstructedAtModuleLoadTime (spy counter). ContentModuleBootTest gains 3 new assertions (no-Container-reference reflection test, typed-factory assertion, lazy-deferral spy). Suite: 734/734, 0 failures, 0 skipped, 1 pre-existing deprecation. Live WP: api/v1 ✓, 6 routes ✓. FLAG-P1AS6A-5 resolved. FLAG-P1AS6-2 resolution text updated. FLAG-P1AS6A-1 marked E2E-blocking. FLAG-P1AS6A-2/-3/-4 recorded-and-kept. | no new flags.
 2026-06-24 | P1A-S6a | Bootstrap/DI fix (FLAG-P1AS6-2 Gaps A/B/C resolved). Shipped: ContentServiceProvider (PageQueryProvider, PostQueryProvider, CategoryQueryProvider, PageResource, PostResource, CategoryResource, ContentRestRegistrar, HookWiring, EventProvider, ContentModule — all container-bound); ModuleLoader refactored to inject Container + resolve via explicit bindings first, fallback new $class() for zero-arg, throw for required-arg without binding (no reflection autowiring); Application::boot() now calls registerAll() after bootstrap(); ContentModule gains lazy \Closure ContentRestRegistrar factory dep + boot() wires add_action('rest_api_init') lazily (PG connection deferred to rest_api_init hook); headless-sync.php gains extension_loaded('pgsql') guard (graceful admin notice + bail); ModuleServiceProvider passes Container to ModuleLoader; ContainerBuilder registers ContentServiceProvider; DatabaseConnectionInterface binding added in QueueServiceProvider; \pg_connect() global prefix fixed in OutboxServiceProvider and QueueServiceProvider; wp-config.php HSP env vars added for local dev PG/MySQL credentials; php.ini php_pgsql.dll enabled in web server. Tests: 731 total (722 prior + 9 new: ModuleLoaderTest ×3 new, ContentModuleBootTest ×6), 0 failures, 0 skipped (with live DB env vars), 1 pre-existing deprecation. Live WP DoD: api/v1 present in wp-json namespaces ✓; all 6 content routes registered (/posts, /posts/{slug}, /pages, /pages/{slug}, /categories, /categories/{slug}) ✓; routes 500 on missing content.* schema (P1A-S4 migrations not applied to local Docker PG — expected; not a code bug). FLAG-P1AS6-2 resolved. Session Map updated: P1A-S6a + P1A-S6b inserted; P1A-S6 E2E now depends on P1A-S6b. | no new flags.
 2026-06-24 | P1A-S6 (partial — flags block E2E DoD) | Next.js consumer app built and verified (hsp-blog/: lib/api.ts, app/posts/page.tsx, app/posts/[slug]/page.tsx, app/pages/[slug]/page.tsx, not-found.tsx; TypeScript clean; production build passes; HTTP 200 on all consumer routes against running server). Type-canon check PASS (all content.* migrations: TIMESTAMPTZ timestamps, VARCHAR(64) checksums). Module isolation check PASS (no cross-module imports, no service-locator calls in business logic). IMPLEMENTATION_PLAN.md §4 reconciled: added missing GET /api/v1/categories/{slug} bullet (FLAG-P1AS5-1 resolved). PHP test suite: 722/722. E2E DoD blocked by two flags requiring architect rulings. | flags: FLAG-P1AS6-2 (plugin bootstrap incomplete — Application::boot() never calls module.registrar::registerAll(); ModuleLoader uses new $class() without args; ContentModule has no rest_api_init wiring — REST routes never register); FLAG-P1AS6-1 (EventWorkerStrategy::executeHandler() is a P0-S6 stub — no Content Subscribers/Handlers exist; queue → PG projection pipeline is unimplemented).
