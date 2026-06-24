@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.10  
+Version: 1.11  
 Status: Accepted  
 Owner: Architecture  
 
@@ -22,6 +22,7 @@ Owner: Architecture
 | 1.8 | 2026-06-23 | FLAG-P1AS4-1 resolved (architect ruling): content.entity_taxonomies is a pure join table — (entity_id UUID, taxonomy_id UUID) composite PK only; no timestamps/checksums/metadata unless a future ADR adds relationship attributes. FLAG-P1AS4-2 resolved (architect ruling): system.aggregate_versions uses a monotonic guarded upsert — stored version only ever advances (max(current, incoming)); worker owns stale-event detection; DB guard is defense-in-depth. |
 | 1.9 | 2026-06-24 | DECISION F: REST Delivery API contracts — scoped Option A (P1A-S5). Four core contracts added to `core/Contracts/`: `QueryProviderInterface`, `ResourceInterface`, `FilterSet`, `CursorPage`. ADR-038 transport-agnosticism enforced: no WP/HTTP types in contracts, Query Providers, or Resources — WP types confined to REST route registration only. Cursor pagination uses (primary_sort, id) deterministic tiebreaker. status filter constrained to public set {publish} (OPEN-10); non-public values return 400. category filter on /posts resolves via projection-side join (content.taxonomies.slug); never by WP term_id. IMPLEMENTATION_PLAN.md §4 five-bullet undercount flagged (categories/{slug} missing). |
 | 1.10 | 2026-06-24 | DECISION H: Worker State Loading — Option B approved; reaffirms ADR-044 (state-sync, not event-sourcing); workers reload current WordPress state via defined WP bootstrap path in worker runtime; event payload enrichment (Option A) rejected (contradicts ADR-044 + reconciliation principle); direct-MySQL reload (Option C) rejected (bypasses WordPress as authoritative access layer). Resolves FLAG-P1AS6-1 (worker state question). DECISION I: Delete Processing — Option C approved; content.*.deleted events follow dedicated tombstone path consuming only event envelope (aggregate identity + metadata); soft-delete projection performed; no reload, no extract, no transform; canonical models and canonical-checksum surface UNCHANGED; OPEN-11 intact; AdapterInterface gains tombstone/soft-delete method (contract change). DECISION J: Stale-Event Guard — amends FLAG-P1AS4-2; Resolve-stage guard is PRIMARY, authoritative stale-event gate; adapter in-txn FOR UPDATE + GREATEST guard is MANDATORY defense-in-depth (Resolve reads outside write txn and cannot close the Resolve→write TOCTOU window alone); authorizes for P1A-S6b: PG read dependency on EventWorkerStrategy, WorkerServiceProvider wiring, Resolve-stage aggregate-version lookup, early termination before handler execution. |
+| 1.11 | 2026-06-24 | DECISION K: Delivery Connection Isolation — resolves FLAG-P1AS6A-1. A shared non-FORCE_NEW connection that can libpq-reuse the relay/queue handle is not acceptable where it can undermine the Resolve-stage gate (DECISION J). Delivery reads, Resolve-stage reads, and adapter persistence use one dedicated delivery connection with guaranteed physical separation from relay/queue handles (PGSQL_CONNECT_FORCE_NEW). Sequential reuse within a worker tick is acceptable; cross-sharing with relay and queue-claim handles is prohibited. The binding lives in a new `DeliveryServiceProvider`, not `QueueServiceProvider`. No new raw pg_* wrapper — reuses `PostgresDatabaseConnection`. Constrains DECISION E (v1.6) connection-ownership allocation; satisfies DECISION J (v1.10) Resolve-read isolation requirement. |
 
 ---
 
@@ -568,6 +569,32 @@ This is an additive contract change. All existing adapter implementations (PageA
 
 ---
 
+### DECISION K — Delivery Connection Isolation (Resolves FLAG-P1AS6A-1)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-24 |
+| **Session** | P1A-S6c |
+| **Resolves** | FLAG-P1AS6A-1 |
+| **Constrains** | DECISION E (v1.6) — connection-ownership allocation |
+| **Satisfies** | DECISION J (v1.10) — Resolve-read isolation requirement |
+
+**Ruling:**
+
+**(a) Non-FORCE_NEW shared connection not acceptable for delivery/Resolve reads.**  
+A `DatabaseConnectionInterface` binding opened with a plain `pg_connect()` (no `PGSQL_CONNECT_FORCE_NEW`) that could libpq-reuse the relay handle (`outbox.connection.pgsql`) or any other transactional handle in the same PHP process is not acceptable. PHP libpq returns a pooled handle for identical DSN strings; if that handle coincides with a handle under an open transaction (relay OR queue claim), the delivery connection would be reading inside that transaction — violating the isolation required by DECISION J's Resolve-stage stale check.
+
+**(b) One dedicated delivery connection with guaranteed physical separation.**  
+Delivery reads (REST query providers), Resolve-stage stale-event reads (`EventWorkerStrategy`), and adapter persistence (all three Content adapters) use exactly **one** dedicated `DatabaseConnectionInterface` binding that is opened with `PGSQL_CONNECT_FORCE_NEW`. This guarantees a distinct physical libpq link from the relay handle (`outbox.connection.pgsql`, `MysqliOutboxConnection`) and the queue-claim handle (`queue.connection.pgsql`, `DatabaseQueueConnection`). Sequential reuse of the same delivery connection within a worker tick — for both the Resolve-stage read and the subsequent adapter write transaction — is **acceptable and intended** (DECISION J Layer 1 reads outside the write transaction; sequential use on one link is not sharing). Cross-sharing with the relay handle or the queue-claim handle is **prohibited**.
+
+**(c) Binding lives in DeliveryServiceProvider; no new raw pg_* wrapper.**  
+The `DatabaseConnectionInterface` singleton binding is removed from `QueueServiceProvider` and relocated to a new `core/Container/Definitions/DeliveryServiceProvider`. `DeliveryServiceProvider` reuses the existing `PostgresDatabaseConnection` class — no new raw `pg_*` wrapper class is introduced (DECISION E constraint preserved). `DeliveryServiceProvider` is registered in `ContainerBuilder` before `WorkerServiceProvider` and `ContentServiceProvider`, which are its consumers.
+
+**Rationale:** The Resolve-stage stale-event gate (DECISION J Layer 1) is the PRIMARY correctness gate — it reads `system.aggregate_versions` before handler invocation. If that read executes on a connection that shares a libpq link with an open relay transaction, the read may observe uncommitted relay state or be blocked. `PGSQL_CONNECT_FORCE_NEW` eliminates this risk unconditionally. The precedent for FORCE_NEW on the queue-claim path was established in P0-S5 (FLAG-P0S5-1); this decision applies the same discipline to the delivery/Resolve path.
+
+---
+
 ### OPEN-10 — Unpublish Transition Capture: event action and projection model for post_status leaving the public set
 
 | Field | Value |
@@ -653,3 +680,5 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `core/Contracts/AdapterInterface` | Gains method `tombstone(string $aggregateType, string $aggregateId, EventInterface $event): void`. All existing adapter implementations (PageAdapter, PostAdapter, CategoryAdapter) must implement it. The tombstone performs a soft-delete (`deleted_at = now()`) inside a single-PG transaction covering all three DECISION 3 ops. If the target row does not exist, the projection write is a no-op but `system.processed_events` and `system.aggregate_versions` are still updated. | DECISION I (v1.10) |
 | `core/Workers/Strategies/EventWorkerStrategy` | Gains a PostgreSQL read dependency for the Resolve-stage aggregate-version lookup (`system.aggregate_versions`). Must be injected via constructor (ADR-012); no service-locator call permitted. Resolves the `system.aggregate_versions` row using a non-locking SELECT before handler invocation. | DECISION J (v1.10) |
 | `core/Container/Definitions/WorkerServiceProvider` | Must wire the aggregate-version read dependency into `EventWorkerStrategy` via constructor injection. | DECISION J (v1.10) |
+| `core/Container/Definitions/DeliveryServiceProvider` | New service provider. Binds `DatabaseConnectionInterface::class` as a singleton opened with `PGSQL_CONNECT_FORCE_NEW`, wrapping `PostgresDatabaseConnection`. This is the exclusive binding for delivery reads (REST query providers), Resolve-stage reads (`EventWorkerStrategy`), and adapter persistence. Registered in `ContainerBuilder` before `WorkerServiceProvider` and `ContentServiceProvider`. | DECISION K (v1.11) |
+| `core/Container/Definitions/QueueServiceProvider` | `DatabaseConnectionInterface::class` singleton binding removed. Queue provider binds only `'queue.connection.pgsql'` (its own FORCE_NEW handle) and `QueueProviderInterface`. | DECISION K (v1.11) |
