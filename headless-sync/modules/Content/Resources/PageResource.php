@@ -7,7 +7,7 @@ namespace HSP\Modules\Content\Resources;
 use HSP\Core\Contracts\ResourceInterface;
 
 /**
- * Serializes content.pages projection rows to the /api/v1/pages response contract.
+ * Serializes content.pages projection rows to the /hsp/v1/pages response contract.
  *
  * Authority: Doc 9 §11 — serialization, formatting, contract shaping, response
  * consistency. No business logic. ADR-040 — no internal columns leaked (id UUID,

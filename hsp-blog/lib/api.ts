@@ -85,12 +85,12 @@ export async function getPosts(params?: {
   if (params?.published_after) qs.set('published_after', params.published_after);
 
   const query = qs.toString() ? `?${qs.toString()}` : '';
-  const result = await apiFetch<ListResponse<Post>>(`api/v1/posts${query}`);
+  const result = await apiFetch<ListResponse<Post>>(`hsp/v1/posts${query}`);
   return result ?? { data: [], next_cursor: null };
 }
 
 export async function getPost(slug: string): Promise<Post | null> {
-  return apiFetch<Post>(`api/v1/posts/${slug}`);
+  return apiFetch<Post>(`hsp/v1/posts/${slug}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,12 +106,12 @@ export async function getPages(params?: {
   if (params?.per_page) qs.set('per_page', String(params.per_page));
 
   const query = qs.toString() ? `?${qs.toString()}` : '';
-  const result = await apiFetch<ListResponse<Page>>(`api/v1/pages${query}`);
+  const result = await apiFetch<ListResponse<Page>>(`hsp/v1/pages${query}`);
   return result ?? { data: [], next_cursor: null };
 }
 
 export async function getPage(slug: string): Promise<Page | null> {
-  return apiFetch<Page>(`api/v1/pages/${slug}`);
+  return apiFetch<Page>(`hsp/v1/pages/${slug}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -127,10 +127,10 @@ export async function getCategories(params?: {
   if (params?.per_page) qs.set('per_page', String(params.per_page));
 
   const query = qs.toString() ? `?${qs.toString()}` : '';
-  const result = await apiFetch<ListResponse<Category>>(`api/v1/categories${query}`);
+  const result = await apiFetch<ListResponse<Category>>(`hsp/v1/categories${query}`);
   return result ?? { data: [], next_cursor: null };
 }
 
 export async function getCategory(slug: string): Promise<Category | null> {
-  return apiFetch<Category>(`api/v1/categories/${slug}`);
+  return apiFetch<Category>(`hsp/v1/categories/${slug}`);
 }

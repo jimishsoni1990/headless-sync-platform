@@ -181,3 +181,4 @@ Before ending a session:
    shipped, any flags raised.
 7. Present the session summary for the approval to commit.
 8. Once approved, commit to github. Leave the working tree clean and reviewable. Do NOT begin the next session's work.
+9. robocopy "j:\HSP\headless-sync" TO "C:\Users\jimis\Local Sites\headless-sync-platform\app\public\wp-content\plugins\headless-sync"

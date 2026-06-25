@@ -250,11 +250,11 @@ Versioning is required from day one.
 Examples:
 
 ```text
-/api/v1/pages
+/hsp/v1/pages
 
-/api/v1/posts
+/hsp/v1/posts
 
-/api/v1/products
+/hsp/v1/products
 ```
 
 ---
@@ -262,7 +262,7 @@ Examples:
 Future:
 
 ```text
-/api/v2/products
+/hsp/v2/products
 ```
 
 ---
@@ -570,13 +570,13 @@ Composition APIs
 Examples:
 
 ```text
-/api/v1/pages
+/hsp/v1/pages
 
-/api/v1/posts
+/hsp/v1/posts
 
-/api/v1/products
+/hsp/v1/products
 
-/api/v1/categories
+/hsp/v1/categories
 ```
 
 ---

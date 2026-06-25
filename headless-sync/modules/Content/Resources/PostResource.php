@@ -7,7 +7,7 @@ namespace HSP\Modules\Content\Resources;
 use HSP\Core\Contracts\ResourceInterface;
 
 /**
- * Serializes content.posts projection rows to the /api/v1/posts response contract.
+ * Serializes content.posts projection rows to the /hsp/v1/posts response contract.
  *
  * Authority: Doc 9 §11 — serialization only; no business logic. ADR-040 — no
  * internal columns leaked (id UUID, source_post_id, checksum, synced_at, created_at,

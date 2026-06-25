@@ -21,7 +21,7 @@ use PHPUnit\Framework\TestCase;
  *   1. All six endpoints respond correctly from content.* projections.
  *   2. Cursor pagination works — proven including the shared-sort-value edge case.
  *   3. No WordPress queries on the consumer path (ADR-040).
- *   4. /api/v1/ versioning prefix verified (route registration layer, tested separately).
+ *   4. /hsp/v1/ versioning prefix verified (route registration layer, tested separately).
  *   5. Soft-deleted rows excluded by default.
  *   6. status = 'publish' default; non-publish rows not returned.
  *   7. findBySlug returns null for missing or soft-deleted rows.

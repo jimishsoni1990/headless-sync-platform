@@ -852,14 +852,14 @@ echo "\n";
 // REST API endpoint smoke (DoD-3 live call)
 // ============================================================================
 
-echo "--- DoD-3 (live REST): check /api/v1 endpoints return HTTP 200 ---\n";
+echo "--- DoD-3 (live REST): check /hsp/v1 endpoints return HTTP 200 ---\n";
 
 $wpApiBase = (getenv('HSP_WP_URL') ?: 'http://headless-sync-platform.local') . '/wp-json';
 
 $endpoints = [
-    '/api/v1/pages',
-    '/api/v1/posts',
-    '/api/v1/categories',
+    '/hsp/v1/pages',
+    '/hsp/v1/posts',
+    '/hsp/v1/categories',
 ];
 foreach ($endpoints as $ep) {
     $ch      = curl_init("{$wpApiBase}{$ep}");
@@ -888,7 +888,7 @@ foreach ($endpoints as $ep) {
 }
 
 // Slug-level lookup for the api page created earlier
-$apiPageEp = "{$wpApiBase}/api/v1/pages/{$apiSlug}";
+$apiPageEp = "{$wpApiBase}/hsp/v1/pages/{$apiSlug}";
 $ch2       = curl_init($apiPageEp);
 curl_setopt_array($ch2, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10]);
 $body2   = curl_exec($ch2);
@@ -896,7 +896,7 @@ $status2 = (int) curl_getinfo($ch2, CURLINFO_HTTP_CODE);
 curl_close($ch2);
 $cleanBody2 = ltrim($body2 ?: '{}', "\xef\xbb\xbf");
 $decoded2   = json_decode($cleanBody2, true) ?? [];
-check("DoD-3: GET /api/v1/pages/{$apiSlug} returns 200 with correct slug",
+check("DoD-3: GET /hsp/v1/pages/{$apiSlug} returns 200 with correct slug",
     $status2 === 200 && ($decoded2['slug'] ?? '') === $apiSlug,
     "status={$status2}, slug=" . ($decoded2['slug'] ?? 'null'));
 

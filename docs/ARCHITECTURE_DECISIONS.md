@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.13  
+Version: 1.14  
 Status: Accepted  
 Owner: Architecture  
 
@@ -25,6 +25,7 @@ Owner: Architecture
 | 1.11 | 2026-06-24 | DECISION K: Delivery Connection Isolation — resolves FLAG-P1AS6A-1. A shared non-FORCE_NEW connection that can libpq-reuse the relay/queue handle is not acceptable where it can undermine the Resolve-stage gate (DECISION J). Delivery reads, Resolve-stage reads, and adapter persistence use one dedicated delivery connection with guaranteed physical separation from relay/queue handles (PGSQL_CONNECT_FORCE_NEW). Sequential reuse within a worker tick is acceptable; cross-sharing with relay and queue-claim handles is prohibited. The binding lives in a new `DeliveryServiceProvider`, not `QueueServiceProvider`. No new raw pg_* wrapper — reuses `PostgresDatabaseConnection`. Constrains DECISION E (v1.6) connection-ownership allocation; satisfies DECISION J (v1.10) Resolve-read isolation requirement. |
 | 1.12 | 2026-06-25 | DECISION L: Dispatcher stage — architect ruling 2026-06-25. Dispatcher is a distinct stage in the pipeline (Outbox → Dispatcher → Queue → Worker), implemented as a `WorkerStrategyInterface` on the existing Worker Engine under `core/Events/Dispatcher/`. Dedup via `UNIQUE(event_id)` on `system.queue_jobs` + `ON CONFLICT(event_id) DO NOTHING` on enqueue. Undispatched events claimed by anti-join (`NOT EXISTS (SELECT 1 FROM system.queue_jobs q WHERE q.event_id = e.event_id)`) against `system.queue_jobs`; no dispatch-status column on `system.events`; no watermark. Correct-final-state ordering; no FIFO requirement. <30s SLA unchanged. Dispatcher opens its own dedicated FORCE_NEW handle (`'dispatcher.connection.pgsql'`, via `PostgresDatabaseConnection`) physically distinct from the DECISION K delivery singleton and relay/queue handles; enqueues via `DatabaseQueueProvider::enqueueIdempotent()` (queue-claim handle). No new raw `pg_*` wrapper class (DECISION E). PID-distinctness asserted in integration test. |
 | 1.13 | 2026-06-25 | DECISION L clause (g) reconciled: amended amendment-log entry for v1.12 to correctly state dispatcher opens its own FORCE_NEW `'dispatcher.connection.pgsql'` handle (NOT the DECISION K delivery singleton). The full DECISION L text in §DECISION L already stated this correctly (clause g); only the amendment-log summary row was wrong. Raises FLAG-P1AS6D-1: no container binding exposes a relay/queue runtime PG handle separately from the delivery singleton after S6c; the dispatcher's dedicated handle is a connection-topology decision pending architect ratification. |
+| 1.14 | 2026-06-25 | DECISION N: delivery REST namespace is `hsp/v1` (vendor-prefixed WP convention). Renames `api/v1` to `hsp/v1` in `ContentRestRegistrar::NAMESPACE` constant, `hsp-blog/lib/api.ts` fetch paths, and `tools/smoke_e2e.php` curl paths. Doc sites reconciled (DECISION F Implements table, IMPLEMENTATION_PLAN.md §4 endpoint bullets and pipeline diagram, Phase 1A DoD, FLAG-P1AS5-1 flag text). |
 
 ---
 
@@ -463,7 +464,7 @@ Consolidation is deferred to P0-S7. No consolidation occurs during P0-S5 or P0-S
 | **Status** | Accepted |
 | **Session** | P1A-S5 (2026-06-24) |
 | **Authority** | Doc 9 §6 (ownership), §12 (filtering), §13 (pagination), ADR-038 (transport-agnostic), ADR-040 (consumer boundary) |
-| **Implements** | Six Phase 1A read endpoints: GET /api/v1/pages, /api/v1/pages/{slug}, /api/v1/posts, /api/v1/posts/{slug}, /api/v1/categories, /api/v1/categories/{slug} |
+| **Implements** | Six Phase 1A read endpoints: GET /hsp/v1/pages, /hsp/v1/pages/{slug}, /hsp/v1/posts, /hsp/v1/posts/{slug}, /hsp/v1/categories, /hsp/v1/categories/{slug} |
 
 **Ruling — Option A (scoped):** Four contracts added to `core/Contracts/` to satisfy Doc 9 §6 while keeping scope to what the six read endpoints exercise:
 
@@ -635,6 +636,28 @@ No `dispatch_status` column is added to `system.events` (frozen schema — OPEN-
 **(g) SLA.** The <30s end-to-end SLA (Doc 11 §24) is unchanged. The Dispatcher adds one hop (system.events → queue_jobs) that must complete within the SLA budget.
 
 **Rationale:** The gap between relay and queue was always implicit in the architecture (Doc 4 §3) but never implemented. Making it a `WorkerStrategyInterface` reuses the existing engine/heartbeat/shutdown infrastructure. Anti-join dedup is the simplest correct model: no state to track on the events table, no new columns, no watermark drift risk. UNIQUE(event_id) provides the database-level idempotency guarantee.
+
+---
+
+### DECISION N — Delivery REST Namespace: `hsp/v1`
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-25 |
+| **Session** | P1A-S7 |
+| **Authority** | Doc 9 §7 (versioned REST prefix); WP REST API convention (vendor-prefixed namespaces) |
+
+**Ruling:** The WordPress REST namespace for all HSP delivery endpoints is `hsp/v1`.
+
+- `hsp` is the vendor prefix — unambiguous, collision-safe under the WP REST convention where namespaces take the form `vendor/vN`.
+- `v1` is the contract version. Future breaking changes in the API contract must go to `v2`; additive non-breaking changes stay in `v1`.
+- The namespace is defined in exactly **one** place: `ContentRestRegistrar::NAMESPACE = 'hsp/v1'`. All `register_rest_route()` calls reference this constant. No literal namespace string may appear elsewhere in PHP code.
+- Consumer clients (`hsp-blog/lib/api.ts`) and smoke-test tooling (`tools/smoke_e2e.php`) must use the `hsp/v1` path prefix in all fetch/curl calls.
+
+**Supersedes:** The prior `api/v1` string used in `ContentRestRegistrar::NAMESPACE` (P1A-S5 through P1A-S6). `api/v1` was an un-prefixed placeholder; it is replaced by this ruling and must not appear anywhere in the codebase.
+
+**Rationale:** WordPress REST namespaces are conventionally vendor-prefixed (`wc/v3`, `wp/v2`, etc.). A bare `api/v1` prefix is not vendor-scoped and risks collision with other plugins registering the same namespace, or with future WP core endpoints. `hsp/v1` is unique to this platform and communicates both ownership and contract generation at a glance.
 
 ---
 

@@ -24,13 +24,13 @@ use HSP\Core\Contracts\ResourceInterface;
  *     as WP encodes the JSON payload automatically.
  *
  * No WordPress reads on the consumer path (ADR-040).
- * Versioning: /api/v1/ prefix from day one (Doc 9 §7).
+ * Namespace: hsp/v1 (vendor-prefixed per DECISION N; Doc 9 §7).
  *
  * ADR-012: constructor injection only.
  */
 final class ContentRestRegistrar
 {
-    private const NAMESPACE = 'api/v1';
+    private const NAMESPACE = 'hsp/v1';
 
     /** Values accepted by the ?status= filter (public set — OPEN-10). */
     private const PUBLIC_STATUSES = ['publish'];

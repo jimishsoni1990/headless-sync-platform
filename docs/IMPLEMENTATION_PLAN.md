@@ -81,7 +81,7 @@ Postgres Adapter       (modules/Content/Adapters)
 content.pages / content.posts / content.taxonomies   (PostgreSQL delivery projections)
       │
       ▼
-REST Delivery API      /api/v1/pages | /api/v1/posts | /api/v1/categories
+REST Delivery API      /hsp/v1/pages | /hsp/v1/posts | /hsp/v1/categories
       │
       ▼
 Next.js Frontend       (blog listing / single post / static pages)
@@ -239,19 +239,19 @@ Note: Doc 3 §9–11 shows bare `TIMESTAMP`; the OPEN-3 amendment (ARCHITECTURE_
 
 **REST Delivery API** (`modules/Content/`):
 
-- `GET /api/v1/pages` — listing with cursor pagination, slug/status/published_after filters
-- `GET /api/v1/pages/{slug}` — single page by slug
-- `GET /api/v1/posts` — listing with cursor pagination, category/status/published_after filters
-- `GET /api/v1/posts/{slug}` — single post by slug
-- `GET /api/v1/categories` — category listing
-- `GET /api/v1/categories/{slug}` — single category by slug
-- Query providers query `content.*` projections; endpoints do not query tables directly (Doc 9 §10). Resources handle serialization; no business logic in resources. Versioning from day one: `/api/v1/` prefix (Doc 9 §7).
+- `GET /hsp/v1/pages` — listing with cursor pagination, slug/status/published_after filters
+- `GET /hsp/v1/pages/{slug}` — single page by slug
+- `GET /hsp/v1/posts` — listing with cursor pagination, category/status/published_after filters
+- `GET /hsp/v1/posts/{slug}` — single post by slug
+- `GET /hsp/v1/categories` — category listing
+- `GET /hsp/v1/categories/{slug}` — single category by slug
+- Query providers query `content.*` projections; endpoints do not query tables directly (Doc 9 §10). Resources handle serialization; no business logic in resources. Versioning from day one: `hsp/v1` vendor-prefixed namespace (DECISION N; Doc 9 §7).
 
 **Next.js frontend validation:**
 
-- Blog listing page (`/api/v1/posts`)
-- Single post page (`/api/v1/posts/{slug}`)
-- Static pages (`/api/v1/pages/{slug}`)
+- Blog listing page (`/hsp/v1/posts`)
+- Single post page (`/hsp/v1/posts/{slug}`)
+- Static pages (`/hsp/v1/pages/{slug}`)
 - No WordPress reads on the consumer request path (ADR-040)
 
 #### Dependencies
@@ -369,13 +369,15 @@ Ordered execution plan derived from Phase 0, Phase 1A, and Early Operational Bas
 | **P1A-S2** | Extractors + source models + validators | `modules/Content/Extractors/`, `modules/Content/SourceModels/`, `modules/Content/Validation/` | Doc 6 §24 (extractors normalize; no canonical model creation); Doc 11 §6 | `PageExtractor → PageSourceModel`, `PostExtractor → PostSourceModel`, `CategoryExtractor → CategorySourceModel`; all source models immutable and strongly typed; validators fail-fast on required-field or structural failure; unit tests pass with no DB/WP dependency | P1A-S1 |
 | **P1A-S3** | Transformers + canonical models | `modules/Content/Transformers/`, `modules/Content/CanonicalModels/` | Doc 6 §24 (pure; no side effects); `CanonicalModelInterface`; Doc 11 §21 Tier-1 testing | `PageTransformer`, `PostTransformer`, `CategoryTransformer` are pure functions; `CanonicalPage`, `CanonicalPost`, `CanonicalCategory` implement `CanonicalModelInterface`; unit tests (`PageSourceModel → PageTransformer → expected PageCanonicalModel`) pass without DB or WordPress | P1A-S2 |
 | **P1A-S4** | Content migrations + PostgreSQL adapters | `modules/Content/Migrations/`, `modules/Content/Adapters/` | DECISION 3 (three-op PG transaction: projection upsert + `system.processed_events` + `system.aggregate_versions`); OPEN-3 v1.2 type canon; OPEN-2; Doc 7 §19 (`persist()` + `bulkPersist()`) | `content.pages`, `content.posts`, `content.taxonomies`, `content.entity_taxonomies` migrations use `TIMESTAMPTZ`/`VARCHAR(64)` canon; adapters commit all three ops atomically; forced mid-transaction failure leaves no partial writes; idempotency test (same event twice) produces no duplicate rows | P1A-S3, P0-S7 |
-| **P1A-S5** | REST Delivery API | `modules/Content/` (query providers, resources, REST registration) | Doc 9 §7 (versioned `/api/v1/` prefix); Doc 9 §10 (query providers; no direct table queries in resources); ADR-040 (no WP reads on consumer path) | Six endpoints respond correctly from `content.*` projections; cursor pagination works; no WordPress queries on consumer path; versioning prefix present from day one | P1A-S4 |
-| **P1A-S6a** | Bootstrap/DI fix — module boot + REST routes | `core/Module/ModuleLoader.php`, `bootstrap/Application.php`, `modules/Content/ContentModule.php`, `modules/Content/ContentServiceProvider.php` | ADR-012 (constructor injection only); OPEN-9 v1.4 (register→boot lifecycle); Doc 9 §7 (REST /api/v1/ registration boundary); FLAG-P1AS6-2 | ModuleLoader resolves via container (no `new $class()`); Application::boot() calls registerAll(); ContentModule::boot() wires rest_api_init; plugin boots in live WP with zero fatals; six /api/v1/ routes present; WP hooks attached; 731/731 tests pass | P1A-S5 |
+| **P1A-S5** | REST Delivery API | `modules/Content/` (query providers, resources, REST registration) | Doc 9 §7 (versioned namespace prefix); Doc 9 §10 (query providers; no direct table queries in resources); ADR-040 (no WP reads on consumer path) | Six endpoints respond correctly from `content.*` projections; cursor pagination works; no WordPress queries on consumer path; versioning prefix present from day one | P1A-S4 |
+| **P1A-S6a** | Bootstrap/DI fix — module boot + REST routes | `core/Module/ModuleLoader.php`, `bootstrap/Application.php`, `modules/Content/ContentModule.php`, `modules/Content/ContentServiceProvider.php` | ADR-012 (constructor injection only); OPEN-9 v1.4 (register→boot lifecycle); Doc 9 §7 (REST namespace registration boundary); FLAG-P1AS6-2 | ModuleLoader resolves via container (no `new $class()`); Application::boot() calls registerAll(); ContentModule::boot() wires rest_api_init; plugin boots in live WP with zero fatals; six hsp/v1 routes present; WP hooks attached; 731/731 tests pass | P1A-S5 |
 | **P1A-S6b** | Content Subscriber/Handler spine | `modules/Content/` (Subscribers/, Handlers/, EventWorkerStrategy un-stub, EventRegistry handler registration) | Doc 8 §7 (worker pipeline); DECISION 3 (three-op atomic PG transaction); ADR-012 | Subscriber resolves from EventRegistry; Handler invokes Extractor→Transformer→Adapter pipeline; executeHandler() un-stubbed; content event handler registered; worker processes queue job to PG projection | P1A-S6a |
 | **P1A-S6c** | Delivery connection isolation | `core/Container/Definitions/DeliveryServiceProvider.php` (NEW); `core/Container/Definitions/QueueServiceProvider.php` (remove DatabaseConnectionInterface binding); `core/Container/ContainerBuilder.php` (register DeliveryServiceProvider); `tests/Integration/Core/DeliveryConnectionIsolationTest.php` (NEW) | DECISION K (v1.11); DECISION E (v1.6); DECISION J (v1.10); FLAG-P0S5-1 FORCE_NEW precedent; ADR-012 | DatabaseConnectionInterface binding removed from QueueServiceProvider; DeliveryServiceProvider opens FORCE_NEW connection; all consumers (query providers, adapters, EventWorkerStrategy Resolve-stage) resolve through dedicated delivery connection; integration test proves relay/queue and delivery handles are distinct physical links; zero failures | P1A-S6b |
 | **P1A-S6d** | Dispatcher stage (system.events → system.queue_jobs) | `core/Events/Dispatcher/` (NEW: DispatcherWorkerStrategy, EventDispatcher, DispatchBatch); `database/Core/pgsql/0011_add_unique_event_id_to_queue_jobs.sql` (NEW); `core/Queue/Providers/Database/DatabaseQueueProvider.php` (add enqueueIdempotent()); `core/Container/Definitions/DispatcherServiceProvider.php` (NEW); `core/Container/ContainerBuilder.php` (register DispatcherServiceProvider); `tests/Integration/Core/DispatcherIntegrationTest.php` (NEW) | DECISION L (v1.12); DECISION E (v1.6) no new pg_* wrapper; DECISION K (v1.11) delivery connection for system.events read; ADR-012 constructor injection | DispatcherWorkerStrategy claims undispatched system.events rows (anti-join NOT EXISTS + FOR UPDATE SKIP LOCKED, LIMIT N); enqueues into system.queue_jobs via DatabaseQueueProvider::enqueueIdempotent() (ON CONFLICT(event_id) DO NOTHING); UNIQUE(event_id) migration delivered; integration tests: relay→dispatch→queue_jobs row appears; idempotency (run twice → one row); concurrency (SKIP LOCKED + UNIQUE); relay→dispatcher link; 0 skipped on live PG | P1A-S6c |
 | **P1A-S6** | Next.js validation + end-to-end DoD | Next.js consumer (external); full pipeline smoke | Doc 11 §24 (30-second SLA); Phase 1A DoD checklist | All Phase 1A DoD criteria pass: end-to-end sync, < 30s delay, atomicity, idempotency, stale-event skip, Next.js renders, module isolation, type-canon check | P1A-S6d |
-| **OPS-S1** | Early Operational Baseline | `core/Workers/` (heartbeat); `system.dead_letter_jobs`; admin DLQ tooling; metrics | Doc 11 §8; Doc 4 §24 (single-event + entity replay); Doc 8 §15 (heartbeat); Doc 8 §27 (metrics minimum set); OPEN-3 v1.1 (DLQ schema); ADR-022 (retry limit) | DLQ populated on retry-limit exhaustion with full context; single-event replay re-processes cleanly; heartbeat visible; simulated crash triggers visibility-timeout requeue; minimum metric set emits | P1A-S4 |
+| **P1A-S7** | REST namespace rename: `api/v1` → `hsp/v1` | `modules/Content/Rest/ContentRestRegistrar.php`; `hsp-blog/lib/api.ts`; `headless-sync/tools/smoke_e2e.php`; doc reconciliation (DECISION F, IMPLEMENTATION_PLAN.md §4, Phase 1A DoD text, FLAG-P1AS5-1 text) | DECISION N (v1.14); Doc 9 §7 (versioned prefix); WP REST vendor-prefix convention | `grep api/v1` returns zero hits across `modules/`, `tests/`, `hsp-blog/`, `tools/`, `docs/`; namespace constant defined in exactly one place; WP REST index exposes `hsp/v1` with all six routes; `api/v1` absent; Next.js renders against new base; smoke_e2e.php green; full PHPUnit suite green | P1A-S6 |
+| **P1A-S8** | Env → define config resolution | `bootstrap/`, `config/`, `core/Configuration/`; environment-variable → WordPress `define()` resolution layer | CLAUDE.md §"Build / Test / Run / Lint"; Doc 2 §7 (config hierarchy); ADR-012 | Environment configuration resolves correctly through define → env → default chain; plugin boots with and without env vars; unit tests cover resolution order | P1A-S7 |
+| **OPS-S1** | Early Operational Baseline | `core/Workers/` (heartbeat); `system.dead_letter_jobs`; admin DLQ tooling; metrics | Doc 11 §8; Doc 4 §24 (single-event + entity replay); Doc 8 §15 (heartbeat); Doc 8 §27 (metrics minimum set); OPEN-3 v1.1 (DLQ schema); ADR-022 (retry limit) | DLQ populated on retry-limit exhaustion with full context; single-event replay re-processes cleanly; heartbeat visible; simulated crash triggers visibility-timeout requeue; minimum metric set emits | P1A-S8 |
 
 > **No conflicts detected** between the session breakdown and frozen decisions. All session authority references point to accepted ADRs, versioned OPENs, or Doc sources already reconciled in `ARCHITECTURE_DECISIONS.md`. If a future session surfaces a conflict with a frozen ruling, flag it in `ARCHITECTURE_DECISIONS.md` rather than resolving it silently here.
 

@@ -7,7 +7,7 @@ namespace HSP\Modules\Content\Resources;
 use HSP\Core\Contracts\ResourceInterface;
 
 /**
- * Serializes content.taxonomies projection rows to the /api/v1/categories response contract.
+ * Serializes content.taxonomies projection rows to the /hsp/v1/categories response contract.
  *
  * Authority: Doc 9 §11 — serialization only; no business logic. ADR-040 — no
  * internal columns leaked (id UUID, source_term_id, taxonomy_type, checksum,

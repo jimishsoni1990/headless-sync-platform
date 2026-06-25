@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-25 (P1A-S6 approved)  
-**Next session: OPS-S1**
+**Last updated:** 2026-06-25 (P1A-S7 approved)  
+**Next session: P1A-S8**
 
 ---
 
@@ -38,6 +38,8 @@
 - [x] P1A-S6c Delivery connection isolation (DECISION K)
 - [x] P1A-S6d Dispatcher stage (system.events → system.queue_jobs, DECISION L)
 - [x] P1A-S6 Next.js validation + end-to-end DoD
+- [x] P1A-S7 REST namespace rename: api/v1 → hsp/v1 (DECISION N)
+- [ ] P1A-S8 Env → define config resolution
 
 ### Early Operational Baseline
 
@@ -202,18 +204,11 @@ These two are compatible **only if** the canonical model and the PostgreSQL proj
 
 ### FLAG-P1AS5-1 — IMPLEMENTATION_PLAN.md §4 five-bullet undercount
 
-**Raised:** 2026-06-24 | **Session:** P1A-S5
+**Raised:** 2026-06-24 | **Session:** P1A-S5 | **Status:** Resolved — P1A-S7 (2026-06-25)
 
-The Phase 1A deliverables list in IMPLEMENTATION_PLAN.md §4 shows only five REST endpoint bullets:
-- GET /api/v1/pages (listing)
-- GET /api/v1/pages/{slug}
-- GET /api/v1/posts (listing)
-- GET /api/v1/posts/{slug}
-- GET /api/v1/categories (listing)
+The Phase 1A deliverables list in IMPLEMENTATION_PLAN.md §4 showed only five REST endpoint bullets (missing `GET /hsp/v1/categories/{slug}`). The sixth endpoint was built and tested in P1A-S5 (Session Map authoritative per §1).
 
-The Session Map row for P1A-S5 says "Six endpoints." The P1A-S5 session brief explicitly confirmed six, including `GET /api/v1/categories/{slug}`. The sixth endpoint was built and tested (Session Map is the authoritative source per IMPLEMENTATION_PLAN.md §1).
-
-**Resolution trigger:** Reconcile IMPLEMENTATION_PLAN.md §4 to add the missing sixth bullet (`GET /api/v1/categories/{slug}`) at the next opportunity. No code change needed — the implementation is correct.
+**Resolution (P1A-S7, 2026-06-25):** IMPLEMENTATION_PLAN.md §4 endpoint list reconciled to six bullets (`/hsp/v1/…`) during the namespace rename pass. All six endpoints now appear in the deliverables list. No code change was needed — the implementation was already correct.
 
 ---
 
@@ -380,6 +375,7 @@ The live infrastructure (MySQL, PostgreSQL Docker, WordPress, worker engine) is 
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+2026-06-25 | P1A-S7 | REST namespace rename: api/v1 → hsp/v1. DECISION N recorded (ARCHITECTURE_DECISIONS.md v1.14). ContentRestRegistrar::NAMESPACE = 'hsp/v1'; all six register_rest_route() calls reference constant. hsp-blog/lib/api.ts: six fetch paths updated. smoke_e2e.php: four curl/echo strings updated. Doc reconciliation: DECISION F Implements table, IMPLEMENTATION_PLAN.md §4 endpoint bullets + pipeline diagram + P1A-S5/S6a session rows, Phase 1A DoD Next.js bullets, docs/09-delivery-api-and-consumption-architecture.md §7/§17 examples, FLAG-P1AS5-1 resolved. P1A-S7 + P1A-S8 rows inserted in Session Map; OPS-S1 Depends-on updated to P1A-S8. PHPUnit: 710/710 unit tests pass, 0 failures, 1 pre-existing deprecation. grep api/v1 in modules/, tests/, hsp-blog/, tools/ = 0 hits; docs/ = 4 meta-references in DECISION N text itself (Supersedes/Rationale/amendment log) + P1A-S7 session row name — all intentional. | FLAG-P1AS5-1 resolved.
 2026-06-25 | P1A-S6 | shipped (live PG migration apply 16 migrations; smoke_e2e.php dispatcher-tick + grep/BOM/replay fixes; 39/39 smoke; 797/797 tests; DoD-4 via AdapterAtomicityIntegrationTest 11/11, DoD-5 worker-level via HandlerSpineIntegrationTest, DoD-2 inline-tick latency ~50–160ms, production loop latency deferred to OPS-S1) | flags: FLAG-P1AS6D-1 open (carry-over).
 2026-06-24 | P1A-S6a (review pass) | ADR-012 fix for FLAG-P1AS6A-5: replaced bare \Closure capturing Container with typed ContentRestRegistrarFactory (final class, modules/Content/Rest/ContentRestRegistrarFactory.php). Factory receives six per-dep \Closure factories from ContentServiceProvider; holds no Container reference; memoizes ContentRestRegistrar on first __invoke(). ContentModule::$restRegistrarFactory typed ContentRestRegistrarFactory — grep-clean of ContentModule.php for Container::get/global $container. Lazy deferral preserved: DatabaseConnectionInterface not resolved until rest_api_init fires, proven by testContentRestRegistrarIsNotConstructedAtModuleLoadTime (spy counter). ContentModuleBootTest gains 3 new assertions (no-Container-reference reflection test, typed-factory assertion, lazy-deferral spy). Suite: 734/734, 0 failures, 0 skipped, 1 pre-existing deprecation. Live WP: api/v1 ✓, 6 routes ✓. FLAG-P1AS6A-5 resolved. FLAG-P1AS6-2 resolution text updated. FLAG-P1AS6A-1 marked E2E-blocking. FLAG-P1AS6A-2/-3/-4 recorded-and-kept. | no new flags.
 2026-06-24 | P1A-S6a | Bootstrap/DI fix (FLAG-P1AS6-2 Gaps A/B/C resolved). Shipped: ContentServiceProvider (PageQueryProvider, PostQueryProvider, CategoryQueryProvider, PageResource, PostResource, CategoryResource, ContentRestRegistrar, HookWiring, EventProvider, ContentModule — all container-bound); ModuleLoader refactored to inject Container + resolve via explicit bindings first, fallback new $class() for zero-arg, throw for required-arg without binding (no reflection autowiring); Application::boot() now calls registerAll() after bootstrap(); ContentModule gains lazy \Closure ContentRestRegistrar factory dep + boot() wires add_action('rest_api_init') lazily (PG connection deferred to rest_api_init hook); headless-sync.php gains extension_loaded('pgsql') guard (graceful admin notice + bail); ModuleServiceProvider passes Container to ModuleLoader; ContainerBuilder registers ContentServiceProvider; DatabaseConnectionInterface binding added in QueueServiceProvider; \pg_connect() global prefix fixed in OutboxServiceProvider and QueueServiceProvider; wp-config.php HSP env vars added for local dev PG/MySQL credentials; php.ini php_pgsql.dll enabled in web server. Tests: 731 total (722 prior + 9 new: ModuleLoaderTest ×3 new, ContentModuleBootTest ×6), 0 failures, 0 skipped (with live DB env vars), 1 pre-existing deprecation. Live WP DoD: api/v1 present in wp-json namespaces ✓; all 6 content routes registered (/posts, /posts/{slug}, /pages, /pages/{slug}, /categories, /categories/{slug}) ✓; routes 500 on missing content.* schema (P1A-S4 migrations not applied to local Docker PG — expected; not a code bug). FLAG-P1AS6-2 resolved. Session Map updated: P1A-S6a + P1A-S6b inserted; P1A-S6 E2E now depends on P1A-S6b. | no new flags.
