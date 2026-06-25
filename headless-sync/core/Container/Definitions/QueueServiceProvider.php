@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Container\Definitions;
 
+use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\QueueProviderInterface;
@@ -23,27 +24,23 @@ use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
  *
  * Constructor injection only — ADR-012.
  * DECISION E v1.6: queue collapses fully into DatabaseConnectionInterface contract.
+ * DECISION O (v1.15): credentials resolved via CredentialResolver (define→getenv→default).
  * Config keys (under 'queue'): retry_limit, visibility_timeout_seconds,
  *                              backoff_base_seconds, backoff_cap_seconds.
  */
 final class QueueServiceProvider extends ServiceProvider
 {
-    public function __construct(private readonly array $config) {}
+    public function __construct(
+        private readonly array $config,
+        private readonly CredentialResolver $resolver,
+    ) {}
 
     public function register(object $container): void
     {
         assert($container instanceof Container);
 
         $container->singleton('queue.connection.pgsql', function () {
-            $cfg  = $this->config['database']['pgsql'] ?? [];
-            $dsn  = sprintf(
-                'host=%s port=%d dbname=%s user=%s password=%s',
-                $cfg['host']     ?? 'localhost',
-                (int) ($cfg['port']     ?? 5432),
-                $cfg['name']     ?? '',
-                $cfg['user']     ?? '',
-                $cfg['password'] ?? '',
-            );
+            $dsn  = $this->resolver->pgDsn();
             $conn = \pg_connect($dsn, PGSQL_CONNECT_FORCE_NEW);
 
             if ($conn === false) {

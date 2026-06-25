@@ -36,11 +36,23 @@ final class Environment
     }
 
     /**
-     * Read an environment variable with an optional default.
+     * Read a configuration value by constant name, following DECISION O precedence:
+     *   1. PHP define() constant (wp-config.php — highest precedence)
+     *   2. getenv() / $_ENV / $_SERVER fallback
+     *   3. $default
+     *
      * All secret retrieval must go through this method — never through wp_options.
      */
     public static function get(string $key, mixed $default = null): mixed
     {
+        // define() wins — idiomatic WP plugin configuration (DECISION O v1.15).
+        if (defined($key)) {
+            $v = constant($key);
+            if ($v !== null && $v !== '') {
+                return $v;
+            }
+        }
+
         $value = getenv($key);
 
         if ($value === false) {
@@ -51,29 +63,23 @@ final class Environment
     }
 
     /**
-     * Return environment overrides to be merged as the top config layer.
-     * Keys are dot-notation config paths; values are env-var-sourced scalars.
+     * Return overrides to be merged as the top config layer (dot-notation keys).
      *
-     * Extend this map as new env-backed config keys are introduced.
+     * DB credentials are NOT in this map — all credential resolution goes through
+     * CredentialResolver (DECISION O v1.15: define()→getenv()→default), injected
+     * into every service provider that needs a DB connection. The config array
+     * carries no credential values.
+     *
+     * Extend this map as new env-backed non-credential config keys are introduced.
      */
     public static function overrides(): array
     {
         $overrides = [];
 
         $map = [
-            'database.mysql.host'         => 'HSP_MYSQL_HOST',
-            'database.mysql.port'         => 'HSP_MYSQL_PORT',
-            'database.mysql.name'         => 'HSP_MYSQL_NAME',
-            'database.mysql.user'         => 'HSP_MYSQL_USER',
-            'database.mysql.password'     => 'HSP_MYSQL_PASSWORD',
-            'database.pgsql.host'         => 'HSP_PGSQL_HOST',
-            'database.pgsql.port'         => 'HSP_PGSQL_PORT',
-            'database.pgsql.name'         => 'HSP_PGSQL_NAME',
-            'database.pgsql.user'         => 'HSP_PGSQL_USER',
-            'database.pgsql.password'     => 'HSP_PGSQL_PASSWORD',
-            'queue.visibility_timeout'    => 'HSP_QUEUE_VISIBILITY_TIMEOUT',
-            'queue.retry_limit'           => 'HSP_QUEUE_RETRY_LIMIT',
-            'logging.level'               => 'HSP_LOG_LEVEL',
+            'queue.visibility_timeout'      => 'HSP_QUEUE_VISIBILITY_TIMEOUT',
+            'queue.retry_limit'             => 'HSP_QUEUE_RETRY_LIMIT',
+            'logging.level'                 => 'HSP_LOG_LEVEL',
             'observability.metrics.enabled' => 'HSP_METRICS_ENABLED',
         ];
 

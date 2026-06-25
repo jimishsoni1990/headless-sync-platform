@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-06-25 (P1A-S7 approved)  
-**Next session: P1A-S8**
+**Last updated:** 2026-06-25 (P1A-S8 approved)  
+**Next session: OPS-S1**
 
 ---
 
@@ -39,7 +39,7 @@
 - [x] P1A-S6d Dispatcher stage (system.events → system.queue_jobs, DECISION L)
 - [x] P1A-S6 Next.js validation + end-to-end DoD
 - [x] P1A-S7 REST namespace rename: api/v1 → hsp/v1 (DECISION N)
-- [ ] P1A-S8 Env → define config resolution
+- [x] P1A-S8 Env → define config resolution
 
 ### Early Operational Baseline
 
@@ -375,6 +375,7 @@ The live infrastructure (MySQL, PostgreSQL Docker, WordPress, worker engine) is 
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+2026-06-25 | P1A-S8 | shipped (DECISION O v1.15 credential resolution: define→getenv→default, fail-loud, MySQL inherits WP DB_*; bootstrap/CredentialResolver + 25 unit tests; four runtime providers + MigrationServiceProvider rewired to resolver via constructor injection; Environment::overrides() DB keys removed; wp-config define()s; FLAG-P1AS8-1 found+fixed at source — dbname/name mismatch, migration engine now connects live; topology + test injection unchanged; 822 tests + smoke 39/39 + live migration connect green) | FLAG-P1AS8-1 closed; FLAG-P1AS6D-1 open (unchanged); no new flags.
 2026-06-25 | P1A-S7 | REST namespace rename: api/v1 → hsp/v1. DECISION N recorded (ARCHITECTURE_DECISIONS.md v1.14). ContentRestRegistrar::NAMESPACE = 'hsp/v1'; all six register_rest_route() calls reference constant. hsp-blog/lib/api.ts: six fetch paths updated. smoke_e2e.php: four curl/echo strings updated. Doc reconciliation: DECISION F Implements table, IMPLEMENTATION_PLAN.md §4 endpoint bullets + pipeline diagram + P1A-S5/S6a session rows, Phase 1A DoD Next.js bullets, docs/09-delivery-api-and-consumption-architecture.md §7/§17 examples, FLAG-P1AS5-1 resolved. P1A-S7 + P1A-S8 rows inserted in Session Map; OPS-S1 Depends-on updated to P1A-S8. PHPUnit: 710/710 unit tests pass, 0 failures, 1 pre-existing deprecation. grep api/v1 in modules/, tests/, hsp-blog/, tools/ = 0 hits; docs/ = 4 meta-references in DECISION N text itself (Supersedes/Rationale/amendment log) + P1A-S7 session row name — all intentional. | FLAG-P1AS5-1 resolved.
 2026-06-25 | P1A-S6 | shipped (live PG migration apply 16 migrations; smoke_e2e.php dispatcher-tick + grep/BOM/replay fixes; 39/39 smoke; 797/797 tests; DoD-4 via AdapterAtomicityIntegrationTest 11/11, DoD-5 worker-level via HandlerSpineIntegrationTest, DoD-2 inline-tick latency ~50–160ms, production loop latency deferred to OPS-S1) | flags: FLAG-P1AS6D-1 open (carry-over).
 2026-06-24 | P1A-S6a (review pass) | ADR-012 fix for FLAG-P1AS6A-5: replaced bare \Closure capturing Container with typed ContentRestRegistrarFactory (final class, modules/Content/Rest/ContentRestRegistrarFactory.php). Factory receives six per-dep \Closure factories from ContentServiceProvider; holds no Container reference; memoizes ContentRestRegistrar on first __invoke(). ContentModule::$restRegistrarFactory typed ContentRestRegistrarFactory — grep-clean of ContentModule.php for Container::get/global $container. Lazy deferral preserved: DatabaseConnectionInterface not resolved until rest_api_init fires, proven by testContentRestRegistrarIsNotConstructedAtModuleLoadTime (spy counter). ContentModuleBootTest gains 3 new assertions (no-Container-reference reflection test, typed-factory assertion, lazy-deferral spy). Suite: 734/734, 0 failures, 0 skipped, 1 pre-existing deprecation. Live WP: api/v1 ✓, 6 routes ✓. FLAG-P1AS6A-5 resolved. FLAG-P1AS6-2 resolution text updated. FLAG-P1AS6A-1 marked E2E-blocking. FLAG-P1AS6A-2/-3/-4 recorded-and-kept. | no new flags.

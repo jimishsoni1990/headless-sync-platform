@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.14  
+Version: 1.15  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,8 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.15 | 2026-06-25 | DECISION O: credential resolution — `define()` constant → `getenv()` fallback → documented default; required-PG-missing fails loud; MySQL derives from WP `DB_*` constants by default; one `CredentialResolver` in `bootstrap/`; provider factories read resolver, not `getenv()` directly; `wp-config.php` uses `define()` for HSP PG credentials (no `putenv()`). |
+| 1.14 | 2026-06-25 | DECISION N: delivery REST namespace is `hsp/v1` (vendor-prefixed WP convention). Renames `api/v1` to `hsp/v1` in `ContentRestRegistrar::NAMESPACE` constant, `hsp-blog/lib/api.ts` fetch paths, and `tools/smoke_e2e.php` curl paths. Doc sites reconciled (DECISION F Implements table, IMPLEMENTATION_PLAN.md §4 endpoint bullets and pipeline diagram, Phase 1A DoD, FLAG-P1AS5-1 flag text). |
 | 1.1 | 2026-06-21 | OPEN-3, OPEN-4, OPEN-5, OPEN-7: column-type canon (TIMESTAMPTZ / VARCHAR(64) / UUID). DECISION 2: counter storage moved from postmeta/termmeta to dedicated `wp_hsp_aggregate_counters` table. Implications table updated. |
 | 1.2 | 2026-06-21 | Timestamp canon scoped by engine (PostgreSQL `TIMESTAMPTZ` vs MySQL `DATETIME`-UTC); type canon bound explicitly to ALL tables including module-owned `content.*`, superseding Doc 3 §9–11. Phase 0 freeze-check wording corrected so MySQL `DATETIME` columns are not flagged as violations. Implications table annotated with MySQL timestamp types and a note that `content.*` tables inherit v1.2 canon with freeze check at Phase 1A DoD. |
 | 1.3 | 2026-06-21 | OPEN-6: froze `wp_hsp_outbox` column-level DDL (previously "new table" only). Added `source_updated_at` (was missing — required to populate `system.events` OPEN-5 column). Pinned relay fidelity: `event_id` and `created_at` (capture time) are preserved unchanged from outbox into `system.events`. Implications table MySQL row updated to reference v1.3 frozen DDL. |
@@ -661,6 +663,45 @@ No `dispatch_status` column is added to `system.events` (frozen schema — OPEN-
 
 ---
 
+### DECISION O — Credential Resolution and Configuration Precedence (P1A-S8)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-06-25 |
+| **Session** | P1A-S8 |
+| **Authority** | CLAUDE.md (config/ holds no business logic; bootstrap owns env loading); ADR-012 (constructor injection only); DECISION H (wp-config defines are available in the worker process because the worker loads WordPress); DECISION E/K/L (connection topology frozen — this decision changes credential SOURCE only) |
+
+**Ruling:**
+
+**(a) Credential precedence — define → getenv → default.**  
+For every HSP credential key, the resolution order is:
+1. `defined('HSP_*') ? constant('HSP_*') : null` — `wp-config.php` `define()` constants (highest precedence; the idiomatic WP way to configure plugins)
+2. `getenv('HSP_*')` — environment variable fallback (Docker / CI / legacy `putenv()` callers)
+3. Documented default (empty string / well-known port number), or **hard failure** for required credentials that have no safe default
+
+**(b) Required PostgreSQL credentials fail loud.**  
+`HSP_PG_HOST`, `HSP_PG_USER`, `HSP_PG_PASSWORD`, and `HSP_PG_DBNAME` are required. If any resolves to an empty/null value from both sources (define + getenv) and no meaningful default exists, `CredentialResolver` throws a `\RuntimeException` with a clear diagnostic message naming the missing credential. Silent defaults that produce a broken but non-fatal connection string are prohibited for these four keys. `HSP_PG_PORT` defaults to `5432` and is not required.
+
+**(c) MySQL inherits WordPress DB_* constants by default.**  
+`CredentialResolver` derives MySQL connection parameters from the WordPress native constants `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` that WordPress sets in `wp-config.php` before any plugin runs. An optional `HSP_MYSQL_*` override path exists (`HSP_MYSQL_HOST`, `HSP_MYSQL_PORT`, `HSP_MYSQL_NAME`, `HSP_MYSQL_USER`, `HSP_MYSQL_PASSWORD`) but is unused by default. HSP does NOT duplicate WP DB credentials in `wp-config.php` — the resolver reads `DB_*` directly from WP constants when no `HSP_MYSQL_*` override is present.
+
+**(d) One resolver; provider factories read the resolver.**  
+All credential resolution runs through a single `HSP\Bootstrap\CredentialResolver` class. The four runtime PostgreSQL provider factories (Outbox, Queue, Delivery, Dispatcher) and the Relay MySQL factory each receive the resolver via constructor injection (ADR-012 compliant) and call its methods rather than reading `getenv()` or the config array directly for credential values. No provider factory may call `getenv()` directly for DB credentials.
+
+**(e) Test DSN injection preserved.**  
+Integration tests that inject raw `pg_connect()` DSNs continue to do so directly. The resolver is for runtime provider factories only. No integration test is rewired to the resolver.
+
+**(f) wp-config.php uses define(), not putenv(), for HSP PostgreSQL credentials.**  
+Local development sets HSP PG credentials via `define('HSP_PG_HOST', '127.0.0.1')` etc. in `wp-config.php`. The prior `putenv()` approach is replaced. No real secrets are committed — the `wp-config.php` local-dev block carries only the local Docker credentials used in the development environment. The credential key names are `HSP_PG_HOST`, `HSP_PG_PORT`, `HSP_PG_DBNAME`, `HSP_PG_USER`, `HSP_PG_PASSWORD`.
+
+**(g) Connection topology is unchanged.**  
+This decision changes only the credential source. The four FORCE_NEW handles established by DECISION K/E/L remain exactly as-is. FLAG-P1AS6D-1 stays Open and is not touched. No handle is merged, removed, or added.
+
+**Rationale:** `define()` constants are the idiomatic WordPress mechanism for plugin configuration. Using `getenv()` as the primary source required callers (including CI) to duplicate secrets in both `wp-config.php` and environment variables. Centralising resolution in one class with explicit precedence eliminates that duplication, makes the configuration surface visible at a glance in `wp-config.php`, and ensures required credentials fail loudly rather than producing a mystery connection error at `pg_connect()` time.
+
+---
+
 ### OPEN-10 — Unpublish Transition Capture: event action and projection model for post_status leaving the public set
 
 | Field | Value |
@@ -752,3 +793,6 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `core/Queue/Providers/Database/DatabaseQueueProvider` | Gains `enqueueIdempotent(EventInterface $event, string $queueName): void` — executes `INSERT … ON CONFLICT(event_id) DO NOTHING`. Does NOT replace or alter `enqueue()`. | DECISION L (v1.12) |
 | `database/Core/pgsql/0011_add_unique_event_id_to_queue_jobs.sql` | New forward migration: `ALTER TABLE system.queue_jobs ADD CONSTRAINT uq_queue_jobs_event_id UNIQUE (event_id)`. Must not edit frozen migration 0003. | DECISION L (v1.12) |
 | `core/Container/Definitions/DispatcherServiceProvider` | New service provider. Binds `'dispatcher.connection.pgsql'` (FORCE_NEW `PostgresDatabaseConnection`), `'dispatcher.strategy'` → `DispatcherWorkerStrategy`, `'dispatcher.engine'` → `WorkerEngine`. The dispatcher connection is physically distinct from the delivery handle (DECISION K) and relay/queue handles. Registered in `ContainerBuilder` after `QueueServiceProvider`. | DECISION L (v1.12) |
+| `bootstrap/CredentialResolver` | New class. Single source of truth for all database credential resolution. Implements `define()` → `getenv()` → default precedence. Required PG credentials (host, user, password, dbname) throw `\RuntimeException` when unresolvable. MySQL derives from WP `DB_*` constants by default; `HSP_MYSQL_*` overrides when present. Injected into provider factories via constructor (ADR-012). | DECISION O (v1.15) |
+| `core/Container/Definitions/OutboxServiceProvider`, `QueueServiceProvider`, `DeliveryServiceProvider`, `DispatcherServiceProvider` | Each receives a `CredentialResolver` instance via constructor. Must not call `getenv()` directly for DB credentials. | DECISION O (v1.15) |
+| `wp-config.php` (local dev) | HSP PostgreSQL credentials set via `define('HSP_PG_HOST', …)` etc. (not `putenv()`). MySQL credentials not duplicated — resolver reads `DB_*` WP constants directly. | DECISION O (v1.15) |

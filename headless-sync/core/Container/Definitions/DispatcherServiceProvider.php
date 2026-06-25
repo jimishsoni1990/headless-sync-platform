@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Container\Definitions;
 
+use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Database\PostgresDatabaseConnection;
@@ -42,25 +43,21 @@ use HSP\Core\Workers\WorkerEngine;
  *
  * Authority: DECISION L (v1.12, 2026-06-25); DECISION E (v1.6); DECISION K (v1.11)
  *            (pattern followed; delivery handle NOT reused); CLAUDE.md Rule 7.
+ *            DECISION O (v1.15): credentials resolved via CredentialResolver.
  */
 final class DispatcherServiceProvider extends ServiceProvider
 {
-    public function __construct(private readonly array $config) {}
+    public function __construct(
+        private readonly array $config,
+        private readonly CredentialResolver $resolver,
+    ) {}
 
     public function register(object $container): void
     {
         assert($container instanceof Container);
 
         $container->singleton('dispatcher.connection.pgsql', function (): PostgresDatabaseConnection {
-            $cfg = $this->config['database']['pgsql'] ?? [];
-            $dsn = sprintf(
-                'host=%s port=%d dbname=%s user=%s password=%s',
-                $cfg['host']     ?? 'localhost',
-                (int) ($cfg['port']     ?? 5432),
-                $cfg['name']     ?? '',
-                $cfg['user']     ?? '',
-                $cfg['password'] ?? '',
-            );
+            $dsn = $this->resolver->pgDsn();
 
             // FORCE_NEW guarantees a distinct physical libpq link from the delivery handle
             // (DatabaseConnectionInterface, DECISION K) and the relay/queue handles.

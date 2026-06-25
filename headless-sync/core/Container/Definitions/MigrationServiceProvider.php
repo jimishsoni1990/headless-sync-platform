@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Container\Definitions;
 
+use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Migrations\Connection\ConnectionFactory;
@@ -35,10 +36,16 @@ use HSP\Database\Core\Pgsql\CreateSystemSecurityEventsMigration;
  *   'migrations.core'             — array<MigrationInterface> (all core migrations)
  *
  * Constructor injection only — ADR-012.
+ * DECISION O (v1.15): PG credentials supplied via CredentialResolver (define→getenv→default).
+ *   ConnectionFactory::pgsql() receives a resolver-built config array keyed to match what
+ *   it reads ('host', 'port', 'dbname', 'user', 'password') — no DDL-abstraction change.
  */
 final class MigrationServiceProvider extends ServiceProvider
 {
-    public function __construct(private readonly array $config) {}
+    public function __construct(
+        private readonly array $config,
+        private readonly CredentialResolver $resolver,
+    ) {}
 
     public function register(object $container): void
     {
@@ -50,7 +57,16 @@ final class MigrationServiceProvider extends ServiceProvider
         });
 
         $container->singleton('migration.connection.pgsql', function () {
-            $cfg = $this->config['database']['pgsql'] ?? [];
+            // Build the config array that ConnectionFactory::pgsql() expects using
+            // CredentialResolver — resolves define()→getenv()→default (DECISION O).
+            // Key names match what ConnectionFactory reads: 'dbname' (not 'name').
+            $cfg = [
+                'host'     => $this->resolver->pgHost(),
+                'port'     => $this->resolver->pgPort(),
+                'dbname'   => $this->resolver->pgDbname(),
+                'user'     => $this->resolver->pgUser(),
+                'password' => $this->resolver->pgPassword(),
+            ];
             return ConnectionFactory::pgsql($cfg);
         });
 

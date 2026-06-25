@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Container\Definitions;
 
+use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\AggregateVersionCounterInterface;
@@ -26,23 +27,26 @@ use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
  *
  * Constructor injection only — ADR-012.
  * DECISION E v1.6: MySQL capture path and PG delivery path are distinct contracts.
+ * DECISION O (v1.15): credentials resolved via CredentialResolver (define→getenv→default).
  */
 final class OutboxServiceProvider extends ServiceProvider
 {
-    public function __construct(private readonly array $config) {}
+    public function __construct(
+        private readonly array $config,
+        private readonly CredentialResolver $resolver,
+    ) {}
 
     public function register(object $container): void
     {
         assert($container instanceof Container);
 
         $container->singleton('outbox.connection.mysql', function () {
-            $cfg    = $this->config['database']['mysql'] ?? [];
             $mysqli = new \mysqli(
-                $cfg['host']     ?? 'localhost',
-                $cfg['user']     ?? '',
-                $cfg['password'] ?? '',
-                $cfg['name']     ?? '',
-                (int) ($cfg['port'] ?? 3306),
+                $this->resolver->mysqlHost(),
+                $this->resolver->mysqlUser(),
+                $this->resolver->mysqlPassword(),
+                $this->resolver->mysqlDbname(),
+                $this->resolver->mysqlPort(),
             );
 
             if ($mysqli->connect_errno) {
@@ -57,15 +61,7 @@ final class OutboxServiceProvider extends ServiceProvider
         });
 
         $container->singleton('outbox.connection.pgsql', function () {
-            $cfg  = $this->config['database']['pgsql'] ?? [];
-            $dsn  = sprintf(
-                'host=%s port=%d dbname=%s user=%s password=%s',
-                $cfg['host']     ?? 'localhost',
-                $cfg['port']     ?? 5432,
-                $cfg['name']     ?? '',
-                $cfg['user']     ?? '',
-                $cfg['password'] ?? '',
-            );
+            $dsn  = $this->resolver->pgDsn();
             $conn = \pg_connect($dsn);
 
             if ($conn === false) {

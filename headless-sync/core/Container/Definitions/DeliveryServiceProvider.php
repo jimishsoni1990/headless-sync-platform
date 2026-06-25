@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Container\Definitions;
 
+use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -23,28 +24,24 @@ use HSP\Core\Database\PostgresDatabaseConnection;
  *     dedicated connection. Cross-sharing with 'outbox.connection.pgsql'
  *     (relay) or 'queue.connection.pgsql' (queue claim) is prohibited.
  *   DECISION E (v1.6) — no new raw pg_* wrapper; PostgresDatabaseConnection reused.
+ *   DECISION O (v1.15) — credentials resolved via CredentialResolver (define→getenv→default).
  *   FLAG-P0S5-1 / P0-S5 precedent — PGSQL_CONNECT_FORCE_NEW required wherever
  *     libpq pooling would entangle independent logical connections.
  *   ADR-012 — constructor injection only; no service-locator calls.
  */
 final class DeliveryServiceProvider extends ServiceProvider
 {
-    public function __construct(private readonly array $config) {}
+    public function __construct(
+        private readonly array $config,
+        private readonly CredentialResolver $resolver,
+    ) {}
 
     public function register(object $container): void
     {
         assert($container instanceof Container);
 
         $container->singleton(DatabaseConnectionInterface::class, function (): PostgresDatabaseConnection {
-            $cfg = $this->config['database']['pgsql'] ?? [];
-            $dsn = sprintf(
-                'host=%s port=%d dbname=%s user=%s password=%s',
-                $cfg['host']     ?? 'localhost',
-                (int) ($cfg['port']     ?? 5432),
-                $cfg['name']     ?? '',
-                $cfg['user']     ?? '',
-                $cfg['password'] ?? '',
-            );
+            $dsn = $this->resolver->pgDsn();
 
             // PGSQL_CONNECT_FORCE_NEW guarantees a distinct physical libpq link
             // from the relay handle (outbox.connection.pgsql) and the queue-claim
