@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.15  
+Version: 1.16  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.16 | 2026-07-11 | OPS-S1 architect rulings (5). **Ruling 0 — Connection Topology Ratified:** the four-connection topology (relay PG, queue/worker runtime, delivery [DECISION K], dispatcher [DECISION L]) is FROZEN as final; no fifth handle ever without a new ADR; heartbeat publication is worker-runtime infrastructure on the existing worker-runtime connection; no new connection class or raw `pg_*` wrapper. Recorded as amendment to DECISION L; **resolves FLAG-P1AS6D-1**. **Ruling 1 — DECISION P (Worker Heartbeat Storage):** single current-state table `system.worker_heartbeats` (upsert per tick, no history); `DatabaseHeartbeatPublisher` implements existing `HeartbeatPublisherInterface`, connection via constructor injection (ADR-012); migration authorized for OPS-S1. **Ruling 2 — DECISION Q (Metrics Without Persistence):** no metrics table/rollups/external telemetry in MVP; derived metrics computed on demand; runtime counters emitted as structured worker log events; "metrics emit" DoD = queryable operational status + structured log output. **Ruling 3 — DECISION R (Visibility-Timeout Recovery Driver):** `MaintenanceWorkerStrategy` drives `requeueTimedOut()`; cadence config-driven, no hardcoded timing. **Ruling 4 — DECISION S (DLQ Replay Lifecycle):** DLQ rows are permanent audit records (never deleted); replay is one PG transaction (verify exists → verify not replayed → DELETE any `system.queue_jobs` row sharing `event_id` → INSERT fresh job attempts=0 → stamp `replayed_at`); passes DECISION J stale guard; WP-CLI surface only. `replayed_at` is **absent** from the OPEN-3 v1.1 DLQ schema (migration 0004) — adding it is authorized within OPS-S1 migration scope. Implications table updated. |
 | 1.15 | 2026-06-25 | DECISION O: credential resolution — `define()` constant → `getenv()` fallback → documented default; required-PG-missing fails loud; MySQL derives from WP `DB_*` constants by default; one `CredentialResolver` in `bootstrap/`; provider factories read resolver, not `getenv()` directly; `wp-config.php` uses `define()` for HSP PG credentials (no `putenv()`). |
 | 1.14 | 2026-06-25 | DECISION N: delivery REST namespace is `hsp/v1` (vendor-prefixed WP convention). Renames `api/v1` to `hsp/v1` in `ContentRestRegistrar::NAMESPACE` constant, `hsp-blog/lib/api.ts` fetch paths, and `tools/smoke_e2e.php` curl paths. Doc sites reconciled (DECISION F Implements table, IMPLEMENTATION_PLAN.md §4 endpoint bullets and pipeline diagram, Phase 1A DoD, FLAG-P1AS5-1 flag text). |
 | 1.1 | 2026-06-21 | OPEN-3, OPEN-4, OPEN-5, OPEN-7: column-type canon (TIMESTAMPTZ / VARCHAR(64) / UUID). DECISION 2: counter storage moved from postmeta/termmeta to dedicated `wp_hsp_aggregate_counters` table. Implications table updated. |
@@ -639,6 +640,127 @@ No `dispatch_status` column is added to `system.events` (frozen schema — OPEN-
 
 **Rationale:** The gap between relay and queue was always implicit in the architecture (Doc 4 §3) but never implemented. Making it a `WorkerStrategyInterface` reuses the existing engine/heartbeat/shutdown infrastructure. Anti-join dedup is the simplest correct model: no state to track on the events table, no new columns, no watermark drift risk. UNIQUE(event_id) provides the database-level idempotency guarantee.
 
+> **Amendment (v1.16 — 2026-07-11 — Ruling 0: Connection Topology Ratified; resolves FLAG-P1AS6D-1):**
+>
+> The four-connection PostgreSQL topology is **FROZEN as final**:
+>
+> 1. **Relay handle** — `outbox.connection.pgsql` (relay-side capture/copy path).
+> 2. **Queue/worker runtime handle** — `queue.connection.pgsql` (queue-claim + worker runtime path).
+> 3. **Delivery handle** — `DatabaseConnectionInterface` singleton, FORCE_NEW, `DeliveryServiceProvider` (DECISION K).
+> 4. **Dispatcher handle** — `dispatcher.connection.pgsql`, FORCE_NEW, `DispatcherServiceProvider` (DECISION L clause (g)).
+>
+> This is the complete and final set. **No fifth handle may ever be introduced without a new ADR.** The fourth (dispatcher) handle is accepted as a pragmatic, ratified extension of the DECISION E (v1.6) temporary-duplication allowance — it is no longer "pending ratification." Consolidation of the four handles remains a future-ADR concern, not an OPS-S1 concern.
+>
+> **Heartbeat publication is worker-runtime infrastructure**, not a delivery or dispatcher concern. It uses the **existing worker-runtime connection** (handle 2 above), injected into `DatabaseHeartbeatPublisher` via constructor (ADR-012). This introduces **no new connection**: it does not add a fifth handle, does not create a new connection class, and does not add a new raw `pg_*` wrapper. See DECISION P.
+>
+> **FLAG-P1AS6D-1 is resolved by this ratification** — answer (a) "yes, the fourth FORCE_NEW handle is accepted"; the topology is frozen at four, and DECISION L now records it explicitly.
+
+---
+
+### DECISION P — Worker Heartbeat Storage (Ruling 1)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-07-11 |
+| **Session** | OPS-S1 (pre-implementation ruling) |
+| **Authority** | Doc 8 §15 (heartbeat field intent); ADR-012 (constructor injection); ADR-015 (UUIDv7 worker identity); OPEN-3 v1.1/v1.2 type canon |
+| **Resolves** | FLAG-OPSS1-1 (heartbeat persistence) |
+
+**Ruling:** Worker heartbeats persist to a **single current-state table** — one row per worker, **upserted per tick**. There is **no history table**.
+
+**`system.worker_heartbeats` — frozen DDL:**
+
+```sql
+worker_id         UUID        NOT NULL,   -- UUIDv7, self-assigned at worker startup (ADR-015)
+worker_type       TEXT        NOT NULL,   -- e.g. 'event', 'dispatcher', 'maintenance', 'relay'
+status            TEXT        NOT NULL,   -- e.g. 'running', 'idle', 'stopping'
+last_heartbeat_at TIMESTAMPTZ NOT NULL,   -- updated every tick; heartbeat-age crash detection reads this
+started_at        TIMESTAMPTZ NOT NULL,   -- worker process start time
+PRIMARY KEY (worker_id)
+```
+
+The upsert (`INSERT … ON CONFLICT (worker_id) DO UPDATE SET status = …, last_heartbeat_at = …`) advances the current-state row each tick. A monitor detects a crashed worker by `last_heartbeat_at` age (Doc 8 §15). All timestamps are `TIMESTAMPTZ` (v1.2 canon); `worker_id` is `UUID` (v1.1 canon).
+
+**Publisher:** `DatabaseHeartbeatPublisher` implements the **existing** `HeartbeatPublisherInterface` (introduced in P0-S6; currently satisfied by `NullHeartbeatPublisher`). It receives its PostgreSQL connection via **constructor injection** (ADR-012 — no service-locator call). The connection is the **worker-runtime handle** (DECISION L Ruling 0), not the delivery or dispatcher handle.
+
+**Migration authorization:** A new migration creating `system.worker_heartbeats` is **explicitly authorized for OPS-S1**. This is the formal amendment that lifts the freeze objection recorded in FLAG-OPSS1-1: the table is now a frozen contract in this document and in the Implications table below.
+
+**Rationale:** The DoD requires heartbeat to be "visible … and updated per tick." Current-state-only storage satisfies visibility and crash detection with the minimal schema; a history table adds unbounded growth and retention concerns for no MVP benefit. Reusing `HeartbeatPublisherInterface` avoids new contract surface — only the null implementation is swapped for a database-backed one.
+
+---
+
+### DECISION Q — Metrics Without Persistence (Ruling 2)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-07-11 |
+| **Session** | OPS-S1 (pre-implementation ruling) |
+| **Authority** | Doc 8 §27 (metric minimum set — intent); MVP scope (no OpenSearch/telemetry backend); observability-in-core |
+| **Resolves** | FLAG-OPSS1-2 (metric source of truth) |
+
+**Ruling:** MVP introduces **no metrics table, no rollup tables, and no external telemetry backend** (statsd, Prometheus, OpenSearch, etc.). Operational metrics are served two ways:
+
+1. **Derived metrics — computed on demand from PostgreSQL.** Queue depth, DLQ depth, oldest-pending age, and worker count are computed by aggregate query at read time over the existing tables (`system.queue_jobs`, `system.dead_letter_jobs`, `system.worker_heartbeats`). No column is added to any frozen table; no counter is persisted for these.
+2. **Runtime counters — emitted as structured worker log events.** Processed / retry / failure / replay counts are emitted as **structured log output** from the worker runtime. They are not stored in a metrics table and do not require a schema change.
+
+**DoD definition:** The OPS-S1 DoD term **"metrics emit"** is defined as: **queryable operational status (on-demand PostgreSQL aggregates) + structured log output (runtime counters).** This is the acceptance bar — no persisted metric store is owed.
+
+**Rationale:** A metrics table would require either a frozen-schema change (`system.queue_jobs` gaining per-job timing columns — a freeze conflict) or a new table with its own retention story, neither justified at MVP. Derived-on-demand + structured logs give operators the required visibility with zero new persistent schema and no conflict with the frozen queue/DLQ contracts. FLAG-OPSS1-2's "no producer" concern is resolved by defining the producer as on-demand queries plus log emission, not a counter sink.
+
+---
+
+### DECISION R — Visibility-Timeout Recovery Driver (Ruling 3)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-07-11 |
+| **Session** | OPS-S1 (pre-implementation ruling) |
+| **Authority** | OPEN-4 (visibility timeout; config-driven duration; requeue on expiry); Doc 8 (worker strategies); ADR-012 |
+| **Resolves** | FLAG-OPSS1-3 (crash→requeue runtime driver) |
+
+**Ruling:** `MaintenanceWorkerStrategy` is the **runtime driver** for `DatabaseQueueProvider::requeueTimedOut()`. It is un-stubbed in OPS-S1 (scope: `core/Workers/`) to invoke `requeueTimedOut()` on the maintenance tick, reviving jobs whose `visibility_timeout_at` has expired without completion.
+
+**Cadence is configuration-driven** with a sensible default; **no hardcoded timing values** in the strategy. The cadence config key is defined alongside the existing visibility-timeout config (OPEN-4 established that the timeout duration is config-driven; the recovery cadence follows the same discipline).
+
+The recovery/requeue loop uses the **worker-runtime connection** (DECISION L Ruling 0) — the same handle the queue provider already uses — not a new handle.
+
+**Rationale:** `requeueTimedOut()` already exists and is tested; the only gap was a runtime owner. `MaintenanceWorkerStrategy` is the natural home (its own stub comment already anticipated this). Config-driven cadence keeps operational tuning out of code and consistent with the OPEN-4 config-driven-timeout precedent.
+
+---
+
+### DECISION S — DLQ Replay Lifecycle (Ruling 4)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-07-11 |
+| **Session** | OPS-S1 (pre-implementation ruling) |
+| **Authority** | Doc 4 §24 (single-event replay); DECISION A (DLQ self-contained/replayable); DECISION J (Resolve-stage stale guard); DECISION L clause (d) (UNIQUE(event_id) on `system.queue_jobs`); OPEN-3 v1.1 (DLQ schema) |
+| **Resolves** | FLAG-OPSS1-4 (replay entry point + DLQ tooling surface) |
+| **Amends** | OPEN-3 (adds `replayed_at` to `system.dead_letter_jobs`) |
+
+**Ruling:**
+
+**(a) DLQ rows are permanent audit records — never deleted.** Replay does not delete the DLQ row. The row is preserved as an audit trail; replay marks it, it does not remove it.
+
+**(b) Replay executes in ONE PostgreSQL transaction** with these steps, in order:
+1. **Verify** the DLQ row exists.
+2. **Verify** it has not already been replayed (`replayed_at IS NULL`).
+3. **DELETE** any `system.queue_jobs` row sharing the same `event_id`. This is mandatory: DECISION L clause (d) retains `completed`/`dead_lettered` rows in `system.queue_jobs`, and `UNIQUE(event_id)` means a naive re-enqueue would `ON CONFLICT DO NOTHING` — a silent no-op. Clearing the prior job row first is what makes the fresh insert take effect.
+4. **INSERT** a fresh `system.queue_jobs` job for the event with **`attempts` reset to 0**.
+5. **Stamp** `replayed_at` on the DLQ row.
+
+**(c) Replay passes the Resolve-stage stale guard (DECISION J).** The re-enqueued event re-enters the pipeline through the normal queue/claim path. If the aggregate is already at or beyond the event's version, the Resolve-stage guard acks the job with **zero projection writes** — this is **correct behavior**, not an error. Replay never writes projections directly.
+
+**(d) Surface: WP-CLI only.** The operational surface is `hsp dlq list | inspect | replay`. **No admin UI** is built in OPS-S1 (this sidesteps the still-TBD WPCS/coding-standard decision at the WP admin boundary).
+
+**(e) `replayed_at` schema addition — authorized.** `replayed_at TIMESTAMPTZ NULL` is **absent** from the OPEN-3 v1.1 DLQ schema (verified against migration `0004_create_system_dead_letter_jobs.sql`, which carries only the four OPEN-3 delta columns). Adding it is **explicitly authorized within the OPS-S1 migration scope** as a forward migration (must not edit frozen migration 0004). This ruling is the formal amendment to OPEN-3; the Implications table below is updated accordingly.
+
+**Rationale:** Permanent DLQ rows preserve the audit trail DECISION A requires. The single-transaction delete-then-insert closes the `UNIQUE(event_id)` no-op trap identified in FLAG-OPSS1-4: without clearing the prior job row, replay would silently do nothing. Resetting `attempts` to 0 gives the replayed job a full retry budget. Relying on the DECISION J guard to no-op an already-current aggregate keeps replay idempotent and projection-safe. WP-CLI-only avoids coupling replay to the unresolved WP-admin coding-standard question.
+
 ---
 
 ### DECISION N — Delivery REST Namespace: `hsp/v1`
@@ -764,6 +886,8 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `system.events` | Event `type` column must accept fully-qualified `<domain>.<aggregate>.<action>` values | OPEN-1 |
 | `system.queue_jobs` | New columns: `worker_id UUID`, `visibility_timeout_at TIMESTAMPTZ` | OPEN-4 (v1.1) |
 | `system.dead_letter_jobs` | New columns: `stack_trace TEXT`, `attempt_count INTEGER`, `worker_id UUID`, `payload_snapshot JSONB NOT NULL` (NOT NULL per DECISION A v1.4; Doc 3 `payload` superseded) | OPEN-3 (v1.1), DECISION A (v1.4) |
+| `system.dead_letter_jobs` | New column: `replayed_at TIMESTAMPTZ NULL` (NULL = not yet replayed; stamped in the single-transaction replay per DECISION S; DLQ rows are never deleted). Absent from migration 0004 — added by a forward migration authorized in OPS-S1; migration 0004 must not be edited. | DECISION S (v1.16) |
+| `system.worker_heartbeats` | New table: PK `worker_id UUID`; `worker_type TEXT NOT NULL`, `status TEXT NOT NULL`, `last_heartbeat_at TIMESTAMPTZ NOT NULL`, `started_at TIMESTAMPTZ NOT NULL`. Single current-state row per worker, upserted per tick; no history table. Migration authorized in OPS-S1. | DECISION P (v1.16) |
 | `system.aggregate_versions` | New table: PK `(aggregate_type, aggregate_id)`, `latest_processed_version BIGINT`, `latest_processed_at TIMESTAMPTZ` | OPEN-2 |
 | `system.processed_events` | New table: PK `event_id`, `checksum VARCHAR(64)`, `processed_at TIMESTAMPTZ` | OPEN-7 (v1.1), DECISION 3 |
 | `system.schema_versions` | Frozen DDL: `id UUID PK`, `migration_name VARCHAR(255) NOT NULL`, `schema_context VARCHAR(100) NOT NULL` (engine-qualified values: `'core/mysql'`, `'core/pgsql'`, `'content/pgsql'`, etc.), `applied_at TIMESTAMPTZ NOT NULL`, `rolled_back_at TIMESTAMPTZ NULL`, `checksum VARCHAR(64) NOT NULL`, `UNIQUE(migration_name, schema_context)` | OPEN-8 (v1.4) |
@@ -796,3 +920,7 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `bootstrap/CredentialResolver` | New class. Single source of truth for all database credential resolution. Implements `define()` → `getenv()` → default precedence. Required PG credentials (host, user, password, dbname) throw `\RuntimeException` when unresolvable. MySQL derives from WP `DB_*` constants by default; `HSP_MYSQL_*` overrides when present. Injected into provider factories via constructor (ADR-012). | DECISION O (v1.15) |
 | `core/Container/Definitions/OutboxServiceProvider`, `QueueServiceProvider`, `DeliveryServiceProvider`, `DispatcherServiceProvider` | Each receives a `CredentialResolver` instance via constructor. Must not call `getenv()` directly for DB credentials. | DECISION O (v1.15) |
 | `wp-config.php` (local dev) | HSP PostgreSQL credentials set via `define('HSP_PG_HOST', …)` etc. (not `putenv()`). MySQL credentials not duplicated — resolver reads `DB_*` WP constants directly. | DECISION O (v1.15) |
+| `core/Workers/` heartbeat publisher | New `DatabaseHeartbeatPublisher` implements the existing `HeartbeatPublisherInterface` (replaces `NullHeartbeatPublisher` at runtime); upserts `system.worker_heartbeats` per tick; PG connection injected via constructor (ADR-012), using the worker-runtime handle (DECISION L Ruling 0) — no new handle/class/`pg_*` wrapper. | DECISION P (v1.16) |
+| `core/Workers/Strategies/MaintenanceWorkerStrategy` | Un-stubbed: drives `DatabaseQueueProvider::requeueTimedOut()` on a config-driven cadence (no hardcoded timing); uses the worker-runtime handle. | DECISION R (v1.16) |
+| DLQ replay path (`core/`) + WP-CLI `hsp dlq list\|inspect\|replay` | Replay runs in one PG transaction: verify DLQ row exists → verify `replayed_at IS NULL` → DELETE any `system.queue_jobs` row sharing `event_id` → INSERT fresh job `attempts = 0` → stamp `replayed_at`. Re-enters via normal queue/claim path; DECISION J Resolve-stage guard may ack with zero writes (correct). WP-CLI only; no admin UI. DLQ rows never deleted. | DECISION S (v1.16) |
+| Metrics (no persistence) | No metrics table / rollups / external telemetry in MVP. Derived metrics (queue depth, DLQ depth, oldest-pending age, worker count) computed on demand via PostgreSQL aggregates; runtime counters (processed/retry/failure/replay) emitted as structured worker log events. "metrics emit" DoD = queryable status + structured logs. | DECISION Q (v1.16) |
