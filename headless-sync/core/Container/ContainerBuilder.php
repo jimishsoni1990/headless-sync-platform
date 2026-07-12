@@ -49,7 +49,7 @@ final class ContainerBuilder
         // It opens its own FORCE_NEW connection — does NOT use DatabaseConnectionInterface
         // (DECISION K delivery handle). DECISION L v1.12.
         $registry->addProvider(new DispatcherServiceProvider($config, $resolver));
-        $registry->addProvider(new WorkerServiceProvider());
+        $registry->addProvider(new WorkerServiceProvider($config));
         $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 

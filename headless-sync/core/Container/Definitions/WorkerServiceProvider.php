@@ -10,8 +10,11 @@ use HSP\Core\Contracts\QueueProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Delivery\AdapterRegistry;
 use HSP\Core\Events\EventRegistry;
+use HSP\Core\Observability\OperationalMetricsQuery;
+use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Observability\WorkerCounters;
+use HSP\Core\Workers\DatabaseHeartbeatPublisher;
 use HSP\Core\Workers\HeartbeatPublisherInterface;
-use HSP\Core\Workers\NullHeartbeatPublisher;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
 use HSP\Core\Workers\Strategies\MaintenanceWorkerStrategy;
 use HSP\Core\Workers\Strategies\ReconciliationWorkerStrategy;
@@ -19,25 +22,40 @@ use HSP\Core\Workers\Strategies\ReplayWorkerStrategy;
 use HSP\Core\Workers\WorkerEngine;
 
 /**
- * Registers the shared worker engine, registries, and strategies.
+ * Registers the shared worker engine, registries, strategies, and heartbeat publisher.
  *
  * Bindings:
  *   EventRegistry                   — singleton; explicit registration only (no discovery)
  *   AdapterRegistry                 — singleton; explicit registration only
- *   HeartbeatPublisherInterface     — NullHeartbeatPublisher (no-op until OPS-S1)
+ *   HeartbeatPublisherInterface     — DatabaseHeartbeatPublisher (DECISION P) on the
+ *                                     worker-runtime handle (DECISION L Ruling 0)
  *   'worker.strategy.event'         — EventWorkerStrategy (wired to 'content' queue)
  *   'worker.strategy.replay'        — ReplayWorkerStrategy stub
  *   'worker.strategy.reconciliation'— ReconciliationWorkerStrategy stub
- *   'worker.strategy.maintenance'   — MaintenanceWorkerStrategy stub
+ *   'worker.strategy.maintenance'   — MaintenanceWorkerStrategy (drives requeueTimedOut)
  *   'worker.engine.event'           — WorkerEngine driven by EventWorkerStrategy
+ *   'worker.engine.maintenance'     — WorkerEngine driven by MaintenanceWorkerStrategy
  *
  * Authority:
- *   DECISION E (v1.6) — EventWorkerStrategy receives DatabaseConnectionInterface for
+ *   DECISION E (v1.6)  — EventWorkerStrategy receives DatabaseConnectionInterface for
  *                        Resolve-stage stale guard (DECISION J); no new raw pg_* wrapper.
- *   CLAUDE.md Rule 7  — constructor injection only; no Container::get() inside business logic.
+ *   DECISION P (v1.16) — DatabaseHeartbeatPublisher replaces NullHeartbeatPublisher on
+ *                        the runtime path; upserts system.worker_heartbeats per tick.
+ *   DECISION L Ruling 0 (v1.16) — heartbeat rides the EXISTING worker-runtime connection
+ *                        ('queue.connection.pgsql'); no new handle/class/pg_* wrapper.
+ *   DECISION R (v1.16) — MaintenanceWorkerStrategy drives requeueTimedOut() on a
+ *                        config-driven cadence (no hardcoded timing).
+ *   CLAUDE.md Rule 7   — constructor injection only; no Container::get() inside business logic.
  */
 final class WorkerServiceProvider extends ServiceProvider
 {
+    /**
+     * @param array<string,mixed> $config
+     */
+    public function __construct(
+        private readonly array $config = [],
+    ) {}
+
     public function register(object $container): void
     {
         assert($container instanceof Container);
@@ -45,9 +63,24 @@ final class WorkerServiceProvider extends ServiceProvider
         $container->singleton(EventRegistry::class, fn () => new EventRegistry());
         $container->singleton(AdapterRegistry::class, fn () => new AdapterRegistry());
 
+        // Observability (DECISION Q): in-process runtime counters + structured-log sink,
+        // and the on-demand derived-metrics query surface. No metrics table is created.
+        $container->singleton(WorkerCounters::class, fn () => new WorkerCounters());
+        $container->singleton(StructuredLogger::class, fn () => new StructuredLogger());
+        $container->singleton(
+            OperationalMetricsQuery::class,
+            fn (Container $c) => new OperationalMetricsQuery(
+                $c->get(DatabaseConnectionInterface::class),
+            ),
+        );
+
+        // DECISION P + DECISION L Ruling 0: the heartbeat publisher writes through the
+        // EXISTING worker-runtime handle ('queue.connection.pgsql'). No new connection.
         $container->singleton(
             HeartbeatPublisherInterface::class,
-            fn () => new NullHeartbeatPublisher(),
+            fn (Container $c) => new DatabaseHeartbeatPublisher(
+                $c->get('queue.connection.pgsql'),
+            ),
         );
 
         $container->singleton('worker.strategy.event', function (Container $c) {
@@ -55,17 +88,40 @@ final class WorkerServiceProvider extends ServiceProvider
                 $c->get(QueueProviderInterface::class),
                 $c->get(EventRegistry::class),
                 $c->get(DatabaseConnectionInterface::class),
+                retryLimit: 10,
+                counters:   $c->get(WorkerCounters::class),
             );
         });
 
         $container->singleton('worker.strategy.replay', fn () => new ReplayWorkerStrategy());
         $container->singleton('worker.strategy.reconciliation', fn () => new ReconciliationWorkerStrategy());
-        $container->singleton('worker.strategy.maintenance', fn () => new MaintenanceWorkerStrategy());
+
+        $container->singleton('worker.strategy.maintenance', function (Container $c) {
+            /** @var array<string,mixed> $maintenanceConfig */
+            $maintenanceConfig = $this->config['worker']['maintenance'] ?? [];
+
+            return new MaintenanceWorkerStrategy(
+                $c->get(QueueProviderInterface::class),
+                $maintenanceConfig,
+            );
+        });
 
         $container->singleton('worker.engine.event', function (Container $c) {
             return new WorkerEngine(
                 $c->get('worker.strategy.event'),
                 $c->get(HeartbeatPublisherInterface::class),
+                idleWaitMs: 200,
+                workerType: 'event',
+                counters:   $c->get(WorkerCounters::class),
+                logger:     $c->get(StructuredLogger::class),
+            );
+        });
+
+        $container->singleton('worker.engine.maintenance', function (Container $c) {
+            return new WorkerEngine(
+                $c->get('worker.strategy.maintenance'),
+                $c->get(HeartbeatPublisherInterface::class),
+                workerType: 'maintenance',
             );
         });
     }

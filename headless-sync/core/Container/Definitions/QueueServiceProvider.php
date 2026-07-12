@@ -7,7 +7,10 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
+use HSP\Core\Cli\DlqCommand;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Queue\DeadLetterRepository;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueConnection;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
 
@@ -64,6 +67,23 @@ final class QueueServiceProvider extends ServiceProvider
         $container->singleton(
             DatabaseQueueProvider::class,
             fn (Container $c) => $c->get(QueueProviderInterface::class),
+        );
+
+        // DLQ read/replay surface (DECISION S). System-side DML on the queue tables —
+        // uses the runtime queue/worker handle (DECISION L Ruling 0 — no new handle).
+        $container->singleton(
+            DeadLetterRepository::class,
+            fn (Container $c) => new DeadLetterRepository($c->get('queue.connection.pgsql')),
+        );
+
+        // WP-CLI DLQ command surface (DECISION S clause (d)). Registered with WP_CLI in
+        // headless-sync.php; bound here so it resolves from the composition root.
+        $container->singleton(
+            DlqCommand::class,
+            fn (Container $c) => new DlqCommand(
+                $c->get(DeadLetterRepository::class),
+                $c->get(StructuredLogger::class),
+            ),
         );
     }
 }

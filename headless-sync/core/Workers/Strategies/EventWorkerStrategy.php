@@ -9,6 +9,7 @@ use HSP\Core\Contracts\QueueProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Events\Outbox\OutboxEvent;
+use HSP\Core\Observability\WorkerCounters;
 use HSP\Core\Workers\WorkerExecutionContext;
 use HSP\Core\Workers\WorkerStrategyInterface;
 
@@ -56,6 +57,8 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
         private readonly EventRegistry               $eventRegistry,
         private readonly DatabaseConnectionInterface $db,
         private readonly int                         $retryLimit = 10,
+        /** Optional runtime counters (DECISION Q); null → no counting. */
+        private readonly ?WorkerCounters             $counters = null,
     ) {}
 
     public function execute(WorkerExecutionContext $context): bool
@@ -87,6 +90,7 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
             if ($this->isStale($event)) {
                 // Stale event: ack the job (no DLQ, no retry), make no writes.
                 $this->queue->complete($jobId, $context->workerId);
+                $this->counters?->incrementProcessed();
                 return true;
             }
 
@@ -95,6 +99,7 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
 
             // Step 8a — Acknowledge: job completed successfully.
             $this->queue->complete($jobId, $context->workerId);
+            $this->counters?->incrementProcessed();
 
         } catch (\Throwable $e) {
             if ($attemptCount >= $this->retryLimit) {
@@ -104,9 +109,11 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
                     'attempt_count'    => $attemptCount,
                     'payload_snapshot' => $job,
                 ]);
+                $this->counters?->incrementFailure();
             } else {
                 $backoff = $this->computeBackoffSeconds($attemptCount);
                 $this->queue->release($jobId, $context->workerId, $backoff);
+                $this->counters?->incrementRetry();
             }
         }
 

@@ -25,6 +25,8 @@ use HSP\Database\Core\Pgsql\CreateSystemAuditLogMigration;
 use HSP\Database\Core\Pgsql\CreateSystemSchemaVersionsMigration;
 use HSP\Database\Core\Pgsql\CreateSystemModuleVersionsMigration;
 use HSP\Database\Core\Pgsql\CreateSystemSecurityEventsMigration;
+use HSP\Database\Core\Pgsql\CreateSystemWorkerHeartbeatsMigration;
+use HSP\Database\Core\Pgsql\AddReplayedAtToDeadLetterJobsMigration;
 
 /**
  * Registers the migration engine and the full set of core migrations.
@@ -94,6 +96,9 @@ final class MigrationServiceProvider extends ServiceProvider
                 new CreateSystemSchemaVersionsMigration($pgsql),
                 new CreateSystemModuleVersionsMigration($pgsql),
                 new CreateSystemSecurityEventsMigration($pgsql),
+                // OPS-S1 (v1.16): worker health + DLQ replay audit column.
+                new CreateSystemWorkerHeartbeatsMigration($pgsql),   // DECISION P
+                new AddReplayedAtToDeadLetterJobsMigration($pgsql),  // DECISION S clause (e)
             ];
         });
     }

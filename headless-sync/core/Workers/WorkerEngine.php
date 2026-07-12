@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace HSP\Core\Workers;
 
 use HSP\Core\Contracts\WorkerInterface;
+use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Observability\WorkerCounters;
 
 /**
  * Shared worker engine with pluggable strategies.
@@ -41,13 +43,21 @@ final class WorkerEngine implements WorkerInterface
 {
     private bool   $running  = false;
     private string $workerId;
+    private readonly \DateTimeImmutable $startedAt;
 
     public function __construct(
         private readonly WorkerStrategyInterface   $strategy,
         private readonly HeartbeatPublisherInterface $heartbeatPublisher,
         private readonly int                        $idleWaitMs = 200,
+        /** Worker-type tag stamped on every heartbeat (DECISION P). */
+        private readonly string                     $workerType = 'worker',
+        /** Optional runtime counters emitted as structured logs (DECISION Q). */
+        private readonly ?WorkerCounters            $counters = null,
+        /** Optional structured-log sink for runtime counters (DECISION Q). */
+        private readonly ?StructuredLogger          $logger = null,
     ) {
-        $this->workerId = $this->uuidv7();
+        $this->workerId  = $this->uuidv7();
+        $this->startedAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
     }
 
     // -------------------------------------------------------------------------
@@ -72,7 +82,21 @@ final class WorkerEngine implements WorkerInterface
             workerId:        $this->workerId,
             status:          $didWork ? 'processing' : 'idle',
             lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+            workerType:      $this->workerType,
+            startedAt:       $this->startedAt,
         ));
+
+        // Structured emission of runtime counters (DECISION Q clause 2). Only on ticks
+        // that did work, to avoid flooding the log while the queue is idle.
+        if ($didWork && $this->counters !== null && $this->logger !== null) {
+            $this->logger->metric('worker.counters', array_merge(
+                [
+                    'worker_id'   => $this->workerId,
+                    'worker_type' => $this->workerType,
+                ],
+                $this->counters->snapshot(),
+            ));
+        }
 
         return $didWork;
     }
@@ -100,6 +124,8 @@ final class WorkerEngine implements WorkerInterface
             workerId:        $this->workerId,
             status:          'shutdown',
             lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+            workerType:      $this->workerType,
+            startedAt:       $this->startedAt,
         ));
     }
 

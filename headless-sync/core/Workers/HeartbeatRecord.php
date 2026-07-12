@@ -11,6 +11,10 @@ namespace HSP\Core\Workers;
  * read heartbeats to detect stale workers and trigger crash recovery.
  *
  * Authority: Doc 8 §15 — heartbeat must carry worker_id, status, last_heartbeat_at.
+ *   DECISION P (v1.16) — persisted to system.worker_heartbeats: the record also
+ *   carries worker_type and started_at so the current-state upsert can populate
+ *   the full frozen DDL. worker_type/startedAt default so pre-OPS-S1 callers and
+ *   fakes remain valid.
  */
 final class HeartbeatRecord
 {
@@ -20,5 +24,9 @@ final class HeartbeatRecord
         /** 'idle' | 'processing' | 'shutdown'. */
         public readonly string $status,
         public readonly \DateTimeImmutable $lastHeartbeatAt,
+        /** e.g. 'event' | 'dispatcher' | 'maintenance' | 'relay' — DECISION P. */
+        public readonly string $workerType = 'worker',
+        /** Worker process start time — DECISION P. Defaults to now if not supplied. */
+        public readonly ?\DateTimeImmutable $startedAt = null,
     ) {}
 }

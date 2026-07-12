@@ -32,6 +32,7 @@ final class ConfigLoader
         'app',
         'database',
         'queue',
+        'worker',
         'modules',
         'security',
         'logging',

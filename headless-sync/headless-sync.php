@@ -51,3 +51,20 @@ register_activation_hook(__FILE__, [$application, 'activate']);
 register_deactivation_hook(__FILE__, [$application, 'deactivate']);
 
 add_action('plugins_loaded', [$application, 'boot'], 5);
+
+// WP-CLI: register `hsp dlq …` and `hsp status` (DECISION S clause (d), DECISION Q).
+// Runs after boot (priority 20) so the container is available. No-op outside WP-CLI.
+if (defined('WP_CLI') && WP_CLI) {
+    add_action('plugins_loaded', static function () use ($application): void {
+        $container = $application->getContainer();
+        if ($container === null) {
+            return;
+        }
+
+        $registrar = new HSP\Core\Cli\WpCliDlqRegistrar(
+            $container->get(HSP\Core\Cli\DlqCommand::class),
+            $container->get(HSP\Core\Observability\OperationalMetricsQuery::class),
+        );
+        $registrar->register();
+    }, 20);
+}
