@@ -8,8 +8,10 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\EventProviderInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
+use HSP\Core\Contracts\ReplayEmitterInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
+use HSP\Core\Replay\ReplayService;
 use HSP\Modules\Content\Adapters\CategoryAdapter;
 use HSP\Modules\Content\Adapters\PageAdapter;
 use HSP\Modules\Content\Adapters\PostAdapter;
@@ -24,6 +26,7 @@ use HSP\Modules\Content\Handlers\PageUpsertHandler;
 use HSP\Modules\Content\Handlers\PostTombstoneHandler;
 use HSP\Modules\Content\Handlers\PostUpsertHandler;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
+use HSP\Modules\Content\Replay\ContentReplayEmitter;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\CategoryResource;
@@ -152,6 +155,28 @@ final class ContentServiceProvider extends ServiceProvider
         // -------------------------------------------------------------------------
 
         $container->singleton(WpContentLoader::class, fn () => new WpContentLoaderImpl());
+
+        // -------------------------------------------------------------------------
+        // Replay (DECISION T) — the Content module owns the ReplayEmitterInterface impl
+        // (reads current WP state, decides .updated/.deleted, emits via the outbox path).
+        // ReplayService is core orchestration; it reads system.events for date-range
+        // discovery via the existing delivery DatabaseConnectionInterface handle (no
+        // fifth handle — DECISION L Ruling 0) and delegates each emit to the emitter.
+        // -------------------------------------------------------------------------
+
+        $container->singleton(ReplayEmitterInterface::class, fn (Container $c) =>
+            new ContentReplayEmitter(
+                $c->get(EventProviderInterface::class),
+                $c->get(WpContentLoader::class),
+            )
+        );
+
+        $container->singleton(ReplayService::class, fn (Container $c) =>
+            new ReplayService(
+                $c->get(DatabaseConnectionInterface::class),
+                [$c->get(ReplayEmitterInterface::class)],
+            )
+        );
 
         // -------------------------------------------------------------------------
         // Validators, extractors, transformers (stateless; safe to share as singletons)

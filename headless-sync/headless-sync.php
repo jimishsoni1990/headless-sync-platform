@@ -66,5 +66,11 @@ if (defined('WP_CLI') && WP_CLI) {
             $container->get(HSP\Core\Observability\OperationalMetricsQuery::class),
         );
         $registrar->register();
+
+        // WP-CLI: register `hsp replay entity|range` (DECISION T). WP-CLI only.
+        $replayRegistrar = new HSP\Core\Cli\WpCliReplayRegistrar(
+            $container->get(HSP\Core\Cli\ReplayCommand::class),
+        );
+        $replayRegistrar->register();
     }, 20);
 }

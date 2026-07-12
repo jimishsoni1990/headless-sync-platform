@@ -12,7 +12,9 @@ use HSP\Core\Delivery\AdapterRegistry;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Observability\OperationalMetricsQuery;
 use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Cli\ReplayCommand;
 use HSP\Core\Observability\WorkerCounters;
+use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\DatabaseHeartbeatPublisher;
 use HSP\Core\Workers\HeartbeatPublisherInterface;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
@@ -93,7 +95,21 @@ final class WorkerServiceProvider extends ServiceProvider
             );
         });
 
-        $container->singleton('worker.strategy.replay', fn () => new ReplayWorkerStrategy());
+        // DECISION T: ReplayWorkerStrategy owns entity/date-range replay, delegating to
+        // ReplayService (bound by ContentServiceProvider — it wires the module emitter and
+        // the delivery handle). Resolved lazily, so provider registration order is safe.
+        $container->singleton('worker.strategy.replay', fn (Container $c) =>
+            new ReplayWorkerStrategy($c->get(ReplayService::class))
+        );
+        // DECISION T: WP-CLI replay command surface. Depends on the replay strategy and
+        // the structured logger (emits the `replay` runtime counter — DECISION Q).
+        $container->singleton(ReplayCommand::class, fn (Container $c) =>
+            new ReplayCommand(
+                $c->get('worker.strategy.replay'),
+                $c->get(StructuredLogger::class),
+            )
+        );
+
         $container->singleton('worker.strategy.reconciliation', fn () => new ReconciliationWorkerStrategy());
 
         $container->singleton('worker.strategy.maintenance', function (Container $c) {
