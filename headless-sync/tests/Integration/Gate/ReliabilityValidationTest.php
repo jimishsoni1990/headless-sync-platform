@@ -9,10 +9,14 @@ use HSP\Core\Events\Dispatcher\EventDispatcher;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Events\Outbox\Connection\MysqliOutboxConnection;
 use HSP\Core\Events\Outbox\Connection\PgsqlOutboxConnection;
+use HSP\Core\Events\Outbox\AggregateVersionCounter;
+use HSP\Core\Events\Outbox\OutboxWriter;
 use HSP\Core\Queue\DeadLetterRepository;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
+use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
 use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
+use HSP\Core\Workers\Strategies\ReplayWorkerStrategy;
 use HSP\Core\Workers\WorkerExecutionContext;
 use HSP\Modules\Content\Adapters\CategoryAdapter;
 use HSP\Modules\Content\Adapters\PageAdapter;
@@ -31,9 +35,14 @@ use HSP\Modules\Content\Subscribers\ContentSubscriber;
 use HSP\Modules\Content\Transformers\CategoryTransformer;
 use HSP\Modules\Content\Transformers\PageTransformer;
 use HSP\Modules\Content\Transformers\PostTransformer;
+use HSP\Modules\Content\EventProvider;
+use HSP\Modules\Content\Replay\ContentReplayEmitter;
 use HSP\Modules\Content\Validation\CategoryValidator;
 use HSP\Modules\Content\Validation\PageValidator;
 use HSP\Modules\Content\Validation\PostValidator;
+use HSP\Tests\Integration\Replay\FakeWpdb;
+use HSP\Tests\Integration\Replay\FakeWpStore;
+use HSP\Tests\Integration\Replay\ReplayReadingLoader;
 use HSP\Tests\Unit\Content\FakeWpContentLoader;
 use PHPUnit\Framework\TestCase;
 
@@ -72,14 +81,20 @@ final class ReliabilityValidationTest extends TestCase
 
     private string $prefix = 'test_gate_';
     private string $outbox;
+    private string $counters;
+
+    /** In-memory WordPress state the replay emitter reads (DECISION H reload boundary). */
+    private FakeWpStore $wp;
 
     protected function setUp(): void
     {
-        $this->outbox = $this->prefix . 'hsp_outbox';
+        $this->outbox   = $this->prefix . 'hsp_outbox';
+        $this->counters = $this->prefix . 'hsp_aggregate_counters';
 
         $this->mysqli = $this->connectMysql();
         $this->pgConn = $this->connectPgsql();
         $this->db     = new PostgresDatabaseConnection($this->pgConn);
+        $this->wp     = new FakeWpStore();
 
         $this->createMysqlSchema();
         $this->createPgsqlSchema();
@@ -89,6 +104,7 @@ final class ReliabilityValidationTest extends TestCase
     {
         if ($this->mysqli !== null) {
             $this->mysqli->query("DROP TABLE IF EXISTS `{$this->outbox}`");
+            $this->mysqli->query("DROP TABLE IF EXISTS `{$this->counters}`");
             $this->mysqli->close();
             $this->mysqli = null;
         }
@@ -265,36 +281,119 @@ final class ReliabilityValidationTest extends TestCase
     }
 
     // =========================================================================
-    // Criterion 2 — Replay: single event, entity, AND date-range modes.
-    //   STOP-and-flag guard. Proves single-event replay exists; asserts entity and
-    //   date-range modes are ABSENT (so this test fails loudly if someone silently
-    //   builds them in a gate session, or if the gap is closed in a proper session
-    //   without updating the gate record). Recorded as FLAG-GATES1-1 in STATUS.md.
+    // Criterion 2 — Replay succeeds for single event, entity, AND date-range modes.
+    //   §4: "Replay succeeds for single event, entity, and date-range replay modes."
+    //   Doc 4 §24 modes: single event (operational recovery), entity (repair one
+    //   aggregate), date range (repair outage windows). Full Replay is out of MVP gate
+    //   scope (Phase 3). All three in-scope modes are now SHIPPED — single event via the
+    //   DECISION S DLQ path (exercised end-to-end in criterion 3), entity + date-range via
+    //   the DECISION T ReplayService / `hsp replay entity|range` path (OPS-S2). Each mode
+    //   is asserted at gate altitude: replay runs, and the projection converges to the
+    //   correct final state through the normal pipeline. This is gate evidence, not a
+    //   re-run of the OPS-S2 integration suite (FLAG-GATES1-1 resolved by DECISION T).
     // =========================================================================
 
-    public function test_criterion2_only_single_event_replay_is_implemented(): void
+    public function test_criterion2_single_event_replay_succeeds(): void
     {
-        // Single-event replay DOES exist and is proven by criterion 3 above via
-        // DeadLetterRepository::replay(string $dlqId). Confirm its shape here.
-        $repo = new \ReflectionClass(DeadLetterRepository::class);
-        self::assertTrue($repo->hasMethod('replay'), 'single-event replay entry point exists');
+        // Single-event replay is the DECISION S DLQ path: DeadLetterRepository::replay(dlqId)
+        // re-enqueues one dead-lettered event, which reprocesses to the correct final state.
+        // Its end-to-end success (DLQ → replay → correct projection) is proven in full by
+        // test_criterion3_* above. At the gate level, confirm the single-event entry point is
+        // present and single-keyed (one DLQ id → one event), the shape the §4 mode requires.
+        $repo   = new \ReflectionClass(DeadLetterRepository::class);
         $params = $repo->getMethod('replay')->getParameters();
-        self::assertCount(1, $params, 'replay() takes exactly one argument (a single DLQ id) — single-event mode');
+
+        self::assertTrue($repo->hasMethod('replay'), 'single-event replay entry point exists (DECISION S)');
+        self::assertCount(1, $params, 'replay() takes exactly one argument — a single DLQ id (single-event mode)');
         self::assertSame('dlqId', $params[0]->getName(), 'replay() is keyed by a single DLQ row id');
+    }
 
-        // Entity replay and date-range replay are NOT implemented anywhere. There is no
-        // replayEntity()/replayDateRange() method, and ReplayWorkerStrategy is a stub.
-        self::assertFalse($repo->hasMethod('replayEntity'), 'entity replay is NOT implemented (STOP-and-flag)');
-        self::assertFalse($repo->hasMethod('replayDateRange'), 'date-range replay is NOT implemented (STOP-and-flag)');
+    public function test_criterion2_entity_replay_converges_a_corrupt_projection_to_correct_final_state(): void
+    {
+        // Entity replay (Doc 4 §24: "repair one aggregate"). A post was synced, then its
+        // projection row was corrupted (as an operator might find after a bad deploy). Running
+        // entity replay via the shipped DECISION T path must converge the projection back to
+        // the correct current WordPress state through the normal pipeline.
+        $this->wp->putPost(700, 'publish', 'post', 'gate-entity-repaired');
 
-        self::markTestIncomplete(
-            'GATE-S1 criterion 2 FAILS: entity and date-range replay modes are not implemented. '
-            . 'OPS-S1 shipped single-event replay only (ReplayWorkerStrategy is a stub; '
-            . 'DeadLetterRepository::replay() and `hsp dlq replay` are single-DLQ-id only). '
-            . 'Per the gate brief and CLAUDE.md freeze rule, replay features are NOT built in a '
-            . 'gate session. Recorded as FLAG-GATES1-1; gate cannot pass until an authorized '
-            . 'session implements entity + date-range replay (Doc 4 §24).'
+        // Establish a good baseline projection via a first entity replay.
+        $this->replayStrategy()->replayEntity('post', '700');
+        $this->drainPipeline();
+        self::assertSame('gate-entity-repaired', $this->fetchProjectionRow('content.posts', 'source_post_id', 700)['slug']);
+
+        // Corrupt the projection row: wrong slug + a bogus checksum (drift the operator repairs).
+        pg_query(
+            $this->pgConn,
+            "UPDATE content.posts SET slug = 'CORRUPT-slug', checksum = 'deadbeef' WHERE source_post_id = 700",
         );
+        self::assertSame('CORRUPT-slug', $this->fetchProjectionRow('content.posts', 'source_post_id', 700)['slug'], 'projection is corrupt');
+
+        // Run entity replay → synthetic re-emission with a fresh version → passes the guard →
+        // reprojects current WP state.
+        $result = $this->replayStrategy()->replayEntity('post', '700');
+        self::assertSame(1, $result->count(), 'entity replay emitted one synthetic event');
+        self::assertSame('content.post.updated', $result->emitted[0]['event_type'], 'live post → .updated');
+
+        $this->drainPipeline();
+
+        // §4 criterion: replay succeeded and the projection converged to correct final state.
+        self::assertSame(1, $this->countRows('content.posts'), 'no duplicate row — idempotent upsert');
+        $row = $this->fetchProjectionRow('content.posts', 'source_post_id', 700);
+        self::assertSame('gate-entity-repaired', $row['slug'], 'entity replay converged the projection to current WP state');
+        self::assertNull($row['deleted_at'], 'live post is not tombstoned');
+    }
+
+    public function test_criterion2_date_range_replay_converges_in_window_aggregates_and_leaves_out_of_window_untouched(): void
+    {
+        // Date-range replay (Doc 4 §24: "repair outage windows"). Multiple aggregates have
+        // events inside a window; one aggregate's event is outside it. Corrupt the in-window
+        // projections, then run date-range replay: every in-window aggregate must converge,
+        // and the out-of-window aggregate must be left untouched (half-open [from, to)).
+        $from = new \DateTimeImmutable('2026-07-10T00:00:00Z');
+        $to   = new \DateTimeImmutable('2026-07-11T00:00:00Z');
+
+        // History that date-range discovery reads (SELECT DISTINCT over system.events).
+        $this->seedHistoricalEvent('post', '801', '2026-07-10 06:00:00+00'); // in window
+        $this->seedHistoricalEvent('page', '802', '2026-07-10 18:00:00+00'); // in window
+        $this->seedHistoricalEvent('post', '803', '2026-07-09 23:00:00+00'); // BEFORE window
+
+        // Current WordPress state for all three aggregates.
+        $this->wp->putPost(801, 'publish', 'post', 'gate-range-801');
+        $this->wp->putPost(802, 'publish', 'page', 'gate-range-802');
+        $this->wp->putPost(803, 'publish', 'post', 'gate-range-803');
+
+        // Seed baseline projections for all three (so 803 has a live row we can prove is
+        // untouched), then corrupt the two in-window rows.
+        foreach (['801' => 'post', '802' => 'page', '803' => 'post'] as $id => $type) {
+            $this->replayStrategy()->replayEntity($type, (string) $id);
+        }
+        $this->drainPipeline();
+        // Corrupt slug AND checksum so write-suppression (DECISION 3: skip when the freshly
+        // computed projection checksum equals the stored one) does not skip the repair.
+        pg_query($this->pgConn, "UPDATE content.posts SET slug = 'CORRUPT-801', checksum = 'deadbeef01' WHERE source_post_id = 801");
+        pg_query($this->pgConn, "UPDATE content.pages SET slug = 'CORRUPT-802', checksum = 'deadbeef02' WHERE source_post_id = 802");
+        $out803ChecksumBefore = $this->fetchProjectionRow('content.posts', 'source_post_id', 803)['checksum'];
+
+        // Run date-range replay over [from, to).
+        $result = $this->replayStrategy()->replayRange($from, $to);
+
+        // Only the two in-window aggregates are discovered; 803 (before window) is excluded.
+        self::assertSame(2, $result->count(), 'two in-window aggregates replayed; out-of-window excluded');
+        $ids = array_map(fn ($e) => $e['aggregate_type'] . ':' . $e['aggregate_id'], $result->emitted);
+        sort($ids);
+        self::assertSame(['page:802', 'post:801'], $ids, 'exactly the in-window aggregates');
+
+        $this->drainPipeline();
+
+        // §4 criterion: every in-window aggregate converged to correct final state.
+        self::assertSame('gate-range-801', $this->fetchProjectionRow('content.posts', 'source_post_id', 801)['slug'], 'in-window post converged');
+        self::assertSame('gate-range-802', $this->fetchProjectionRow('content.pages', 'source_post_id', 802)['slug'], 'in-window page converged');
+
+        // Out-of-window aggregate 803 is untouched — same checksum, never re-emitted.
+        $out803 = $this->fetchProjectionRow('content.posts', 'source_post_id', 803);
+        self::assertSame('gate-range-803', $out803['slug'], 'out-of-window post 803 unchanged');
+        self::assertSame($out803ChecksumBefore, $out803['checksum'], 'out-of-window post 803 not re-projected');
+        self::assertSame(1, $this->fetchAggregateVersion('post', '803'), 'post 803 still at its baseline version (not advanced by the range run)');
     }
 
     // =========================================================================
@@ -354,6 +453,107 @@ final class ReliabilityValidationTest extends TestCase
                 self::fail('runFullPipelineOnce did not drain the queue');
             }
         }
+    }
+
+    // =========================================================================
+    // Replay assembly (criterion 2) — the shipped DECISION T emit path + a WP-state
+    // reload boundary the replay handlers read from ($this->wp / ReplayReadingLoader).
+    // Mirrors the OPS-S2 ReplayEngineIntegrationTest wiring; everything downstream of
+    // the emitter (counter, outbox, relay, dispatch, worker, adapters, guard, PG) is real.
+    // =========================================================================
+
+    /** Real replay front-end: ReplayService → ContentReplayEmitter → OutboxWriter → outbox. */
+    private function replayStrategy(): ReplayWorkerStrategy
+    {
+        $wpdb    = new FakeWpdb($this->mysqli, $this->prefix);
+        $counter = new AggregateVersionCounter($wpdb);
+        $writer  = new OutboxWriter($wpdb, $counter);
+        $emitter = new ContentReplayEmitter(
+            new EventProvider($writer),
+            new ReplayReadingLoader($this->wp),
+        );
+
+        return new ReplayWorkerStrategy(new ReplayService($this->db, [$emitter]));
+    }
+
+    /** Relay → dispatch → drain, with the worker reloading state from $this->wp (replay tests). */
+    private function drainPipeline(): void
+    {
+        (new RelayWorkerStrategy(
+            new MysqliOutboxConnection($this->mysqli),
+            new PgsqlOutboxConnection($this->pgConn),
+            $this->prefix,
+            100,
+        ))->tick();
+
+        $queue = new DatabaseQueueProvider($this->db);
+        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+
+        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, retryLimit: 10);
+        $guard = 0;
+        while ($strategy->execute($this->ctx('01900000-0000-7000-8000-00000000face'))) {
+            if (++$guard > 200) {
+                self::fail('drainPipeline did not drain the queue');
+            }
+        }
+    }
+
+    /** Same 9-handler wiring, but loaders read current state from $this->wp (FakeWpStore). */
+    private function makeReplayWiredEventRegistry(): EventRegistry
+    {
+        $pageLoader = new ReplayReadingLoader($this->wp, 'page');
+        $postLoader = new ReplayReadingLoader($this->wp, 'post');
+        $termLoader = new ReplayReadingLoader($this->wp, 'post');
+
+        $pageAdapter     = new PageAdapter($this->db);
+        $postAdapter     = new PostAdapter($this->db);
+        $categoryAdapter = new CategoryAdapter($this->db);
+
+        $subscriber = new ContentSubscriber([
+            ContentEventTypes::PAGE_CREATED     => new PageUpsertHandler($pageLoader, new PageExtractor(new PageValidator()), new PageTransformer(), $pageAdapter),
+            ContentEventTypes::PAGE_UPDATED     => new PageUpsertHandler($pageLoader, new PageExtractor(new PageValidator()), new PageTransformer(), $pageAdapter),
+            ContentEventTypes::PAGE_DELETED     => new PageTombstoneHandler($pageAdapter),
+            ContentEventTypes::POST_CREATED     => new PostUpsertHandler($postLoader, new PostExtractor(new PostValidator()), new PostTransformer(), $postAdapter),
+            ContentEventTypes::POST_UPDATED     => new PostUpsertHandler($postLoader, new PostExtractor(new PostValidator()), new PostTransformer(), $postAdapter),
+            ContentEventTypes::POST_DELETED     => new PostTombstoneHandler($postAdapter),
+            ContentEventTypes::CATEGORY_CREATED => new CategoryUpsertHandler($termLoader, new CategoryExtractor(new CategoryValidator()), new CategoryTransformer(), $categoryAdapter),
+            ContentEventTypes::CATEGORY_UPDATED => new CategoryUpsertHandler($termLoader, new CategoryExtractor(new CategoryValidator()), new CategoryTransformer(), $categoryAdapter),
+            ContentEventTypes::CATEGORY_DELETED => new CategoryTombstoneHandler($categoryAdapter),
+        ]);
+
+        $registry = new EventRegistry();
+        foreach (ContentEventTypes::ALL as $type) {
+            $registry->register($type, $subscriber);
+        }
+        return $registry;
+    }
+
+    /**
+     * Seed a historical system.events row (date-range discovery source) plus a retained
+     * completed queue_jobs row so the dispatcher's NOT EXISTS anti-join skips raw history
+     * (DECISION L(d)) — mirrors ReplayEngineIntegrationTest::seedHistoricalEvent.
+     */
+    private function seedHistoricalEvent(string $aggregateType, string $aggregateId, string $createdAt): string
+    {
+        $id = $this->uuidv7();
+        pg_query_params(
+            $this->pgConn,
+            "INSERT INTO system.events
+                 (id, event_type, event_version, aggregate_type, aggregate_id, payload,
+                  created_at, aggregate_version, source_updated_at, checksum, correlation_id, causation_id)
+             VALUES (\$1::uuid, \$2, 1, \$3, \$4, '{}'::jsonb, \$5::timestamptz, 1, \$5::timestamptz,
+                     \$6, \$7::uuid, NULL)",
+            [$id, "content.{$aggregateType}.created", $aggregateType, $aggregateId, $createdAt, str_repeat('a', 64), $this->uuidv7()],
+        );
+        pg_query_params(
+            $this->pgConn,
+            "INSERT INTO system.queue_jobs
+                 (id, event_id, queue_name, status, attempts, available_at, completed_at)
+             VALUES (\$1::uuid, \$2::uuid, 'content', 'completed', 1, \$3::timestamptz, \$3::timestamptz)",
+            [$this->uuidv7(), $id, $createdAt],
+        );
+
+        return $id;
     }
 
     // =========================================================================
@@ -483,6 +683,7 @@ final class ReliabilityValidationTest extends TestCase
     private function createMysqlSchema(): void
     {
         $this->mysqli->query("DROP TABLE IF EXISTS `{$this->outbox}`");
+        $this->mysqli->query("DROP TABLE IF EXISTS `{$this->counters}`");
         $this->mysqli->query(
             "CREATE TABLE `{$this->outbox}` (
                 `id`                CHAR(36)                   NOT NULL,
@@ -502,6 +703,16 @@ final class ReliabilityValidationTest extends TestCase
                 PRIMARY KEY (`id`),
                 INDEX `idx_relay_claim` (`status`, `created_at`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
+        // Per-aggregate monotonic counter (DECISION 2) — the replay emit path allocates a
+        // fresh aggregate_version from here so the synthetic event passes the DECISION J guard.
+        $this->mysqli->query(
+            "CREATE TABLE `{$this->counters}` (
+                `aggregate_type` VARCHAR(100) NOT NULL,
+                `aggregate_id`   VARCHAR(255) NOT NULL,
+                `version`        BIGINT       NOT NULL,
+                PRIMARY KEY (`aggregate_type`, `aggregate_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         );
     }
 
