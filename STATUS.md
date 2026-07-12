@@ -9,8 +9,8 @@
 ---
 
 **Current phase:** Phase 1A — Blog MVP  
-**Last updated:** 2026-07-12 (OPS-S1 shipped — Early Operational Baseline: heartbeat, DLQ replay, maintenance recovery, derived metrics)  
-**Next session:** Architecture Validation Gate (Reliability / Scalability / Operability / Extensibility) — see IMPLEMENTATION_PLAN.md Session Map
+**Last updated:** 2026-07-12 (GATE-S1 attempted — criteria 1 & 3 PASS; criterion 2 BLOCKED by FLAG-GATES1-1: entity + date-range replay not implemented)  
+**Next session:** GATE-S1 (resume) — pointer stays on GATE-S1. Criterion 2 is BLOCKED by FLAG-GATES1-1; an authorized (non-gate) session must first implement entity + date-range replay (Doc 4 §24), after which GATE-S1 criterion 2 is re-run. GATE-S2 (Scalability) does not begin until GATE-S1 fully passes.
 
 ---
 
@@ -49,12 +49,22 @@
 
 ## Architecture Validation Gate
 
-- [ ] Reliability validation
+- [ ] Reliability validation — **BLOCKED — FLAG-GATES1-1 (entity + date-range replay not implemented)** (GATE-S1: criteria 1 & 3 PASS; criterion 2 FAILS)
 - [ ] Scalability validation
 - [ ] Operability validation
 - [ ] Extensibility validation
 
 Gate failure blocks Phase 2 and all subsequent phases.
+
+### GATE-S1 — Reliability Validation checklist (evidence: `tests/Integration/Gate/ReliabilityValidationTest.php`)
+
+| # | §4 Reliability criterion | Result | Evidence (named integration test) |
+|---|---|---|---|
+| 1 | Successful sync processing under normal load | **PASS** | `test_criterion1_full_pipeline_syncs_a_batch_end_to_end_under_normal_load` (12-aggregate mixed batch: outbox → relay → dispatch → worker → `content.*` projection, live MySQL + PG); `test_criterion1_update_event_reprojects_the_aggregate_end_to_end` |
+| 2 | Replay succeeds for single **event, entity, and date-range** replay modes | **FAIL — BLOCKED** | `test_criterion2_only_single_event_replay_is_implemented` (Incomplete): single-event replay proven present; entity + date-range modes proven ABSENT. **STOP-and-flag → FLAG-GATES1-1.** |
+| 3 | DLQ recovery: failed job replays to correct final state | **PASS** | `test_criterion3_exhausted_job_dead_letters_then_replays_to_correct_final_state` (retry-limit exhaustion → `system.dead_letter_jobs` with full OPEN-3 context → `hsp dlq replay` → correct final projection state → `replayed_at` stamped; live PG) |
+
+GATE-S1 DoD is **not met** (criterion 2 fails). Per the gate brief and CLAUDE.md session-close rule 1, the Reliability item is NOT marked done and GATE-S2 does not begin until FLAG-GATES1-1 is resolved by an authorized (non-gate) session.
 
 ---
 
@@ -428,9 +438,57 @@ The live infrastructure (MySQL, PostgreSQL Docker, WordPress, worker engine) is 
 
 ---
 
+### FLAG-GATES1-1 — Entity and date-range replay modes not implemented; GATE-S1 criterion 2 fails
+
+**Raised:** 2026-07-12 | **Session:** GATE-S1 | **Status:** OPEN — STOP-and-flag; blocks the Architecture Validation Gate
+
+**What the gate requires (IMPLEMENTATION_PLAN.md §4 → Reliability Validation, criterion 2):**
+> Replay succeeds for single event, entity, and date-range replay modes
+
+**What exists:** Only **single-event** replay. Verified against current code:
+- `core/Workers/Strategies/ReplayWorkerStrategy.php` is a **stub** (`execute()` returns `false`;
+  comment: *"STUB — OPS-S1: implement single-event and entity replay modes."*).
+- `core/Queue/DeadLetterRepository::replay(string $dlqId)` and the WP-CLI `hsp dlq replay <id>`
+  (`core/Cli/DlqCommand::replay`) operate on a **single DLQ row id → single event_id** only
+  (DECISION S lifecycle). There is no `replayEntity()` / `replayDateRange()` method anywhere in
+  `core/`, `modules/`, or `tools/`.
+- Doc 4 §24 lists four replay modes (Single Event, Entity, Date Range, Full) as *architecture*,
+  but OPS-S1 shipped single-event only. The OPS-S1 Session Map row and Doc 11 §8 scope
+  single-event + entity replay; **entity replay was not actually built**, and date-range is
+  out of the Early Operational Baseline scope entirely.
+
+**Note on the gate brief's parenthetical:** the GATE-S1 brief stated *"OPS-S1 shipped
+single-event + entity only per Doc 4 §24 — verify."* Verification shows this is inaccurate:
+**OPS-S1 shipped single-event only.** Entity replay is also absent.
+
+**Why this is a STOP-and-flag, not a fix:** The gate session's scope is *test evidence only* —
+"no production code changes unless a validation check fails (a failure is a STOP-and-flag, not a
+fix-in-session)." Building entity + date-range replay is a feature-bearing change to `core/`
+(`ReplayWorkerStrategy`, new repository methods, likely a replay-scope query over `system.events`
+by aggregate / date range, and CLI surface). Per CLAUDE.md, replay features are not built in a
+gate session, and the missing modes are not derivable from a frozen ruling.
+
+**Ruling/direction needed:**
+- (a) Authorize a dedicated (non-gate) session to implement **entity replay** and **date-range
+  replay** (Doc 4 §24), including: the replay-scope selection query (all events for an aggregate;
+  all events in a `[from, to]` window), the single-PG-transaction re-enqueue lifecycle
+  (analogous to DECISION S for each selected event, passing the DECISION J stale guard), and the
+  WP-CLI surface (`hsp replay entity <type> <id>` / `hsp replay range <from> <to>` or equivalent).
+- (b) Confirm whether **Full Replay** (Doc 4 §24) is in or out of MVP gate scope (Phase 1A lists
+  advanced replay under Phase 3 — the gate may accept single/entity/date-range and defer Full).
+- (c) Until (a) ships and GATE-S1 criterion 2 turns PASS, the Architecture Validation Gate cannot
+  pass; Phase 2 remains blocked.
+
+**Resolution trigger:** An authorized session implements entity + date-range replay with named,
+passing integration tests landing the correct final projection state for each mode; GATE-S1
+criterion 2 is then re-run and flips to PASS.
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+2026-07-12 | GATE-S1 | Architecture Validation Gate — Reliability Validation (evidence-only gate session, no production code changed). IMPLEMENTATION_PLAN.md §5b: added GATE-S1..GATE-S4 rows (Reliability/Scalability/Operability/Extensibility, criteria copied verbatim from §4; GATE-S1 depends-on OPS-S1, each subsequent gate depends on the prior); §4 not altered. New test tests/Integration/Gate/ReliabilityValidationTest.php (4 tests, live MySQL 127.0.0.1:10053 + live PG 127.0.0.1:5432): criterion 1 (successful sync under normal load) PASS — proven end-to-end by assembling the REAL runtime pipeline (RelayWorkerStrategy → EventDispatcher → EventWorkerStrategy → ContentSubscriber → Page/Post/CategoryAdapter) over a 12-aggregate mixed batch (6 posts + 4 pages + 2 categories): outbox → relay → system.events → dispatch → system.queue_jobs → worker drain → content.* projection, with completed/aggregate_versions/processed_events all correct and zero dead-letters; plus an update-reprojection test (version advance, idempotent upsert). Criterion 3 (DLQ recovery to correct final state) PASS — retry-limit exhaustion → system.dead_letter_jobs with full OPEN-3 context (stack_trace, payload_snapshot) → DeadLetterRepository::replay (the `hsp dlq replay` path, DECISION S lifecycle) → healthy worker drives replayed job to correct final content.posts projection → replayed_at stamped, DLQ row retained. Criterion 2 (single + entity + date-range replay) FAIL/BLOCKED — test_criterion2 proves single-event replay present and entity + date-range modes ABSENT (ReplayWorkerStrategy stub; DeadLetterRepository/DlqCommand single-DLQ-id only), marked Incomplete = STOP-and-flag per gate brief + CLAUDE.md freeze rule. Only substitution on the pipeline is GateReloadingLoader (WP state-reload boundary, DECISION H, ADR-044) — relay/dispatch/worker/adapters/PG are the real components. STATUS.md: gate checklist added with per-criterion PASS/FAIL + named tests; Reliability item marked BLOCKED (not done — DoD unmet). Full suite: 852 tests, 1908 assertions, 0 failures, 0 errors, 1 pre-existing PHPUnit deprecation (P0-S5 carry), 1 intentional Incomplete (GATE-S1 criterion 2). | FLAG-GATES1-1 raised (entity + date-range replay not implemented — GATE-S1 criterion 2 fails; STOP-and-flag; blocks the Architecture Validation Gate; needs an authorized non-gate session to build entity + date-range replay per Doc 4 §24). GATE-S2 does NOT begin until resolved.
 2026-07-12 | OPS-S1 | Early Operational Baseline shipped. (1) Migrations: 0012_create_system_worker_heartbeats.sql (DECISION P frozen DDL — single current-state table, worker_id UUID PK, worker_type/status TEXT, last_heartbeat_at/started_at TIMESTAMPTZ) + 0013_add_replayed_at_to_dead_letter_jobs.sql (DECISION S clause (e) — replayed_at TIMESTAMPTZ NULL forward-add; 0004 untouched); both registered in MigrationServiceProvider migrations.core; applied + idempotency-proven on live PG (hsp DB), column shapes verified. (2) DatabaseHeartbeatPublisher (implements existing HeartbeatPublisherInterface; ctor-injected connection = worker-runtime handle 'queue.connection.pgsql' per DECISION L Ruling 0 — no new handle/class/pg_* wrapper; INSERT…ON CONFLICT(worker_id) DO UPDATE upsert per tick, µs-precision TIMESTAMPTZ so advances are visible); HeartbeatRecord extended with worker_type/started_at (defaulted, back-compat); WorkerEngine carries workerType + startedAt; WorkerServiceProvider swaps NullHeartbeatPublisher→DatabaseHeartbeatPublisher on runtime path. (3) MaintenanceWorkerStrategy un-stubbed — drives requeueTimedOut() per partition on a config-driven cadence (config/worker.php maintenance.recovery_interval_seconds default 30; no hardcoded timing at call site; 'worker' added to ConfigLoader CONFIG_FILES); worker.engine.maintenance bound. (4) Derived-metrics surface OperationalMetricsQuery (queue depth total+per-partition, DLQ depth, oldest-pending age, worker count — on-demand SQL aggregates, no metrics table, DECISION Q) + WorkerCounters (processed/retry/failure/replay in-process) + StructuredLogger (JSON metric lines, error_log sink) emitted by WorkerEngine on worked ticks; EventWorkerStrategy increments counters at complete/release/deadLetter; a successful WP-CLI `hsp dlq replay` emits the `replay` counter as a structured `dlq.replay` log line (event_id + ts) from DlqCommand (StructuredLogger ctor-injected, ADR-012) — replay runs outside the WorkerEngine tick loop so the emission lives there. (5) DLQ read/replay: DeadLetterRepository (list/inspect/replay — single-PG-txn lifecycle verify-exists FOR UPDATE → verify replayed_at IS NULL → DELETE queue row by event_id → INSERT fresh job attempts=0 → stamp replayed_at; DLQ rows never deleted) + DeadLetterReplayException; WP-CLI DlqCommand + WpCliDlqRegistrar ('hsp dlq list|inspect|replay', 'hsp status'), registered in headless-sync.php under WP_CLI guard (in-scope CLI registration). Tests: 19 new unit (MaintenanceWorkerStrategy cadence, DatabaseHeartbeatPublisher SQL, DeadLetterRepository lifecycle+guards, DlqCommand incl. replay-emits-structured-log + failed-replay-emits-nothing, WorkerCounters/StructuredLogger) + OperationalBaselineIntegrationTest (7 live-PG: DLQ populate w/ OPEN-3 context, replay→fresh-claimable-job through UNIQUE(event_id) + naive-no-op trap proven + double-replay rejected, stale replay = ack+zero writes, heartbeat visible+advances per tick, crash→visibility-timeout→requeue THROUGH real WorkerEngine+MaintenanceWorkerStrategy runtime driver, derived metrics, structured counter emission). Full suite: 848 tests, 1864 assertions, 0 failures, 0 skipped (MySQL 127.0.0.1:10053 + PG 127.0.0.1:5432 live), 1 pre-existing PHPUnit deprecation carried from P0-S5. ADR-012 clean (no service-locator in new business logic); DECISION 3 atomicity untouched; four-connection topology unchanged. | no new flags. FLAG-OPSS1-1..4 + FLAG-P1AS6D-1 remain Resolved (built to DECISIONS P/Q/R/S + Ruling 0).
 2026-07-11 | housekeeping | Recorded architect's 2026-07-11 OPS-S1 rulings; flags resolved. ARCHITECTURE_DECISIONS.md bumped to v1.16: DECISION L amended with Ruling 0 (four-connection topology FROZEN as final — relay/queue-worker/delivery/dispatcher; no fifth handle without new ADR; heartbeat on existing worker-runtime handle); new DECISION P (Worker Heartbeat Storage — single current-state `system.worker_heartbeats` table, upsert per tick, DatabaseHeartbeatPublisher via existing interface + ctor injection, migration authorized); DECISION Q (Metrics Without Persistence — no metrics table; derived-on-demand + structured logs; "metrics emit" DoD defined); DECISION R (Visibility-Timeout Recovery Driver — MaintenanceWorkerStrategy drives requeueTimedOut(), config-driven cadence); DECISION S (DLQ Replay Lifecycle — permanent audit rows, one-txn verify→delete-queue-row→insert-attempts-0→stamp replayed_at, passes DECISION J guard, WP-CLI only; `replayed_at` confirmed absent from migration 0004, forward-migration add authorized). Implications table updated (system.worker_heartbeats, dead_letter_jobs.replayed_at, PHP contracts rows). STATUS.md: FLAG-P1AS6D-1 + FLAG-OPSS1-1..4 marked Resolved with ruling refs; OPS-S1 pointer unblocked. IMPLEMENTATION_PLAN.md §5b OPS-S1 row: added DECISION P/Q/R/S refs to Authority; widened migration clause. NO code, NO migrations written. | flags resolved: FLAG-P1AS6D-1, FLAG-OPSS1-1, FLAG-OPSS1-2, FLAG-OPSS1-3, FLAG-OPSS1-4.
 2026-07-11 | OPS-S1 (pre-implementation review) | No code written. Read STATUS.md, IMPLEMENTATION_PLAN.md §5b OPS-S1 row, ARCHITECTURE_DECISIONS.md OPEN-3/OPEN-4/DECISION E/K/L, Doc 8 §15/§27, Doc 4 §24. Audited existing surface: DLQ schema (0004) complete with all four OPEN-3 columns; DatabaseQueueProvider has deadLetter()/requeueTimedOut()/enqueueIdempotent(); EventWorkerStrategy dead-letters at attempts>=retryLimit; ReplayWorkerStrategy + MaintenanceWorkerStrategy are stubs; HeartbeatPublisher is NullHeartbeatPublisher (discards); no heartbeat/metrics table exists in frozen schema or Implications table; no metric counters produced anywhere; nothing invokes requeueTimedOut() on a runtime loop. STOPPED before implementation and recorded all ruling-needed conflicts as open flags per instruction. | FLAG-OPSS1-1 (heartbeat/metrics table never frozen — blocks heartbeat+metrics DoD; needs OPEN-N-style DDL freeze + connection-binding ruling, entangled with frozen topology / FLAG-P1AS6D-1); FLAG-OPSS1-2 (metric counters have no source of truth); FLAG-OPSS1-3 (crash→visibility-timeout requeue has no runtime driver — MaintenanceWorkerStrategy stub); FLAG-OPSS1-4 (replay entry-point + DLQ-inspect surface unspecified; UNIQUE(event_id) on queue_jobs makes naive re-enqueue a silent no-op unless prior job row cleared — must be ruled).
