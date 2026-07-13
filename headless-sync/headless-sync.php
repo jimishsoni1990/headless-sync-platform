@@ -52,6 +52,19 @@ register_deactivation_hook(__FILE__, [$application, 'deactivate']);
 
 add_action('plugins_loaded', [$application, 'boot'], 5);
 
+// WP-Cron: register reconciliation triggers (DECISION U point 5). Runs in normal web
+// requests too (not WP-CLI-only) so the schedules exist and callbacks are bound. The cron
+// callback only TRIGGERS a pass on the worker-bootstrapped process — it never processes PG.
+add_action('plugins_loaded', static function () use ($application): void {
+    $container = $application->getContainer();
+    if ($container === null) {
+        return;
+    }
+
+    $cron = $container->get(HSP\Core\Reconciliation\ReconciliationCronRegistrar::class);
+    $cron->register();
+}, 20);
+
 // WP-CLI: register `hsp dlq …` and `hsp status` (DECISION S clause (d), DECISION Q).
 // Runs after boot (priority 20) so the container is available. No-op outside WP-CLI.
 if (defined('WP_CLI') && WP_CLI) {
@@ -72,5 +85,11 @@ if (defined('WP_CLI') && WP_CLI) {
             $container->get(HSP\Core\Cli\ReplayCommand::class),
         );
         $replayRegistrar->register();
+
+        // WP-CLI: register `hsp reconcile drift|incremental|full|status` (DECISION U). WP-CLI only.
+        $reconcileRegistrar = new HSP\Core\Cli\WpCliReconcileRegistrar(
+            $container->get(HSP\Core\Cli\ReconcileCommand::class),
+        );
+        $reconcileRegistrar->register();
     }, 20);
 }

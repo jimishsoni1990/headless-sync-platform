@@ -7,13 +7,17 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Delivery\AdapterRegistry;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Observability\OperationalMetricsQuery;
 use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Cli\ReconcileCommand;
 use HSP\Core\Cli\ReplayCommand;
 use HSP\Core\Observability\WorkerCounters;
+use HSP\Core\Reconciliation\ReconciliationCronRegistrar;
+use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\DatabaseHeartbeatPublisher;
 use HSP\Core\Workers\HeartbeatPublisherInterface;
@@ -110,7 +114,46 @@ final class WorkerServiceProvider extends ServiceProvider
             )
         );
 
-        $container->singleton('worker.strategy.reconciliation', fn () => new ReconciliationWorkerStrategy());
+        // DECISION U: ReconciliationService (core detector/orchestrator) + the strategy
+        // façade. The WP-side detection source (WpReconciliationSourceInterface) is bound by
+        // ContentServiceProvider (module-owned, mirrors ReplayEmitterInterface). Repair is
+        // DECISION T re-emission only (ReplayService), never a direct PG write. Page size is
+        // config-driven (DECISION U D7). Resolved lazily → provider order is safe.
+        $container->singleton(ReconciliationService::class, function (Container $c) {
+            /** @var array<string,mixed> $reconConfig */
+            $reconConfig = $this->config['worker']['reconciliation'] ?? [];
+            $pageSize    = (int) ($reconConfig['page_size'] ?? 500);
+
+            return new ReconciliationService(
+                $c->get(DatabaseConnectionInterface::class),
+                $c->get(WpReconciliationSourceInterface::class),
+                $c->get(ReplayService::class),
+                $pageSize > 0 ? $pageSize : 500,
+            );
+        });
+
+        $container->singleton('worker.strategy.reconciliation', fn (Container $c) =>
+            new ReconciliationWorkerStrategy($c->get(ReconciliationService::class))
+        );
+
+        // DECISION U: WP-CLI reconcile command surface (emits the `reconcile` runtime
+        // counter — DECISION Q) + the WP-Cron trigger registrar (cadence config-driven).
+        $container->singleton(ReconcileCommand::class, fn (Container $c) =>
+            new ReconcileCommand(
+                $c->get('worker.strategy.reconciliation'),
+                $c->get(StructuredLogger::class),
+            )
+        );
+
+        $container->singleton(ReconciliationCronRegistrar::class, function (Container $c) {
+            /** @var array<string,mixed> $reconConfig */
+            $reconConfig = $this->config['worker']['reconciliation'] ?? [];
+
+            return new ReconciliationCronRegistrar(
+                $c->get('worker.strategy.reconciliation'),
+                $reconConfig,
+            );
+        });
 
         $container->singleton('worker.strategy.maintenance', function (Container $c) {
             /** @var array<string,mixed> $maintenanceConfig */

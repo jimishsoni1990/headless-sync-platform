@@ -14,15 +14,45 @@ namespace HSP\Tests\Integration\Replay;
  */
 final class FakeWpStore
 {
-    /** @var array<int, array{status:string,type:string,slug:string}> */
+    /** @var array<int, array{status:string,type:string,slug:string,modified_gmt:string}> */
     private array $posts = [];
 
     /** @var array<int, array{slug:string}> */
     private array $terms = [];
 
-    public function putPost(int $id, string $status, string $type, string $slug): void
+    public function putPost(int $id, string $status, string $type, string $slug, string $modifiedGmt = '2024-06-01 00:00:00'): void
     {
-        $this->posts[$id] = ['status' => $status, 'type' => $type, 'slug' => $slug];
+        $this->posts[$id] = ['status' => $status, 'type' => $type, 'slug' => $slug, 'modified_gmt' => $modifiedGmt];
+    }
+
+    /**
+     * IDs of posts of the given type currently in the store (ascending), for reconciliation
+     * enumeration. When $publicOnly, only 'publish' posts are returned.
+     *
+     * @return list<int>
+     */
+    public function postIds(string $type, bool $publicOnly = true): array
+    {
+        $ids = [];
+        foreach ($this->posts as $id => $p) {
+            if ($p['type'] !== $type) {
+                continue;
+            }
+            if ($publicOnly && $p['status'] !== 'publish') {
+                continue;
+            }
+            $ids[] = $id;
+        }
+        sort($ids);
+        return $ids;
+    }
+
+    /** @return list<int> Ascending term IDs currently in the store. */
+    public function termIds(): array
+    {
+        $ids = array_keys($this->terms);
+        sort($ids);
+        return array_map('intval', $ids);
     }
 
     public function deletePost(int $id): void
@@ -58,7 +88,7 @@ final class FakeWpStore
             'post_type'         => $expectedType !== '' ? $expectedType : $p['type'],
             'post_author'       => '1',
             'post_date_gmt'     => '2024-01-01 00:00:00',
-            'post_modified_gmt' => '2024-06-01 00:00:00',
+            'post_modified_gmt' => $p['modified_gmt'],
             'post_parent'       => '0',
             'menu_order'        => '0',
         ];

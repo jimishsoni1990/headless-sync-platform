@@ -9,9 +9,11 @@ use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\EventProviderInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
 use HSP\Core\Contracts\ReplayEmitterInterface;
+use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Replay\ReplayService;
+use HSP\Modules\Content\Reconciliation\WpReconciliationSource;
 use HSP\Modules\Content\Adapters\CategoryAdapter;
 use HSP\Modules\Content\Adapters\PageAdapter;
 use HSP\Modules\Content\Adapters\PostAdapter;
@@ -193,6 +195,25 @@ final class ContentServiceProvider extends ServiceProvider
         $container->singleton(PageTransformer::class,     fn () => new PageTransformer());
         $container->singleton(PostTransformer::class,     fn () => new PostTransformer());
         $container->singleton(CategoryTransformer::class, fn () => new CategoryTransformer());
+
+        // -------------------------------------------------------------------------
+        // Reconciliation (DECISION U) — the Content module owns the WP-side detection
+        // source (WP reads + checksum recompute + pending-outbox). ReconciliationService
+        // (core) is bound in WorkerServiceProvider (it needs config page-size); here we
+        // provide only the module-owned source, mirroring the ReplayEmitterInterface split.
+        // -------------------------------------------------------------------------
+
+        $container->singleton(WpReconciliationSourceInterface::class, fn (Container $c) =>
+            new WpReconciliationSource(
+                $c->get(WpContentLoader::class),
+                $c->get(PageExtractor::class),
+                $c->get(PostExtractor::class),
+                $c->get(CategoryExtractor::class),
+                $c->get(PageTransformer::class),
+                $c->get(PostTransformer::class),
+                $c->get(CategoryTransformer::class),
+            )
+        );
 
         // -------------------------------------------------------------------------
         // Upsert handlers
