@@ -200,5 +200,5 @@ Before ending a session:
 6. Append one dated line to the Session Log at the bottom of `STATUS.md`: session ID, what
    shipped, any flags raised.
 7. Present the session summary for the approval to commit.
-8. Once approved, commit to github. Leave the working tree clean and reviewable. Do NOT begin the next session's work.
+8. Once approved, commit, merge to main (fast-forward preferred), and push origin/main. A session is not closed until its commits are on origin/main. Leave the working tree clean and reviewable. Do NOT begin the next session's work.
 9. robocopy "j:\HSP\headless-sync" TO "C:\Users\jimis\Local Sites\headless-sync-platform\app\public\wp-content\plugins\headless-sync"
