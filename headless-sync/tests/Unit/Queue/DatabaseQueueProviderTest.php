@@ -6,6 +6,7 @@ namespace HSP\Tests\Unit\Queue;
 
 use HSP\Core\Queue\Exception\QueueException;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -497,7 +498,7 @@ final class DatabaseQueueProviderTest extends TestCase
     // Partition guard
     // -------------------------------------------------------------------------
 
-    /** @dataProvider validPartitionProvider */
+    #[DataProvider('validPartitionProvider')]
     public function test_valid_partitions_are_accepted(string $partition): void
     {
         // enqueue() should not throw for valid partitions
