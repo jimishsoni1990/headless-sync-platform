@@ -10,6 +10,7 @@ use HSP\Core\Container\Definitions\DeliveryServiceProvider;
 use HSP\Core\Container\Definitions\DispatcherServiceProvider;
 use HSP\Core\Container\Definitions\MigrationServiceProvider;
 use HSP\Core\Container\Definitions\ModuleServiceProvider;
+use HSP\Core\Container\Definitions\OperationsServiceProvider;
 use HSP\Core\Container\Definitions\OutboxServiceProvider;
 use HSP\Core\Container\Definitions\QueueServiceProvider;
 use HSP\Core\Container\Definitions\WorkerServiceProvider;
@@ -50,6 +51,10 @@ final class ContainerBuilder
         // (DECISION K delivery handle). DECISION L v1.12.
         $registry->addProvider(new DispatcherServiceProvider($config, $resolver));
         $registry->addProvider(new WorkerServiceProvider($config));
+        // Operations Console core scaffolding (OPSC-S1) — registries + provider contracts
+        // + services. Read-only; no concrete providers (OPSC-S2), no UI (OPSC-S3), no
+        // actions (OPSC-S4). Opens no PG handle (DECISION L Ruling 0 topology unchanged).
+        $registry->addProvider(new OperationsServiceProvider());
         $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 
