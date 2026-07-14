@@ -127,6 +127,9 @@ Foundation
 Phase 1A
 Blog MVP
 
+Phase 1A — Expanded
+Operations Console & Developer Experience
+
 Phase 1B
 Content Enhancement
 
@@ -317,6 +320,70 @@ Next.js
 ---
 
 The architecture must operate reliably under real usage.
+
+---
+
+# 6b. Phase 1A — Expanded — Operations Console & Developer Experience
+
+> Ratified by **DECISION V** (ARCHITECTURE_DECISIONS.md v1.20, 2026-07-15), which adopts
+> Doc 12 (Admin Operations Console) as amended. Where this section and Doc 12 differ from
+> DECISION V, DECISION V wins.
+
+## Objective
+
+Give operators and developers a first-class, **observability-and-diagnostics** surface over the
+already-shipped pipeline — worker health, queue/DLQ state, diagnostics, and a delivery-API
+playground — plus the two re-emission actions (Replay, Reconcile) as thin, auditable delegators.
+The console is **not an operational control plane**: restarting services/containers, managing OS
+processes, and infrastructure orchestration are permanently outside the plugin's scope
+(DECISION V (j)).
+
+---
+
+## Deliverables
+
+```text
+Operations Console (core/Operations/) — server-rendered PHP + minimal vanilla JS
+
+Operations dashboard (worker status, heartbeat, queue depth, DLQ depth — derived, no persistence)
+
+API Playground (Endpoint Explorer / Request Builder / Execution / Response Viewer over hsp/v1)
+
+Diagnostics + Metrics providers (current-state only, derived on-demand per DECISION Q)
+
+Replay + Reconcile actions (thin delegators to ReplayService / ReconciliationService)
+```
+
+---
+
+## Scope Constraints (binding — DECISION V)
+
+```text
+Stack: server-rendered PHP + WP native admin UI + minimal vanilla JS — NO node/npm/bundler
+
+Coding standard: PSR-12 platform-wide; WPCS security rules at WordPress entry points only
+
+Metrics: derived on-demand — zero new persistence (DECISION Q)
+
+Actions: Replay + Reconcile ONLY — thin delegators, no second repair path (write-spy proof)
+
+Flush Queue: REMOVED (destructive; violates never-lose-a-sync)
+
+Restart Workers: NONE — status/heartbeat/runbook links only (supervisor owns lifecycle)
+
+PG reads: reuse the delivery DatabaseConnectionInterface — no fifth handle
+
+Contracts: core/Contracts/Operations/ (Rule 5 holds verbatim)
+```
+
+---
+
+## Success Criteria
+
+The console renders in wp-admin over the live pipeline; all metrics are derived on-demand with no
+new persistence; Replay and Reconcile actions route exclusively through the ratified re-emission
+services (zero direct projection writes, proven by write-spy); no destructive or
+infrastructure-control action exists.
 
 ---
 

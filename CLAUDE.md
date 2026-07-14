@@ -29,7 +29,12 @@ headless-sync/
 ├── config/               # Global platform config (no business logic)
 ├── core/                 # Infrastructure only — contracts, DI container, events,
 │                         # queue, workers, delivery adapters, reconciliation,
-│                         # security, observability
+│                         # security, observability, operations console
+│   ├── Contracts/         #   incl. Contracts/Operations/ (operations-console
+│   │                      #   contracts — modules depend here only, Rule 5; DECISION V)
+│   └── Operations/        #   Operations Console infrastructure (registries,
+│                          #   providers, services, diagnostics, server-rendered
+│                          #   PHP admin UI — no node toolchain; DECISION V)
 ├── modules/              # Business domains (Content, WooCommerce, …); each
 │                         # module is self-contained with its own events,
 │                         # transformers, canonical models, migrations, tests
@@ -66,8 +71,15 @@ WP-Cron is a fallback only (recovery jobs, safety checks) — never the primary 
 
 ## Coding Standard
 
-TBD — PSR-12 vs WPCS not yet decided. Do not assume either. Confirm before writing or
-enforcing style rules.
+Settled by **DECISION V** (FLAG-4 A, 2026-07-15):
+
+- **PSR-12 for all platform code.**
+- **WPCS security requirements — output escaping, input sanitization, capability checks,
+  nonces — apply at WordPress entry points only** (admin pages, form/action handlers, REST
+  registration, `$wpdb` calls).
+
+This replaces the prior "TBD" hold. The WP-admin boundary is now open (it was deferred by
+DECISION S clause (d)). See `docs/ARCHITECTURE_DECISIONS.md` DECISION V.
 
 ---
 
@@ -127,6 +139,14 @@ enforcing style rules.
   The three existing `pg_*` wrappers are accepted temporary duplication — no new raw `pg_*`
   wrapper may be introduced in P0-S6. Consolidation to a shared `DatabaseConnectionInterface`
   under `core/Database/` is authorized in P0-S7 only (DECISION E).
+- **Operations Console (DECISION V):** the console is **observability/diagnostics only, not a
+  control plane** — restarting services/containers and infrastructure orchestration are
+  permanently out of scope. MVP is **server-rendered PHP + minimal vanilla JS** (no
+  node/npm/bundler). Provider PG reads **reuse the delivery `DatabaseConnectionInterface`**
+  (no fifth handle). Operations contracts live in `core/Contracts/Operations/` (Rule 5 holds).
+  Console metrics are **derived on-demand** (DECISION Q — zero new persistence). Actions are
+  **Replay + Reconcile only**, as thin delegators to the ratified services (no second repair
+  path). **No Flush Queue** (destructive) and **no Restart Workers** (supervisor owns lifecycle).
 
 ---
 

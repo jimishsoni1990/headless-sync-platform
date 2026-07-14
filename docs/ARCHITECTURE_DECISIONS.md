@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.19  
+Version: 1.20  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.20 | 2026-07-15 | **DECISION V (Operations Console Adoption) — ratifies FLAG-PLANOPS1-1..11 (architect ruling 2026-07-15).** Adopts Doc 12 (Admin Operations Console) into the frozen record, conservatively scoped. Records: (a) FLAG-3 B — MVP console is **server-rendered PHP + minimal vanilla JS + WP native admin UI**; **no node/npm/bundler toolchain**; React deferred to a future ADR that must not alter the provider/registry architecture. (b) FLAG-4 A — coding standard settled: **PSR-12 for platform code; WPCS security requirements (escaping, sanitization, capabilities, nonces) at WordPress entry points only.** (c) FLAG-5 A — all console metrics **derived on-demand per DECISION Q** (processing rate, replay status, reconciliation status computed from existing operational data; **zero new persistence**). (d) FLAG-6 A — Replay/Reconcile console actions are **thin delegators** to `ReplayService` (DECISION T/S) and `ReconciliationService` (DECISION U); **no second repair path ever**; OPSC-S4 DoD must include a **write-spy proof** (zero direct `content.*`/`system.*` writes on the action path). (e) FLAG-7 A — **Flush Queue REMOVED** from the action set; any future queue maintenance must be replay-safe, never destructive deletion. (f) FLAG-8 C-modified — **no Restart Workers action**; console provides worker status, heartbeat, restart guidance, and runbook links only; worker lifecycle belongs to the process supervisor. (g) FLAG-10 A — console providers **reuse the delivery `DatabaseConnectionInterface`** (DECISION K); four-handle topology (DECISION L Ruling 0) unchanged; no new `pg_*` wrapper (DECISION E). (h) FLAG-11 A — operations contracts live under **`core/Contracts/Operations/`** (NOT `core/Operations/Contracts/`); Rule 5 holds verbatim; Doc 12 §3 tree superseded on this point. (i) FLAG-2 A — **`core/Operations/`** (lowercase) added to the canonical folder structure as infrastructure; Doc 2's tree amended by this ruling (Doc 2 not edited). (j) Architect philosophy clause (binding scope) — the console is an **observability/diagnostics interface, not an operational control plane**; restarting services/containers, managing OS processes, and infrastructure orchestration are permanently outside the plugin's scope. **FLAG-9 B:** ratifies **ADR-047, ADR-048, ADR-049, ADR-050, ADR-052, ADR-053** as entries below; **ADR-051 recorded as HELD** — not citable as authority — pending incorporation of the FLAG-7/8 rulings. **FLAG-1 A:** Doc 11 roadmap updated to add "Phase 1A – Expanded — Operations Console & Developer Experience" between Phase 1A and Phase 1B. Doc 12 promoted Draft → "Accepted (as amended by DECISION V)"; §21 self-freeze removed. Implications table updated. Inserts **OPSC-S1..S4** into the §5b Session Map. |
 | 1.19 | 2026-07-13 | **DECISION U amended (design ratified) — reconciliation detection design fixed for OPS-S3 build.** Adds section "**DECISION U — Ratified Detection Design (v1.19)**": (1) **Comparison signal by mode** — hourly *drift* = source-timestamp/existence comparison (WP `post_modified_gmt` vs projection `updated_at`; existence vs projection presence/`deleted_at`); nightly *incremental* = recent window + **checksum recompute**; weekly *full* = whole corpus + checksum + orphan sweep. (2) **Taxonomy limitation** — WordPress terms carry **no modified timestamp**, so hourly drift for categories is **existence-only**; category field-staleness (e.g. rename/description edit) is caught by the nightly/weekly **checksum recompute**, not hourly. (3) **Direction by mode** — hourly + nightly are **WP→PG only** (missed create/update); the **orphan sweep (PG→WP) runs in full mode only**; missed-**delete** repair latency is therefore **≤ weekly** at MVP (accepted). (4) **Suppression rule (final)** — an aggregate is **IN-FLIGHT (skip repair)** iff a **pending unrelayed `wp_hsp_outbox` row** exists for it **OR** a `system.events` row exists with `aggregate_version > system.aggregate_versions.latest_processed_version`; otherwise WP-newer-than-projection is a **genuine missed capture** (DECISION 1 gap) and is repaired. (5) **Executor = B1** — `ReconciliationWorkerStrategy::execute()` stays a producer-side no-op; cron/CLI invoke `reconcileDrift/Incremental/Full` in the (worker-bootstrapped) process, matching the `ReplayWorkerStrategy` precedent. (6) **New core contract `WpReconciliationSourceInterface`** (Content-module implementation) for detection-side WP reads — symmetric with `ReplayEmitterInterface`, preserves Rule 5; contract-only, no schema change. (7) **Full sweep is unbounded, paged; page size config-driven.** Repair remains DECISION T `ReplayService::replayEntity` ONLY (no direct PG writes; WordPress wins by construction). No schema change, no fifth PG handle, no new `pg_*` wrapper. Implications rows updated. |
 | 1.18 | 2026-07-13 | **DECISION U (Reconciliation MVP via DECISION T Re-emission) — ratifies FLAG-GATES3-1 Option A.** Inserts a new session **OPS-S3 "Reconciliation MVP"** into the IMPLEMENTATION_PLAN.md §5b Session Map immediately **before GATE-S3**; **GATE-S3 Depends-on changes from `GATE-S2` to `OPS-S3`**; **GATE-S3 DoD is UNCHANGED**. Reconciliation un-stubs `ReconciliationWorkerStrategy` and repairs delivery drift **only** by re-emission through the normal pipeline via the DECISION T primitive (`ReplayService`/`ReplayEmitterInterface` — synthetic re-emission through `wp_hsp_outbox` with a fresh `wp_hsp_aggregate_counters` version [DECISION 2], flowing relay → dispatch → worker, passing the DECISION J guard naturally). **Direct PostgreSQL projection writes as a repair path are PROHIBITED.** WordPress-wins (ADR-026/ADR-027/ADR-045; CLAUDE.md Rule 1) holds **by construction**: repair reads current WP state via the emitter and reprojects, never writing WP from PG. **Scope:** drift detection, incremental validation, full reconciliation. Reconciliation must detect (a) **missed captures** — a WP entity newer than, or absent from, the delivery state (the DECISION 1 post-commit-gap backstop), and (b) **orphans** — present in delivery but deleted/non-public in WP (repair = re-emit the `.deleted` event → DECISION I tombstone path). **Scheduling:** WP-Cron is authorized for MVP under the CLAUDE.md recovery-jobs carve-out; **workers remain the execution path — cron only triggers.** No new PG handle (DECISION L Ruling 0 topology frozen at four), no new raw `pg_*` wrapper (DECISION E), no direct PG repair writes. **Resolves FLAG-GATES3-1.** Implications table + Session Map amended. |
 | 1.17 | 2026-07-12 | **DECISION T (Replay via Projection Repair by Synthetic Re-emission) — ratifies FLAG-OPSS2-1 Option A.** Entity and date-range replay emit a NEW event through `wp_hsp_outbox`, taking a NEW `aggregate_version` from `wp_hsp_aggregate_counters` (DECISION 2 atomic increment), flowing relay → dispatch → worker and passing the DECISION J stale guard **naturally** (new version > stored version). The guard is NOT weakened, bypassed, or made conditional. Historical `system.events` rows are never mutated or re-enqueued — replay **appends**, never rewrites (Doc 5 §26 immutability holds; Rule 3 outbox path holds). The replay emitter reads CURRENT WordPress state per aggregate (ADR-044/ADR-045 — WordPress wins): aggregate exists and is public → emit the existing OPEN-1 `.updated` type; missing or non-public → emit `.deleted` (correctly tombstones entities deleted during an outage window). No new event-type contracts. Date-range mode: `SELECT DISTINCT (aggregate_type, aggregate_id) FROM system.events` within the `[from, to]` window (read via the existing delivery `DatabaseConnectionInterface` handle — no fifth handle, DECISION L Ruling 0), then one synthetic emit per aggregate. Traceability: synthetic events carry `causation_id` referencing the replay operation; one `correlation_id` groups a replay run. This emit-through-outbox repair primitive is the same mechanism future reconciliation (ADR-026/027/045) will build on. **Supersedes** the IMPLEMENTATION_PLAN.md §5b "re-enqueue original event" wording for entity/date-range modes; single-event DLQ replay under DECISION S is unchanged. **Resolves FLAG-OPSS2-1.** No schema change; no new pg_* wrapper; no new PG handle. Implications table updated. |
@@ -860,6 +861,116 @@ If neither holds, the newer-WP state was **never captured** — a genuine DECISI
 
 ---
 
+### DECISION V — Operations Console Adoption (Ratifies FLAG-PLANOPS1-1..11)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-07-15 |
+| **Session** | OPSC-S0 (docs-only ratification) |
+| **Authority** | Architect ruling 2026-07-15 (FLAG-PLANOPS1-1..11); PLAN-OPS-1 audit (`docs/notes/DOC12-ADOPTION-AUDIT.md`); Doc 12 (Admin Operations Console); DECISION K (delivery connection), DECISION L Ruling 0 (four-handle topology), DECISION E (no new `pg_*` wrapper), DECISION P (heartbeat current-state), DECISION Q (metrics without persistence), DECISION S/T (replay), DECISION U (reconciliation); DECISION 1 + Rule 4 (never lose a sync); CLAUDE.md Rules 1–8 |
+| **Resolves** | FLAG-PLANOPS1-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11 |
+| **Adopts** | Doc 12 (as amended by this decision) — promoted Draft → "Accepted (as amended by DECISION V)" |
+| **Amends** | CLAUDE.md folder structure + Coding Standard; Doc 2 folder tree (Doc 2 not edited — amended by this ruling); Doc 11 roadmap; IMPLEMENTATION_PLAN.md §5b Session Map (inserts OPSC-S1..S4) |
+
+**Ruling.** The HSP Operations Console (Doc 12) is adopted into the frozen architecture, conservatively scoped per the architect's 2026-07-15 rulings. Doc 12 is authoritative for the console's registry/provider architecture; where Doc 12 conflicts with this decision, **this decision wins** (precedence, line 3). The eleven flags are resolved as follows.
+
+**(a) Frontend stack (FLAG-3 B).** The MVP console is **server-rendered PHP + minimal vanilla JavaScript + the WordPress native admin UI**. **No node/npm/bundler toolchain is introduced**; no `package.json`, no CI build step, no shipped JS/TS bundle. Doc 12 §10's "React UI" and its Console State Store / Refresh Coordinator become simple server-rendered pages with lightweight JS polling. React remains available only via a **future ADR** that **must not alter the provider/registry architecture** ratified here. Doc 12 §3's `Assets/`/`UI/` subtree is reduced accordingly (no build config).
+
+**(b) Coding standard (FLAG-4 A).** The platform coding standard is settled: **PSR-12 for all platform code**; **WPCS security requirements — escaping, sanitization, capability checks, nonces — apply only at WordPress entry points** (admin pages, form handlers, REST registration, `$wpdb` calls). This confirms the IMPLEMENTATION_PLAN.md §3 wording and lifts the "TBD / do not enforce" hold. DECISION S clause (d) deliberately shipped CLI-only to avoid this boundary; it is now resolved and the admin boundary is open.
+
+**(c) Metrics derived on-demand (FLAG-5 A).** All console metrics are **derived on-demand per DECISION Q** — **zero new persistence**. Processing rate, replay status, and reconciliation status are computed from existing operational data (e.g. rolling-window queries over `system.queue_jobs.processed_at`; last-run summaries derived from existing rows/logs). **No metrics table, no rollups, no time-series store** may be introduced. Doc 12 §12's "Processing Rate / Replay Progress / Reconciliation Status" tiles are point-in-time derivations, not persisted progress surfaces.
+
+**(d) Actions are thin delegators; no second repair path (FLAG-6 A).** The Replay and Reconcile console actions are **thin delegators** to `core/Replay/ReplayService` (DECISION T/S) and `core/Reconciliation/ReconciliationService` (DECISION U). They **never** open a second repair path and **never** write `content.*` / `system.*` projections directly — repair is re-emission only, exactly as for organic edits and reconciliation (DECISION T point 5 / DECISION U point 2). **OPSC-S4's DoD must include a write-spy proof**: zero direct `content.*`/`system.*` writes on the action path, mirroring the GATE-S3 reconciliation evidence.
+
+**(e) Flush Queue removed (FLAG-7 A).** **Flush Queue is removed from the action set.** A destructive queue flush discards pending/failed jobs and violates at-least-once (Rule 4), "never lose a sync" (DECISION 1), and the never-drop-a-sync anti-pattern. Any future queue-maintenance action must be **replay-safe** (e.g. requeue timed-out jobs via DECISION R, or move stuck jobs to the DLQ), **never destructive deletion**.
+
+**(f) No Restart Workers action (FLAG-8 C-modified).** The console provides **worker status, heartbeat, restart guidance, and runbook links only** — **no Restart Workers action**. A wp-admin PHP request cannot control a systemd/Supervisor-managed process; worker lifecycle belongs to the **process supervisor**. The console surfaces DECISION P heartbeat state and links to the operational runbook; it does not attempt lifecycle control.
+
+**(g) Provider PG reads reuse the delivery handle (FLAG-10 A).** Console providers running in the wp-admin request read `system.*` / `content.*` through the existing **delivery `DatabaseConnectionInterface`** (DECISION K). This opens **no fifth handle** — the four-handle topology (DECISION L Ruling 0) is unchanged — and introduces **no new raw `pg_*` wrapper** (DECISION E).
+
+**(h) Operations contracts location (FLAG-11 A).** Operations contracts live under **`core/Contracts/Operations/`** (a namespace under the existing contracts root), **not** `core/Operations/Contracts/`. This keeps **CLAUDE.md Rule 5 ("modules depend on `core/Contracts/` only") true verbatim** when a module (e.g. `modules/Content/Operations/`) provides a widget / diagnostics / metrics implementation. Doc 12 §3's `Core/Operations/Contracts/` tree is **superseded** on this point.
+
+**(i) `core/Operations/` folder (FLAG-2 A).** **`core/Operations/`** (lowercase, matching the repo/namespace convention `HSP\Core\Operations\`) is added to the canonical folder structure as **core infrastructure** (housing Admin, Registries, Providers, Services, Diagnostics, and the server-rendered UI). Doc 12's `Core/` uppercase casing is corrected to `core/`. Doc 2's folder tree is amended by this ruling; **Doc 2 is not edited** (the amendment lives here).
+
+**(j) Philosophy — observability, not a control plane (binding scope).** The Operations Console is an **observability and diagnostics interface, not an operational control plane.** Restarting services or containers, managing OS processes, and infrastructure orchestration are **permanently outside the plugin's scope.** Every current and future console session is bound by this: the console reports and diagnoses; it does not operate the infrastructure. State-changing actions are limited to the platform's own re-emission primitives (replay, reconcile) that route through the ratified services.
+
+**ADR ratification (FLAG-9 B).** ADR-047, ADR-048, ADR-049, ADR-050, ADR-052, ADR-053 are ratified as entries below (each consistent with Doc 12 as amended by this decision). **ADR-051 (Operational Actions) is HELD** — recorded but **not citable as authority** by any session — until the FLAG-7 (no Flush Queue) and FLAG-8 (no Restart Workers) rulings are incorporated into its text. No ADR number collides (prior ceiling was ADR-046).
+
+**Doc 11 (FLAG-1 A).** Doc 11's roadmap is updated to add **"Phase 1A – Expanded — Operations Console & Developer Experience"** between Phase 1A (Blog MVP) and Phase 1B (Content Enhancement).
+
+**Doc 12 status.** Doc 12 is promoted from Draft to **"Accepted (as amended by DECISION V — see ARCHITECTURE_DECISIONS.md)"**; its §21 self-freeze sentence is removed (freezing is this record's act, not the doc's). No other content edits are made to Doc 12 — all supersessions live in this decision, not in doc rewrites.
+
+**Rationale.** The console's architectural value is the registry/provider discipline and the delegation-only action model, not a specific frontend framework. Server-rendered PHP delivers both MVP nav items (Operations dashboard + API Playground) with zero new toolchain and the smallest possible admin-boundary surface, letting the operational architecture be validated before any richer-client investment. Constraining actions to the ratified re-emission primitives keeps WordPress-wins structural and prevents a second repair path. Removing Flush Queue and Restart Workers keeps the platform's never-lose-a-sync guarantee and the supervisor-owned worker lifecycle intact. Reusing the delivery handle preserves the frozen four-handle topology. Placing contracts under `core/Contracts/Operations/` preserves Rule 5 verbatim with no rule edit.
+
+---
+
+### ADR-047 — Operations Console as Core Infrastructure
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted (ratified by DECISION V, 2026-07-15) |
+| **Source** | Doc 12 §1, §3, §19 |
+
+The Operations Console is a **core infrastructure** subsystem, not a collection of ad-hoc WordPress admin pages. Core owns the console's infrastructure — registries, providers, services, aggregation, and rendering — under `core/Operations/`; modules own their implementations (pages, widgets, diagnostics, metrics, actions, endpoints) behind core-owned contracts. Module→module dependencies are prohibited (Rule 5); future extraction of the console remains possible. As amended by DECISION V: the subtree is `core/Operations/` (lowercase); its contracts live under `core/Contracts/Operations/`; the MVP is server-rendered PHP with no node toolchain.
+
+### ADR-048 — Registry-Driven Administration
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted (ratified by DECISION V, 2026-07-15) |
+| **Source** | Doc 12 §4, §5 |
+
+Console capabilities are discovered through **explicit-registration registries** (Page, Navigation, Widget, Action, Asset), mirroring the platform's existing event/adapter registry model (no reflection, no hardcoding). Registries discover *capabilities*; providers supply *runtime data*. Nothing about the console's pages, widgets, endpoints, or actions is hardcoded in core.
+
+### ADR-049 — Unified Diagnostics
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted (ratified by DECISION V, 2026-07-15) |
+| **Source** | Doc 12 §11, §12 |
+
+Diagnostics are contributed by **Diagnostics Providers** (Health, Metrics, Configuration/Environment Validation, Version, Warnings, Recommendations) with a common severity scale (OK/Info/Warning/Error/Critical). **Historical health storage is out of scope**; the console reports **current operational state only.** Consistent with DECISION P (single current-state heartbeat row) and DECISION Q (no metrics persistence). As amended by DECISION V: all metric-bearing diagnostics are derived on-demand — zero new persistence.
+
+### ADR-050 — Delivery API Validation
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted (ratified by DECISION V, 2026-07-15) |
+| **Source** | Doc 12 §15 |
+
+The API Playground validates the delivery API by exercising the published `hsp/v1` endpoints (DECISION N/F) from the admin UI: Endpoint Explorer, Request Builder, Request Execution, Response Viewer, driven by registered endpoint metadata. Execution hits the **live delivery API contract** (Rule 6 — consumers depend on the API contract, not internal schemas). Out-of-MVP display categories (Commerce/Search) are placeholders and must not pull WooCommerce/OpenSearch into scope.
+
+### ADR-051 — Operational Actions
+
+| Field | Value |
+|---|---|
+| **Status** | **HELD — recorded, NOT citable as authority** (per DECISION V / FLAG-9 B) |
+| **Source** | Doc 12 §17 |
+| **Blocked on** | Incorporation of FLAG-7 (Flush Queue removed) and FLAG-8 (no Restart Workers) into this ADR's text |
+
+ADR-051 governs registry-driven Operational Actions. It is **HELD**: Doc 12 §17 as written still lists **Flush Queue** and **Restart Workers**, both of which DECISION V removes (FLAG-7 A / FLAG-8 C-modified). Until this ADR's text is revised to (1) drop Flush Queue and any destructive-flush semantic, (2) drop Restart Workers in favour of status + heartbeat + runbook links, and (3) constrain the surviving Replay/Reconcile actions to thin delegators over the DECISION T/U services (FLAG-6 A), **no session may cite ADR-051 as authority.** OPSC-S4 cites DECISION V (d)+(e)+(f) directly, not ADR-051.
+
+### ADR-052 — Registry-Driven Operations Console
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted (ratified by DECISION V, 2026-07-15) |
+| **Source** | Doc 12 §20 (ADR-052) |
+
+All Operations Console capabilities are discovered through registries and provider contracts. Core never hardcodes pages, widgets, endpoints, diagnostics, metrics, or operational actions. (Reaffirms ADR-048 at the whole-console level.)
+
+### ADR-053 — Operations Console is Read-Only by Default
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted (ratified by DECISION V, 2026-07-15) |
+| **Source** | Doc 12 §20 (ADR-053) |
+
+The console is **observational by default.** State-changing functionality is implemented **only** as registered Operational Actions protected by capability checks, confirmation, and audit — and, per DECISION V (d)+(j), only as thin delegators to the platform's re-emission primitives. This keeps the console a diagnostics interface (DECISION V (j)); administrative operations remain explicit, discoverable, and auditable.
+
+---
+
 ### DECISION N — Delivery REST Namespace: `hsp/v1`
 
 | Field | Value |
@@ -1029,3 +1140,9 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `core/Reconciliation/ReconciliationService` | New class. Detection + batching + suppression; three modes as one detector + `mode` parameter (drift/incremental/full per D1). Reads `content.*` + `system.aggregate_versions` (+ `system.events` for suppression) via the existing delivery `DatabaseConnectionInterface`; reads WP via `WpReconciliationSourceInterface`; reads pending `wp_hsp_outbox` via the outbox read path. Repairs **only** by calling `ReplayService::replayEntity()` per genuinely-drifted aggregate — **no direct `content.*`/`system.*` projection writes.** Applies the D4 suppression rule. WordPress-wins by construction. | DECISION U (v1.19) |
 | `core/Workers/Strategies/ReconciliationWorkerStrategy` | Un-stubbed in OPS-S3 as a façade over `ReconciliationService`: `reconcileDrift()` / `reconcileIncremental()` / `reconcileFull()`. `execute()` stays a producer-side no-op (`false`, B1 — matches `ReplayWorkerStrategy`); reconciliation is CLI/cron-triggered, not a `system`-queue consumer. Service dependency via constructor injection (ADR-012); `WorkerServiceProvider` wiring updated (was `new ReconciliationWorkerStrategy()`). Detection: missed captures (WP newer/absent vs delivery — DECISION 1 backstop) and orphans (full-mode only, PG→WP). Repair via DECISION T re-emission ONLY; no new handle (DECISION L Ruling 0), no new `pg_*` wrapper (DECISION E). | DECISION U (v1.19) |
 | WP-CLI `hsp reconcile drift\|incremental\|full` (+ `status` dry-run) & WP-Cron triggers | New CLI subcommands extending the OPS-S1 `hsp` surface (thin `\WP_CLI` shim → `ReconciliationWorkerStrategy`); WP-CLI only. WP-Cron authorized (CLAUDE.md recovery-jobs carve-out) to *trigger* passes only via three schedules (hourly/nightly/weekly, cadence + page-size config-driven); callbacks call the same strategy methods; the worker-bootstrapped process remains the execution path. Trigger is swappable to external scheduling later with no repair-path change. | DECISION U (v1.18/v1.19) |
+| `core/Operations/` | New core-infrastructure subtree (lowercase; `HSP\Core\Operations\`): Operations Registry (Page/Nav/Widget/Action/Asset), Providers (Health/Metrics/Worker-Status/Queue-Status/Endpoint), Services, Diagnostics, and **server-rendered PHP** admin UI (no node/npm/bundler toolchain, no shipped JS bundle; minimal vanilla JS only). Console is **observability/diagnostics only** — not a control plane. Registry-driven discovery (explicit registration, no reflection); providers resolve via constructor injection (ADR-012). | DECISION V (v1.20); ADR-047/048/052/053 |
+| `core/Contracts/Operations/` | New namespace under the existing contracts root. **All operations contracts live here** (provider/widget/action/diagnostics/metrics interfaces), NOT under `core/Operations/Contracts/`. Keeps Rule 5 verbatim: modules (`modules/*/Operations/`) that provide console implementations depend on `core/Contracts/` only. | DECISION V (v1.20 — FLAG-11 A) |
+| Console provider PG reads | Reuse the delivery `DatabaseConnectionInterface` (DECISION K) from the wp-admin request context — no fifth handle (DECISION L Ruling 0 topology unchanged), no new raw `pg_*` wrapper (DECISION E). Providers read `system.queue_jobs`, `system.dead_letter_jobs`, `system.worker_heartbeats`, `content.*`. | DECISION V (v1.20 — FLAG-10 A) |
+| Console metrics | **No new persistence** — all metrics derived on-demand per DECISION Q (processing rate = rolling-window query; replay/reconciliation status = last-run summary from existing rows/logs). No metrics table, no rollups, no time-series store. | DECISION V (v1.20 — FLAG-5 A); DECISION Q |
+| Console Operational Actions (`core/Operations/` + `modules/*/Operations/`) | **Replay + Reconcile only.** Thin delegators to `ReplayService` (DECISION T/S) and `ReconciliationService` (DECISION U); **no second repair path**, no direct `content.*`/`system.*` writes (write-spy proof required in OPSC-S4 DoD). **Flush Queue REMOVED** (destructive; violates Rule 4 / DECISION 1). **No Restart Workers action** — worker status/heartbeat/runbook links only; lifecycle belongs to the supervisor. Actions gated by capability + confirmation + audit. | DECISION V (v1.20 — FLAG-6/7/8); ADR-053; ADR-051 HELD |
+| Coding standard (now settled) | PSR-12 for all platform code; WPCS security rules (escape/sanitize/capability/nonce) at WordPress entry points only. Lifts the IMPLEMENTATION_PLAN §3 "do not enforce until confirmed" hold; the WP-admin boundary is open. | DECISION V (v1.20 — FLAG-4 A) |
