@@ -9,10 +9,18 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\Operations\ActionRegistryInterface;
 use HSP\Core\Contracts\Operations\AssetRegistryInterface;
+use HSP\Core\Contracts\Operations\ConsoleAsset;
+use HSP\Core\Contracts\Operations\ConsolePage;
+use HSP\Core\Contracts\Operations\ConsoleWidget;
+use HSP\Core\Contracts\Operations\NavigationItem;
 use HSP\Core\Contracts\Operations\NavigationRegistryInterface;
 use HSP\Core\Contracts\Operations\PageRegistryInterface;
 use HSP\Core\Contracts\Operations\WidgetRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Operations\Admin\AdminPageController;
+use HSP\Core\Operations\Admin\ConsoleAdminRegistrar;
+use HSP\Core\Operations\Admin\ConsoleAjaxController;
+use HSP\Core\Operations\Admin\PlaygroundRequestExecutor;
 use HSP\Core\Operations\Diagnostics\ModuleInspector;
 use HSP\Core\Operations\Diagnostics\OperationsQueryReader;
 use HSP\Core\Operations\Diagnostics\SystemInformationProvider;
@@ -28,6 +36,8 @@ use HSP\Core\Operations\Registries\WidgetRegistry;
 use HSP\Core\Operations\Services\ConsoleStateStore;
 use HSP\Core\Operations\Services\OperationsService;
 use HSP\Core\Operations\Services\RefreshCoordinator;
+use HSP\Core\Operations\UI\DashboardView;
+use HSP\Core\Operations\UI\PlaygroundView;
 
 /**
  * Registers the Operations Console scaffolding (OPSC-S1) and the concrete diagnostics /
@@ -148,6 +158,43 @@ final class OperationsServiceProvider extends ServiceProvider
         // ModuleInspector starts empty; module inspection providers are added in
         // ContentServiceProvider::boot() (Rule 5 — module owns its descriptor).
         $container->singleton(ModuleInspector::class, fn () => new ModuleInspector());
+
+        // --- OPSC-S3 server-rendered UI (pure renderers — no infra; ADR-053) -------------
+        $container->singleton(DashboardView::class, fn () => new DashboardView());
+        $container->singleton(PlaygroundView::class, fn () => new PlaygroundView());
+        $container->singleton(PlaygroundRequestExecutor::class, fn () => new PlaygroundRequestExecutor());
+
+        // --- OPSC-S3 wp-admin boundary ---------------------------------------------------
+        // These are the ONLY console classes that touch WordPress. They talk to
+        // OperationsService + the two diagnostics services only — never a
+        // DatabaseConnectionInterface, the reader, or a concrete provider (ADR-053).
+        $container->singleton(
+            ConsoleAjaxController::class,
+            fn (Container $c) => new ConsoleAjaxController(
+                $c->get(OperationsService::class),
+                $c->get(PlaygroundRequestExecutor::class),
+            ),
+        );
+
+        $container->singleton(
+            AdminPageController::class,
+            fn (Container $c) => new AdminPageController(
+                $c->get(OperationsService::class),
+                $c->get(SystemInformationProvider::class),
+                $c->get(ModuleInspector::class),
+                $c->get(DashboardView::class),
+                $c->get(PlaygroundView::class),
+                $c->get(ConsoleAjaxController::class),
+            ),
+        );
+
+        $container->singleton(
+            ConsoleAdminRegistrar::class,
+            fn (Container $c) => new ConsoleAdminRegistrar(
+                $c->get(AdminPageController::class),
+                $c->get(ConsoleAjaxController::class),
+            ),
+        );
     }
 
     /**
@@ -166,6 +213,60 @@ final class OperationsServiceProvider extends ServiceProvider
         $coordinator->addProvider($container->get(QueueStatusProvider::class));
         $coordinator->addProvider($container->get(WorkerStatusProvider::class));
         $coordinator->addProvider($container->get(MetricsProvider::class));
+
+        $this->registerConsoleUi($container);
+    }
+
+    /**
+     * Register the MVP console pages, navigation, and dashboard widgets (OPSC-S3).
+     *
+     * MVP nav is "Operations" + "API Playground" (Doc 12 §6). The dashboard carries one
+     * read-only widget per core provider (Health/Queue/Workers/Metrics), each naming its
+     * provider key so the Operations Services layer resolves the snapshot (widgets never poll
+     * — Doc 12 §7/§8). Explicit registration only (ADR-048/ADR-052). Module-provided widgets
+     * (e.g. Content metrics) are registered in the module's boot().
+     */
+    private function registerConsoleUi(Container $container): void
+    {
+        /** @var PageRegistryInterface $pages */
+        $pages = $container->get(PageRegistryInterface::class);
+        /** @var NavigationRegistryInterface $nav */
+        $nav = $container->get(NavigationRegistryInterface::class);
+        /** @var WidgetRegistryInterface $widgets */
+        $widgets = $container->get(WidgetRegistryInterface::class);
+
+        $cap = 'manage_options';
+
+        $pages->register(new ConsolePage(AdminPageController::PAGE_OPERATIONS, 'Operations', $cap, 10));
+        $pages->register(new ConsolePage(AdminPageController::PAGE_PLAYGROUND, 'API Playground', $cap, 20));
+
+        $nav->register(new NavigationItem('Operations', AdminPageController::PAGE_OPERATIONS, 10));
+        $nav->register(new NavigationItem('API Playground', AdminPageController::PAGE_PLAYGROUND, 20));
+
+        $page = AdminPageController::PAGE_OPERATIONS;
+        $widgets->register(new ConsoleWidget('health', 'Health', $page, HealthProvider::KEY, 10));
+        $widgets->register(new ConsoleWidget('queue', 'Queue', $page, QueueStatusProvider::KEY, 20));
+        $widgets->register(new ConsoleWidget('workers', 'Workers', $page, WorkerStatusProvider::KEY, 30));
+        $widgets->register(new ConsoleWidget('metrics', 'Metrics', $page, MetricsProvider::KEY, 40));
+
+        // Static, hand-authored assets (no bundle, no build step — DECISION V (a)). Enqueued
+        // at the wp-admin boundary by AdminPageController when a console page renders.
+        /** @var AssetRegistryInterface $assets */
+        $assets = $container->get(AssetRegistryInterface::class);
+        foreach ([AdminPageController::PAGE_OPERATIONS, AdminPageController::PAGE_PLAYGROUND] as $slug) {
+            $assets->register(new ConsoleAsset(
+                "hsp-ops-console-{$slug}-css",
+                ConsoleAsset::TYPE_STYLE,
+                'resources/operations/console.css',
+                $slug,
+            ));
+            $assets->register(new ConsoleAsset(
+                "hsp-ops-console-{$slug}-js",
+                ConsoleAsset::TYPE_SCRIPT,
+                'resources/operations/console.js',
+                $slug,
+            ));
+        }
     }
 
     private function offlineAfterSeconds(): int

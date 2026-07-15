@@ -58,15 +58,48 @@ if (! class_exists(\WP_REST_Request::class)) {
     class WP_REST_Request
     {
         private array $params = [];
+        private string $method = 'GET';
+        private string $route  = '';
 
-        public function __construct(array $params = [])
+        /**
+         * Flexible stub matching two call shapes used in the suite:
+         *   new WP_REST_Request(['key' => 'val'])            — array-first (legacy REST tests)
+         *   new WP_REST_Request('GET', '/hsp/v1/posts')      — method+route (real WP signature)
+         */
+        public function __construct(array|string $first = [], string $route = '')
         {
-            $this->params = $params;
+            if (is_array($first)) {
+                $this->params = $first;
+            } else {
+                $this->method = $first;
+                $this->route  = $route;
+            }
         }
 
         public function get_param(string $key): mixed
         {
             return $this->params[$key] ?? null;
+        }
+
+        public function set_param(string $key, mixed $value): void
+        {
+            $this->params[$key] = $value;
+        }
+
+        public function get_method(): string
+        {
+            return $this->method;
+        }
+
+        public function get_route(): string
+        {
+            return $this->route;
+        }
+
+        /** @return array<string,mixed> */
+        public function get_params(): array
+        {
+            return $this->params;
         }
     }
 }
@@ -81,6 +114,16 @@ if (! class_exists(\WP_REST_Response::class)) {
         {
             $this->data   = $data;
             $this->status = $status;
+        }
+
+        public function get_status(): int
+        {
+            return $this->status;
+        }
+
+        public function get_data(): mixed
+        {
+            return $this->data;
         }
     }
 }
@@ -161,5 +204,185 @@ if (! function_exists('wp_is_post_autosave')) {
     function wp_is_post_autosave(int $postId): bool
     {
         return $GLOBALS['_hsp_stub_is_autosave'][$postId] ?? false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WordPress escaping + admin + AJAX stubs — for Operations Console (OPSC-S3) tests.
+// The Html helper prefers WP's esc_* when present; these stubs let the WP-boundary
+// controllers/executor be unit-tested without loading WordPress. sanitize_key /
+// wp_unslash mirror WP behaviour closely enough for the boundary assertions.
+// ---------------------------------------------------------------------------
+
+if (! function_exists('esc_html')) {
+    function esc_html(string $text): string
+    {
+        return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+}
+
+if (! function_exists('esc_attr')) {
+    function esc_attr(string $text): string
+    {
+        return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+}
+
+if (! function_exists('esc_url')) {
+    function esc_url(string $url): string
+    {
+        $clean = preg_replace('/[\x00-\x1F\x7F]/u', '', $url) ?? '';
+
+        return htmlspecialchars($clean, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+}
+
+if (! function_exists('esc_html__')) {
+    function esc_html__(string $text, string $domain = 'default'): string
+    {
+        return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+}
+
+if (! function_exists('wp_unslash')) {
+    function wp_unslash(mixed $value): mixed
+    {
+        return is_string($value) ? stripslashes($value) : $value;
+    }
+}
+
+if (! function_exists('sanitize_key')) {
+    function sanitize_key(string $key): string
+    {
+        return preg_replace('/[^a-z0-9_\-]/', '', strtolower($key)) ?? '';
+    }
+}
+
+if (! function_exists('admin_url')) {
+    function admin_url(string $path = ''): string
+    {
+        return 'http://example.test/wp-admin/' . ltrim($path, '/');
+    }
+}
+
+if (! function_exists('wp_create_nonce')) {
+    function wp_create_nonce(string $action = '-1'): string
+    {
+        return 'nonce-' . $action;
+    }
+}
+
+if (! function_exists('current_user_can')) {
+    function current_user_can(string $capability): bool
+    {
+        // Default allow; tests override via $GLOBALS['_hsp_stub_current_user_can'].
+        return $GLOBALS['_hsp_stub_current_user_can'] ?? true;
+    }
+}
+
+if (! function_exists('check_ajax_referer')) {
+    function check_ajax_referer(string|int $action = -1, string|false $query_arg = false, bool $die = true): int|false
+    {
+        $GLOBALS['_hsp_stub_check_ajax_referer'][] = [$action, $query_arg];
+
+        return 1;
+    }
+}
+
+if (! function_exists('rest_do_request')) {
+    function rest_do_request(\WP_REST_Request $request): \WP_REST_Response
+    {
+        $handler = $GLOBALS['_hsp_stub_rest_do_request'] ?? null;
+        if (is_callable($handler)) {
+            return $handler($request);
+        }
+
+        return new \WP_REST_Response(null, 200);
+    }
+}
+
+if (! function_exists('add_menu_page')) {
+    function add_menu_page(...$args): string
+    {
+        $GLOBALS['_hsp_stub_menu_pages'][] = $args;
+
+        return (string) ($args[3] ?? '');
+    }
+}
+
+/**
+ * Test-only signal used to unwind wp_send_json_success/error/wp_die without process exit,
+ * so console AJAX handlers can be asserted. Carries the JSON-ish payload + status.
+ */
+if (! class_exists(\HSP\Tests\Support\WpJsonHalt::class)) {
+    // Declared under a test namespace so it does not collide with anything shipped.
+    eval('namespace HSP\\Tests\\Support; final class WpJsonHalt extends \\RuntimeException {
+        public bool $success;
+        public mixed $payload;
+        public int $statusCode;
+        public function __construct(bool $success, mixed $payload, int $statusCode) {
+            parent::__construct("wp json halt");
+            $this->success = $success; $this->payload = $payload; $this->statusCode = $statusCode;
+        }
+    }');
+}
+
+if (! function_exists('wp_send_json_success')) {
+    function wp_send_json_success(mixed $data = null, int $status_code = 200): void
+    {
+        throw new \HSP\Tests\Support\WpJsonHalt(true, $data, $status_code);
+    }
+}
+
+if (! function_exists('wp_send_json_error')) {
+    function wp_send_json_error(mixed $data = null, int $status_code = 200): void
+    {
+        throw new \HSP\Tests\Support\WpJsonHalt(false, $data, $status_code);
+    }
+}
+
+if (! function_exists('wp_die')) {
+    function wp_die(string|\WP_Error $message = '', string|int $title = '', array|string|int $args = []): never
+    {
+        throw new \HSP\Tests\Support\WpJsonHalt(false, ['wp_die' => (string) $message], 403);
+    }
+}
+
+if (! function_exists('add_submenu_page')) {
+    function add_submenu_page(...$args): string
+    {
+        $GLOBALS['_hsp_stub_submenu_pages'][] = $args;
+
+        return (string) ($args[4] ?? '');
+    }
+}
+
+if (! function_exists('wp_enqueue_style')) {
+    function wp_enqueue_style(string $handle, string $src = '', array $deps = [], mixed $ver = false, string $media = 'all'): void
+    {
+        $GLOBALS['_hsp_stub_enqueued_styles'][$handle] = $src;
+    }
+}
+
+if (! function_exists('wp_enqueue_script')) {
+    function wp_enqueue_script(string $handle, string $src = '', array $deps = [], mixed $ver = false, bool $in_footer = false): void
+    {
+        $GLOBALS['_hsp_stub_enqueued_scripts'][$handle] = $src;
+    }
+}
+
+if (! function_exists('wp_localize_script')) {
+    function wp_localize_script(string $handle, string $object_name, array $l10n): bool
+    {
+        $GLOBALS['_hsp_stub_localized'][$handle] = [$object_name, $l10n];
+
+        return true;
+    }
+}
+
+if (! function_exists('plugins_url')) {
+    function plugins_url(string $path = '', string $plugin = ''): string
+    {
+        return 'http://example.test/wp-content/plugins/headless-sync/' . ltrim($path, '/');
     }
 }

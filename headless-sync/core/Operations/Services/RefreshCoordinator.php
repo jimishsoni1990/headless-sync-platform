@@ -88,6 +88,26 @@ final class RefreshCoordinator
     }
 
     /**
+     * Keys of every registered EndpointProviderInterface (for the API Playground).
+     *
+     * Lets a consumer discover which providers describe delivery endpoints without holding a
+     * provider reference itself (ADR-053) — the keys route back through snapshot storage.
+     *
+     * @return string[]
+     */
+    public function endpointKeys(): array
+    {
+        $keys = [];
+        foreach ($this->providers as $key => $provider) {
+            if ($provider instanceof EndpointProviderInterface) {
+                $keys[] = $key;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
      * Invoke every registered provider once and store its snapshot in the state store.
      *
      * Returns the number of providers refreshed.

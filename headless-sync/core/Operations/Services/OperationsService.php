@@ -131,4 +131,31 @@ final class OperationsService
             "No widget '{$widgetId}' registered on page '{$pageSlug}'."
         );
     }
+
+    /**
+     * Every published endpoint descriptor, aggregated across all registered endpoint providers.
+     *
+     * Feeds the API Playground (ADR-050 / Doc 12 §15) so it lists and executes endpoints from
+     * EndpointProviderInterface metadata — never hardcoding routes. Refreshes any endpoint
+     * provider not yet snapshotted this request, then flattens all endpoint snapshots. The UI
+     * receives plain EndpointDescriptor DTOs; it never touches a provider or infrastructure
+     * (ADR-053).
+     *
+     * @return \HSP\Core\Contracts\Operations\EndpointDescriptor[]
+     */
+    public function endpointDescriptors(): array
+    {
+        $descriptors = [];
+
+        foreach ($this->coordinator->endpointKeys() as $key) {
+            $snapshot = $this->snapshot($key);
+            if (is_array($snapshot)) {
+                foreach ($snapshot as $descriptor) {
+                    $descriptors[] = $descriptor;
+                }
+            }
+        }
+
+        return $descriptors;
+    }
 }

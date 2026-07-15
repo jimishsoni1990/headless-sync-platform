@@ -12,6 +12,9 @@ use HSP\Core\Contracts\ReplayEmitterInterface;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
+use HSP\Core\Contracts\Operations\ConsoleWidget;
+use HSP\Core\Contracts\Operations\WidgetRegistryInterface;
+use HSP\Core\Operations\Admin\AdminPageController;
 use HSP\Core\Operations\Diagnostics\ModuleInspector;
 use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Core\Replay\ReplayService;
@@ -326,6 +329,20 @@ final class ContentServiceProvider extends ServiceProvider
         /** @var ModuleInspector $inspector */
         $inspector = $container->get(ModuleInspector::class);
         $inspector->add($container->get(ContentModuleInspection::class));
+
+        // Module-provided dashboard widget over the module's own metrics snapshot (OPSC-S3).
+        // The module names only its provider key and target page slug (both core-owned
+        // contracts — Rule 5); the widget reads its snapshot through OperationsService and
+        // never polls infrastructure (Doc 12 §7/§8).
+        /** @var WidgetRegistryInterface $widgets */
+        $widgets = $container->get(WidgetRegistryInterface::class);
+        $widgets->register(new ConsoleWidget(
+            'content.metrics',
+            'Content Projections',
+            AdminPageController::PAGE_OPERATIONS,
+            ContentMetricsProvider::KEY,
+            50,
+        ));
     }
 
     /**

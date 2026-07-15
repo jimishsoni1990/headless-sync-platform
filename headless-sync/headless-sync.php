@@ -65,6 +65,19 @@ add_action('plugins_loaded', static function () use ($application): void {
     $cron->register();
 }, 20);
 
+// Operations Console (OPSC-S3): bind the wp-admin menu pages and the nonce-protected
+// admin-ajax poll/execute endpoints. Read-only console (DECISION V (a)/(b); ADR-053) — no
+// state-changing action is registered. Runs after boot (priority 20) so the container exists.
+// ConsoleAdminRegistrar no-ops outside a WordPress runtime.
+add_action('plugins_loaded', static function () use ($application): void {
+    $container = $application->getContainer();
+    if ($container === null) {
+        return;
+    }
+
+    $container->get(HSP\Core\Operations\Admin\ConsoleAdminRegistrar::class)->register();
+}, 20);
+
 // WP-CLI: register `hsp dlq …` and `hsp status` (DECISION S clause (d), DECISION Q).
 // Runs after boot (priority 20) so the container is available. No-op outside WP-CLI.
 if (defined('WP_CLI') && WP_CLI) {

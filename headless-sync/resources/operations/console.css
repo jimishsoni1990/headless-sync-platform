@@ -1,0 +1,86 @@
+/* HSP Operations Console — minimal hand-authored styles (OPSC-S3; DECISION V (a)). */
+/* No build step, no bundler. Scoped under .hsp-ops to avoid colliding with wp-admin. */
+
+.hsp-ops .hsp-ops-widgets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin: 16px 0;
+}
+
+.hsp-ops-widget {
+    flex: 1 1 240px;
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    padding: 12px 16px;
+}
+
+.hsp-ops-widget h3 {
+    margin: 0 0 8px;
+    font-size: 14px;
+}
+
+.hsp-ops-kv {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.hsp-ops-kv li {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    border-bottom: 1px solid #f0f0f1;
+}
+
+.hsp-ops-k { color: #646970; }
+.hsp-ops-v { font-variant-numeric: tabular-nums; }
+
+.hsp-ops-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.hsp-ops-table th,
+.hsp-ops-table td {
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid #f0f0f1;
+}
+
+.hsp-ops-badge {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #fff;
+}
+
+.hsp-ops-badge--ok       { background: #46b450; }
+.hsp-ops-badge--info     { background: #00a0d2; }
+.hsp-ops-badge--warning  { background: #ffb900; color: #1d2327; }
+.hsp-ops-badge--error    { background: #d63638; }
+.hsp-ops-badge--critical { background: #8c1c1c; }
+
+.hsp-ops-state--online  { color: #2a7d2e; }
+.hsp-ops-state--offline { color: #d63638; }
+
+.hsp-ops-response-body {
+    background: #1d2327;
+    color: #f0f0f1;
+    padding: 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    max-height: 480px;
+}
+
+.hsp-ops-request-form label {
+    display: block;
+    margin: 8px 0;
+}
+
+.hsp-ops-request-form input,
+.hsp-ops-request-form select {
+    min-width: 280px;
+}
