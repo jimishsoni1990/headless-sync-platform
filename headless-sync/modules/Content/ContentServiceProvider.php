@@ -12,7 +12,12 @@ use HSP\Core\Contracts\ReplayEmitterInterface;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
+use HSP\Core\Operations\Diagnostics\ModuleInspector;
+use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Core\Replay\ReplayService;
+use HSP\Modules\Content\Operations\ContentEndpointProvider;
+use HSP\Modules\Content\Operations\ContentMetricsProvider;
+use HSP\Modules\Content\Operations\ContentModuleInspection;
 use HSP\Modules\Content\Reconciliation\WpReconciliationSource;
 use HSP\Modules\Content\Adapters\CategoryAdapter;
 use HSP\Modules\Content\Adapters\PageAdapter;
@@ -281,5 +286,62 @@ final class ContentServiceProvider extends ServiceProvider
                 ContentEventTypes::CATEGORY_DELETED => $c->get(CategoryTombstoneHandler::class),
             ])
         );
+
+        // -------------------------------------------------------------------------
+        // Operations Console — module-provided diagnostics/metrics + self-description
+        // (OPSC-S2). All implement core-owned contracts under core/Contracts/Operations/
+        // (Rule 5 — the module depends on core contracts only). Read-only; the metrics
+        // provider reads content.* on the delivery DatabaseConnectionInterface handle
+        // (DECISION V (g) — no fifth handle, no new pg_* wrapper). Registered with the
+        // RefreshCoordinator / ModuleInspector in boot() (after all providers exist).
+        // -------------------------------------------------------------------------
+
+        $container->singleton(ContentMetricsProvider::class, fn (Container $c) =>
+            new ContentMetricsProvider($c->get(DatabaseConnectionInterface::class))
+        );
+
+        $container->singleton(ContentEndpointProvider::class, fn () =>
+            new ContentEndpointProvider()
+        );
+
+        $container->singleton(ContentModuleInspection::class, fn () =>
+            new ContentModuleInspection(self::moduleVersion())
+        );
+    }
+
+    /**
+     * Register the Content module's Operations providers with the console coordinator and
+     * inspector (composition-root wiring — runs after all register() calls, so the core
+     * OperationsServiceProvider bindings already exist).
+     */
+    public function boot(object $container): void
+    {
+        assert($container instanceof Container);
+
+        /** @var RefreshCoordinator $coordinator */
+        $coordinator = $container->get(RefreshCoordinator::class);
+        $coordinator->addProvider($container->get(ContentMetricsProvider::class));
+        $coordinator->addProvider($container->get(ContentEndpointProvider::class));
+
+        /** @var ModuleInspector $inspector */
+        $inspector = $container->get(ModuleInspector::class);
+        $inspector->add($container->get(ContentModuleInspection::class));
+    }
+
+    /**
+     * Content module version, read from module.json (authoritative source — avoids drift
+     * between the descriptor and the manifest).
+     */
+    private static function moduleVersion(): string
+    {
+        $manifest = __DIR__ . '/module.json';
+        if (is_readable($manifest)) {
+            $data = json_decode((string) file_get_contents($manifest), true);
+            if (is_array($data) && isset($data['version']) && is_string($data['version'])) {
+                return $data['version'];
+            }
+        }
+
+        return 'unknown';
     }
 }

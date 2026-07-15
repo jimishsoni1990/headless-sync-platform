@@ -51,10 +51,11 @@ final class ContainerBuilder
         // (DECISION K delivery handle). DECISION L v1.12.
         $registry->addProvider(new DispatcherServiceProvider($config, $resolver));
         $registry->addProvider(new WorkerServiceProvider($config));
-        // Operations Console core scaffolding (OPSC-S1) — registries + provider contracts
-        // + services. Read-only; no concrete providers (OPSC-S2), no UI (OPSC-S3), no
-        // actions (OPSC-S4). Opens no PG handle (DECISION L Ruling 0 topology unchanged).
-        $registry->addProvider(new OperationsServiceProvider());
+        // Operations Console core scaffolding (OPSC-S1) + concrete diagnostics/metrics
+        // providers (OPSC-S2). Read-only; no UI (OPSC-S3), no actions (OPSC-S4). Provider PG
+        // reads ride the delivery DatabaseConnectionInterface (DECISION V (g)) — no fifth
+        // handle (DECISION L Ruling 0 topology unchanged), no new pg_* wrapper (DECISION E).
+        $registry->addProvider(new OperationsServiceProvider($config));
         $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 

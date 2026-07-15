@@ -17,6 +17,13 @@ declare(strict_types=1);
  *                intervals). Swapping the trigger to external scheduling requires no
  *                repair-path change.
  *   page_size  — full/window sweep page size (DECISION U D7 — unbounded, paged).
+ *
+ * heartbeat — DECISION P (v1.16) crash detection is by last_heartbeat_at age. The
+ *   Operations Console worker-status provider (OPSC-S2) computes "offline" as a
+ *   heartbeat-age comparison at read time; the threshold is config-driven (following the
+ *   DECISION R config-driven-cadence precedent — no hardcoded timing). This is a read-time
+ *   derivation only; it adds NO schema and NO persistence (DECISION Q / DECISION V (c)).
+ *   offline_after_seconds — a worker whose last heartbeat is older than this is "offline".
  */
 return [
     'maintenance' => [
@@ -30,5 +37,14 @@ return [
             'full'        => 'hsp_weekly',
         ],
         'page_size' => 500,
+    ],
+    'heartbeat' => [
+        'offline_after_seconds' => 60,
+    ],
+    'console' => [
+        // Trailing window (seconds) for the derived processing-rate metric (jobs
+        // completed per minute). Point-in-time derivation only — no persistence
+        // (DECISION Q / DECISION V (c)); config-driven so the horizon is never hardcoded.
+        'processing_rate_window_seconds' => 300,
     ],
 ];
