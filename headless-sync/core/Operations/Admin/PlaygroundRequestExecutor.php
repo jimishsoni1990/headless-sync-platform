@@ -16,9 +16,12 @@ use HSP\Core\Contracts\Operations\EndpointDescriptor;
  * `rest_do_request()` — no HTTP round-trip, no internal schema access.
  *
  * Safety invariants (read-only console — ADR-053 / DECISION V (a)):
- *   - The client selects an endpoint by its INDEX into the EndpointDescriptor list, never by a
- *     raw route string; the descriptor is re-resolved here from the SAME metadata the UI
- *     rendered, so a request can only target a registered, published endpoint.
+ *   - The client selects an endpoint by its stable ROUTE KEY (`METHOD /namespace/route`),
+ *     never by a raw route string; the descriptor is re-resolved here from the SAME metadata
+ *     the UI rendered, so a request can only target a registered, published endpoint. The key
+ *     is derived deterministically from the descriptor, so a registration-order shift between
+ *     the render pass and the execute pass resolves to the SAME endpoint (the OPSC-S3 nit: a
+ *     positional index would have silently retargeted a different route on any order change).
  *   - GET only. A descriptor whose method is not GET is rejected. No mutation verb can be
  *     dispatched from the console (DECISION V — read-only; mutation is out of scope entirely).
  *   - The {slug} path param and query params are sanitized before being placed on the request.
@@ -30,26 +33,42 @@ use HSP\Core\Contracts\Operations\EndpointDescriptor;
 final class PlaygroundRequestExecutor
 {
     /**
+     * The stable selection key for a descriptor: `METHOD /namespace/route`.
+     *
+     * Both the render side (PlaygroundView, which emits this as the <option> value) and the
+     * execute side (here) compute the key the same way, so the selection is bound to the
+     * endpoint's identity, not to its position in a registration-ordered list.
+     */
+    public static function keyFor(EndpointDescriptor $endpoint): string
+    {
+        return strtoupper($endpoint->method) . ' /' . trim($endpoint->namespace, '/') . $endpoint->route;
+    }
+
+    /**
      * Dispatch the selected endpoint and return a plain result array for the Response Viewer.
      *
      * @param EndpointDescriptor[]  $endpoints registered endpoints (from EndpointProviderInterface)
-     * @param int                   $index     index into $endpoints (client selection)
+     * @param string                $key       stable route key (client selection; see keyFor())
      * @param string                $slug      optional sanitized path param for /{slug} routes
      * @param array<string,string>  $query     optional sanitized query parameters
      *
      * @return array{status:int, path:string, body:mixed}
      *
-     * @throws \InvalidArgumentException if the index is out of range or the method is not GET.
+     * @throws \InvalidArgumentException if the key matches no endpoint or the method is not GET.
      */
-    public function execute(array $endpoints, int $index, string $slug = '', array $query = []): array
+    public function execute(array $endpoints, string $key, string $slug = '', array $query = []): array
     {
-        $endpoints = array_values($endpoints);
-
-        if (! isset($endpoints[$index])) {
-            throw new \InvalidArgumentException('Unknown endpoint selection.');
+        $endpoint = null;
+        foreach ($endpoints as $candidate) {
+            if (self::keyFor($candidate) === $key) {
+                $endpoint = $candidate;
+                break;
+            }
         }
 
-        $endpoint = $endpoints[$index];
+        if ($endpoint === null) {
+            throw new \InvalidArgumentException('Unknown endpoint selection.');
+        }
 
         if (strtoupper($endpoint->method) !== 'GET') {
             // Defence in depth: the console is read-only; only GET is dispatchable.

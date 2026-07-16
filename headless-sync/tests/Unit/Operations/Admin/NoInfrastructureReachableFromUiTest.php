@@ -6,6 +6,7 @@ namespace HSP\Tests\Unit\Operations\Admin;
 
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Operations\Admin\AdminPageController;
+use HSP\Core\Operations\Admin\ConsoleActionController;
 use HSP\Core\Operations\Admin\ConsoleAdminRegistrar;
 use HSP\Core\Operations\Admin\ConsoleAjaxController;
 use HSP\Core\Operations\Diagnostics\OperationsQueryReader;
@@ -39,10 +40,11 @@ final class NoInfrastructureReachableFromUiTest extends TestCase
         WorkerStatusProvider::class,
     ];
 
-    /** Every class that constitutes the OPSC-S3 UI surface. */
+    /** Every class that constitutes the OPSC-S3 UI surface + the OPSC-S4 action boundary. */
     private const UI_CLASSES = [
         AdminPageController::class,
         ConsoleAjaxController::class,
+        ConsoleActionController::class,
         ConsoleAdminRegistrar::class,
         DashboardView::class,
         PlaygroundView::class,

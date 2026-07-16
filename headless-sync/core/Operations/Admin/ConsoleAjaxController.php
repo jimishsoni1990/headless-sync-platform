@@ -65,7 +65,11 @@ final class ConsoleAjaxController
         $this->authorize();
 
         // Sanitize every input at the boundary (WPCS — DECISION V (b)).
-        $index = isset($_POST['endpoint']) ? absint(wp_unslash($_POST['endpoint'])) : 0;
+        // The endpoint is selected by its stable route key (METHOD /namespace/route), not a
+        // positional index, so a registration-order shift can't retarget a different route.
+        $key   = isset($_POST['endpoint'])
+            ? sanitize_text_field(wp_unslash($_POST['endpoint']))
+            : '';
         $slug  = isset($_POST['slug'])
             ? sanitize_text_field(wp_unslash($_POST['slug']))
             : '';
@@ -76,7 +80,7 @@ final class ConsoleAjaxController
         $endpoints = $this->operations->endpointDescriptors();
 
         try {
-            $result = $this->executor->execute($endpoints, $index, $slug, $query);
+            $result = $this->executor->execute($endpoints, $key, $slug, $query);
         } catch (\InvalidArgumentException $e) {
             wp_send_json_error(['message' => $e->getMessage()], 400);
 

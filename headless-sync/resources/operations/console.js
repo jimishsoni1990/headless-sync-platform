@@ -9,8 +9,9 @@
  *
  * Every request carries the console nonce (verified server-side via check_ajax_referer) and is
  * capability-checked server-side. This script performs NO state change — it reads snapshots and
- * executes read-only GETs against the delivery API. The endpoint is selected by index; the
- * server re-resolves it from registered metadata (read-only, GET only).
+ * executes read-only GETs against the delivery API. The endpoint is selected by its stable
+ * route key (the <option> value); the server re-resolves it from registered metadata by
+ * identity (read-only, GET only), so a registration-order shift can't retarget a route.
  */
 (function () {
     'use strict';
@@ -85,7 +86,7 @@
                 body: form(pg, {
                     action: action,
                     nonce: nonce,
-                    endpoint: endpoint ? endpoint.value : '0',
+                    endpoint: endpoint ? endpoint.value : '',
                     slug: slug ? slug.value : '',
                     query: query ? query.value : ''
                 }).toString()

@@ -39,7 +39,7 @@ final class ConsoleAjaxControllerTest extends TestCase
         $store       = new ConsoleStateStore();
         $coordinator = new RefreshCoordinator($store);
         $coordinator->addProvider(new FakeQueueStatusProvider('queue'));
-        // Real content endpoint provider: index 0 = GET /posts, index 1 = GET /posts/{slug}.
+        // Real content endpoint provider — endpoints selected by stable route key (not index).
         $coordinator->addProvider(new ContentEndpointProvider());
 
         $this->operations = new OperationsService(
@@ -108,8 +108,8 @@ final class ConsoleAjaxControllerTest extends TestCase
         $GLOBALS['_hsp_stub_rest_do_request'] = static fn (\WP_REST_Request $r): \WP_REST_Response
             => new \WP_REST_Response(['route' => $r->get_route()], 200);
 
-        // Index 0 of ContentEndpointProvider is GET /pages.
-        $_POST = ['endpoint' => '0', 'slug' => '', 'query' => 'limit=2'];
+        // Select GET /pages by its stable route key (order-independent).
+        $_POST = ['endpoint' => 'GET /hsp/v1/pages', 'slug' => '', 'query' => 'limit=2'];
 
         try {
             $this->controller->handleExecute();
@@ -123,7 +123,7 @@ final class ConsoleAjaxControllerTest extends TestCase
 
     public function test_execute_returns_400_for_an_unknown_endpoint_selection(): void
     {
-        $_POST = ['endpoint' => '99'];
+        $_POST = ['endpoint' => 'GET /hsp/v1/does-not-exist'];
 
         try {
             $this->controller->handleExecute();
@@ -144,7 +144,7 @@ final class ConsoleAjaxControllerTest extends TestCase
         };
 
         // A hostile slug with tags; sanitize_text_field strips them at the boundary.
-        $_POST = ['endpoint' => '1', 'slug' => "he<script>llo", 'query' => ''];
+        $_POST = ['endpoint' => 'GET /hsp/v1/pages/{slug}', 'slug' => "he<script>llo", 'query' => ''];
 
         try {
             $this->controller->handleExecute();

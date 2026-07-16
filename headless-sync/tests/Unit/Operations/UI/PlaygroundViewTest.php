@@ -43,13 +43,15 @@ final class PlaygroundViewTest extends TestCase
         self::assertStringContainsString('List posts.', $html);
     }
 
-    public function test_builder_offers_each_endpoint_as_an_option_by_index(): void
+    public function test_builder_offers_each_endpoint_as_an_option_by_route_key(): void
     {
         $html = $this->view->render($this->endpoints(), 'http://x', 'n', 'a');
 
         self::assertStringContainsString('Request Builder', $html);
-        self::assertStringContainsString('<option value="0">', $html);
-        self::assertStringContainsString('<option value="1">', $html);
+        // Options are keyed by the stable route key (METHOD /namespace/route), not a positional
+        // index, so a registration-order shift can't retarget a route (OPSC-S3 nit fix).
+        self::assertStringContainsString('<option value="GET /hsp/v1/posts">', $html);
+        self::assertStringContainsString('<option value="GET /hsp/v1/posts/{slug}">', $html);
         self::assertStringContainsString('hsp-ops-execute', $html);
     }
 

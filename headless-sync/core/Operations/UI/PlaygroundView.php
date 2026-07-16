@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Core\Operations\UI;
 
 use HSP\Core\Contracts\Operations\EndpointDescriptor;
+use HSP\Core\Operations\Admin\PlaygroundRequestExecutor;
 
 /**
  * Pure server-side renderer for the API Playground (Doc 12 §15; ADR-050 — MVP nav item 2).
@@ -85,9 +86,12 @@ final class PlaygroundView
     /**
      * Request Builder + Execution control.
      *
-     * The <select> is keyed by the endpoint index so the server (AdminAjaxController)
-     * re-resolves the descriptor from the SAME EndpointProviderInterface metadata — the
-     * client never supplies a raw route string that could target an arbitrary path.
+     * The <select> is keyed by the endpoint's STABLE ROUTE KEY (`METHOD /namespace/route`,
+     * {@see PlaygroundRequestExecutor::keyFor()}) so the server (ConsoleAjaxController) re-resolves
+     * the descriptor from the SAME EndpointProviderInterface metadata by identity — the client
+     * never supplies a raw route string that could target an arbitrary path, and a
+     * registration-order shift between render and execute no longer retargets a different route
+     * (positional-index nit, OPSC-S3 session log).
      *
      * @param EndpointDescriptor[] $endpoints
      */
@@ -98,9 +102,10 @@ final class PlaygroundView
 
         $html .= '<label>' . Html::text('Endpoint') . ' ';
         $html .= '<select class="hsp-ops-endpoint" name="endpoint">';
-        foreach ($endpoints as $index => $endpoint) {
+        foreach ($endpoints as $endpoint) {
+            $key   = PlaygroundRequestExecutor::keyFor($endpoint);
             $label = $endpoint->method . ' /' . trim($endpoint->namespace, '/') . $endpoint->route;
-            $html .= '<option value="' . Html::attr((string) $index) . '">'
+            $html .= '<option value="' . Html::attr($key) . '">'
                 . Html::text($label) . '</option>';
         }
         $html .= '</select></label>';

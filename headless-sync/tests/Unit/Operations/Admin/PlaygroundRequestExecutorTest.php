@@ -11,10 +11,12 @@ use PHPUnit\Framework\TestCase;
 /**
  * Unit tests for PlaygroundRequestExecutor (Doc 12 §15 Request Execution; ADR-050).
  *
- * The executor dispatches a live GET against a PUBLISHED endpoint selected by index into the
- * EndpointProviderInterface metadata — never a raw client-supplied route. It is GET-only
- * (read-only console — DECISION V). `rest_do_request` is stubbed (tests/bootstrap.php) so the
- * dispatched WP_REST_Request can be captured and asserted without loading WordPress.
+ * The executor dispatches a live GET against a PUBLISHED endpoint selected by its stable ROUTE
+ * KEY (METHOD /namespace/route) into the EndpointProviderInterface metadata — never a raw
+ * client-supplied route, and never a positional index (which would retarget on a
+ * registration-order shift — OPSC-S3 nit, fixed OPSC-S4). It is GET-only (read-only console —
+ * DECISION V). `rest_do_request` is stubbed (tests/bootstrap.php) so the dispatched
+ * WP_REST_Request can be captured and asserted without loading WordPress.
  */
 final class PlaygroundRequestExecutorTest extends TestCase
 {
@@ -48,7 +50,7 @@ final class PlaygroundRequestExecutorTest extends TestCase
 
     public function test_dispatches_a_list_endpoint_and_returns_status_path_body(): void
     {
-        $result = $this->executor->execute($this->endpoints(), 0, '', ['limit' => '5']);
+        $result = $this->executor->execute($this->endpoints(), 'GET /hsp/v1/posts', '', ['limit' => '5']);
 
         self::assertSame(200, $result['status']);
         self::assertSame('/hsp/v1/posts', $result['path']);
@@ -62,17 +64,32 @@ final class PlaygroundRequestExecutorTest extends TestCase
 
     public function test_substitutes_the_slug_placeholder(): void
     {
-        $result = $this->executor->execute($this->endpoints(), 1, 'hello-world');
+        $result = $this->executor->execute($this->endpoints(), 'GET /hsp/v1/posts/{slug}', 'hello-world');
 
         self::assertSame('/hsp/v1/posts/hello-world', $result['path']);
     }
 
-    public function test_rejects_an_out_of_range_index(): void
+    public function test_rejects_an_unknown_key(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Unknown endpoint selection.');
 
-        $this->executor->execute($this->endpoints(), 99);
+        $this->executor->execute($this->endpoints(), 'GET /hsp/v1/nope');
+    }
+
+    public function test_selection_is_stable_when_registration_order_shifts(): void
+    {
+        // The OPSC-S3 nit: with a positional index, reordering the endpoint list between render
+        // and execute retargets a different route. With the route key, the SAME key resolves to
+        // the SAME endpoint regardless of order.
+        $renderOrder  = $this->endpoints();
+        $executeOrder = array_reverse($renderOrder);
+
+        $key = PlaygroundRequestExecutor::keyFor($renderOrder[1]); // '/posts/{slug}'
+
+        $result = $this->executor->execute($executeOrder, $key, 'hello-world');
+
+        self::assertSame('/hsp/v1/posts/hello-world', $result['path']);
     }
 
     public function test_rejects_a_non_get_endpoint(): void
@@ -83,6 +100,6 @@ final class PlaygroundRequestExecutorTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Only GET endpoints');
 
-        $this->executor->execute($endpoints, 0);
+        $this->executor->execute($endpoints, 'POST /hsp/v1/posts');
     }
 }

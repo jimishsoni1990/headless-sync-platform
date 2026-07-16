@@ -18,6 +18,7 @@ use HSP\Core\Operations\Admin\PlaygroundRequestExecutor;
 use HSP\Core\Operations\UI\DashboardView;
 use HSP\Core\Operations\UI\PlaygroundView;
 use HSP\Tests\Unit\Operations\Fakes\ScriptedReaderConnection;
+use HSP\Tests\Unit\Operations\Fakes\WiringTestBindings;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -36,6 +37,13 @@ final class ConsoleUiWiringTest extends TestCase
     {
         $this->container = new Container();
         $this->container->instance(DatabaseConnectionInterface::class, new ScriptedReaderConnection());
+
+        // The OPSC-S4 action seam (OperationsActionService) depends on the two ratified worker
+        // strategies + StructuredLogger, which WorkerServiceProvider binds before this provider
+        // in the real composition root. Provide lightweight stand-ins so the console graph
+        // (ConsoleAdminRegistrar → ConsoleActionController → OperationsActionService) resolves
+        // without booting the whole worker stack.
+        WiringTestBindings::registerActionDependencies($this->container);
 
         $provider = new OperationsServiceProvider(['worker' => []]);
         $provider->register($this->container);

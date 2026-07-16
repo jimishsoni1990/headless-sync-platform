@@ -9,6 +9,7 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\Operations\ActionRegistryInterface;
 use HSP\Core\Contracts\Operations\AssetRegistryInterface;
+use HSP\Core\Contracts\Operations\ConsoleAction;
 use HSP\Core\Contracts\Operations\ConsoleAsset;
 use HSP\Core\Contracts\Operations\ConsolePage;
 use HSP\Core\Contracts\Operations\ConsoleWidget;
@@ -17,7 +18,9 @@ use HSP\Core\Contracts\Operations\NavigationRegistryInterface;
 use HSP\Core\Contracts\Operations\PageRegistryInterface;
 use HSP\Core\Contracts\Operations\WidgetRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Operations\Admin\AdminPageController;
+use HSP\Core\Operations\Admin\ConsoleActionController;
 use HSP\Core\Operations\Admin\ConsoleAdminRegistrar;
 use HSP\Core\Operations\Admin\ConsoleAjaxController;
 use HSP\Core\Operations\Admin\PlaygroundRequestExecutor;
@@ -34,8 +37,11 @@ use HSP\Core\Operations\Registries\NavigationRegistry;
 use HSP\Core\Operations\Registries\PageRegistry;
 use HSP\Core\Operations\Registries\WidgetRegistry;
 use HSP\Core\Operations\Services\ConsoleStateStore;
+use HSP\Core\Operations\Services\OperationsActionService;
 use HSP\Core\Operations\Services\OperationsService;
 use HSP\Core\Operations\Services\RefreshCoordinator;
+use HSP\Core\Workers\Strategies\ReconciliationWorkerStrategy;
+use HSP\Core\Workers\Strategies\ReplayWorkerStrategy;
 use HSP\Core\Operations\UI\DashboardView;
 use HSP\Core\Operations\UI\PlaygroundView;
 
@@ -65,8 +71,21 @@ use HSP\Core\Operations\UI\PlaygroundView;
  * this provider's register() because OperationsServiceProvider is registered first. The
  * ModuleInspector is populated with module descriptors the same way (ContentServiceProvider).
  *
- * NO UI/admin code (OPSC-S3), NO action behaviour (OPSC-S4), NO migrations, NO new table.
- * Providers are READ-ONLY: OperationsQueryReader issues no DML.
+ * OPSC-S4 bindings (this session):
+ *   OperationsActionService  — the action-side seam; a THIN DELEGATOR holding only the two
+ *                              ratified worker strategies (worker.strategy.replay / .reconciliation,
+ *                              bound by WorkerServiceProvider) + StructuredLogger (audit line via
+ *                              the existing observability path — no new persistence). No infra is
+ *                              reachable from it, so the write-spy proof holds by construction
+ *                              (DECISION V (d)).
+ *   ConsoleActionController   — the wp-admin action boundary (nonce + capability + confirmation —
+ *                              DECISION V (b)); routes only through OperationsActionService (ADR-053).
+ *   ConsoleAdminRegistrar     — now also binds the single wp_ajax action endpoint.
+ * registerConsoleUi() registers the ONLY two permitted actions (Replay + Reconcile) with the
+ * Action Registry. NO Flush Queue (V (e)), NO Restart Workers (V (f)).
+ *
+ * NO migrations, NO new table, NO new PG handle, NO new pg_* wrapper. Providers are READ-ONLY:
+ * OperationsQueryReader issues no DML; the action path writes nothing directly.
  */
 final class OperationsServiceProvider extends ServiceProvider
 {
@@ -188,11 +207,39 @@ final class OperationsServiceProvider extends ServiceProvider
             ),
         );
 
+        // --- OPSC-S4 operational actions (Replay + Reconcile ONLY) -----------------------
+        // The action seam is a THIN DELEGATOR (DECISION V (d)): it holds only the two ratified
+        // worker strategies (bound by WorkerServiceProvider — registered before this provider)
+        // and the StructuredLogger for the audit line (existing observability path — no new
+        // persistence). It reaches NO DatabaseConnectionInterface / adapter / reader, so it
+        // cannot write a projection directly — the write-spy proof holds by construction. The
+        // strategy bindings are resolved lazily, so provider order is safe.
+        $container->singleton(
+            OperationsActionService::class,
+            fn (Container $c) => new OperationsActionService(
+                $c->get('worker.strategy.replay'),
+                $c->get('worker.strategy.reconciliation'),
+                $c->get(StructuredLogger::class),
+            ),
+        );
+
+        // wp-admin action boundary: nonce + capability + confirmation (DECISION V (b)), then
+        // delegates through OperationsActionService. Talks only to OperationsService (descriptor
+        // lookup) + OperationsActionService — never infrastructure (ADR-053).
+        $container->singleton(
+            ConsoleActionController::class,
+            fn (Container $c) => new ConsoleActionController(
+                $c->get(OperationsService::class),
+                $c->get(OperationsActionService::class),
+            ),
+        );
+
         $container->singleton(
             ConsoleAdminRegistrar::class,
             fn (Container $c) => new ConsoleAdminRegistrar(
                 $c->get(AdminPageController::class),
                 $c->get(ConsoleAjaxController::class),
+                $c->get(ConsoleActionController::class),
             ),
         );
     }
@@ -248,6 +295,27 @@ final class OperationsServiceProvider extends ServiceProvider
         $widgets->register(new ConsoleWidget('queue', 'Queue', $page, QueueStatusProvider::KEY, 20));
         $widgets->register(new ConsoleWidget('workers', 'Workers', $page, WorkerStatusProvider::KEY, 30));
         $widgets->register(new ConsoleWidget('metrics', 'Metrics', $page, MetricsProvider::KEY, 40));
+
+        // OPSC-S4: register the ONLY two permitted operational actions — Replay + Reconcile
+        // (DECISION V (d)). Each carries a required capability + confirmation flag so state
+        // change is explicit, capability-gated, and confirmed at the wp-admin boundary
+        // (ADR-053 / DECISION V (b)). There is deliberately NO Flush Queue (V (e)) and NO
+        // Restart Workers (V (f)) action — the action set is closed here. ADR-051 is HELD and
+        // NOT cited; authority is DECISION V (d)/(e)/(f) + ADR-053.
+        /** @var ActionRegistryInterface $actions */
+        $actions = $container->get(ActionRegistryInterface::class);
+        $actions->register(new ConsoleAction(
+            OperationsActionService::ACTION_REPLAY,
+            'Replay',
+            $cap,
+            confirmationRequired: true,
+        ));
+        $actions->register(new ConsoleAction(
+            OperationsActionService::ACTION_RECONCILE,
+            'Reconcile',
+            $cap,
+            confirmationRequired: true,
+        ));
 
         // Static, hand-authored assets (no bundle, no build step — DECISION V (a)). Enqueued
         // at the wp-admin boundary by AdminPageController when a console page renders.
