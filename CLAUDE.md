@@ -32,14 +32,21 @@ headless-sync/
 │                         # security, observability, operations console
 │   ├── Contracts/         #   incl. Contracts/Operations/ (operations-console
 │   │                      #   contracts — modules depend here only, Rule 5; DECISION V)
-│   └── Operations/        #   Operations Console infrastructure (registries,
-│                          #   providers, services, diagnostics, server-rendered
-│                          #   PHP admin UI — no node toolchain; DECISION V)
+│   ├── Operations/        #   Operations Console infrastructure (registries,
+│   │                      #   providers, services, diagnostics). Shipped MVP UI is
+│   │                      #   server-rendered PHP (DECISION V); new admin UI is
+│   │                      #   React+shadcn (DECISION W amends V (a))
+│   └── Onboarding/         #   First-run/onboarding: preflight, nav gating,
+│                          #   backfill trigger (thin delegator to
+│                          #   ReconciliationService), derived progress; React UI
+│                          #   (DECISION W) — NOT under Operations/ (V (j))
 ├── modules/              # Business domains (Content, WooCommerce, …); each
 │                         # module is self-contained with its own events,
 │                         # transformers, canonical models, migrations, tests
 ├── database/             # Core infrastructure migrations (outbox, queue, audit…)
-├── resources/            # Static assets / templates
+├── resources/            # Static assets / templates; React admin UI toolchain +
+│                         # committed dist/ build output (DECISION W (a) — build in
+│                         # dev/CI, deploy = file copy, no host build step)
 ├── storage/              # Runtime storage (logs, cache)
 ├── tests/                # Unit / Integration / Contract / Module / E2E
 ├── tools/                # Developer tooling
@@ -76,10 +83,18 @@ Settled by **DECISION V** (FLAG-4 A, 2026-07-15):
 - **PSR-12 for all platform code.**
 - **WPCS security requirements — output escaping, input sanitization, capability checks,
   nonces — apply at WordPress entry points only** (admin pages, form/action handlers, REST
-  registration, `$wpdb` calls).
+  registration, `$wpdb` calls). **Extended by DECISION W (a):** these WPCS security rules
+  also apply at the **REST/ajax endpoints the React admin UI calls** (the untrusted-client
+  JSON boundary) — sanitize input, check capability, verify nonce at every such endpoint.
 
 This replaces the prior "TBD" hold. The WP-admin boundary is now open (it was deferred by
 DECISION S clause (d)). See `docs/ARCHITECTURE_DECISIONS.md` DECISION V.
+
+**Admin UI stack (DECISION W (a), 2026-07-16 — amends DECISION V (a)):** **React + shadcn is
+the admin UI stack.** The build toolchain runs in **dev/CI only**; the compiled `dist/` bundle
+is **committed to the repo** and the production deploy is a **file copy** (no node/npm build
+step on the WordPress host). The already-shipped OPSC-S1..S4 server-rendered PHP Operations
+Console remains as built; only **new** admin UI (including onboarding) is React. See DECISION W.
 
 ---
 
@@ -141,12 +156,23 @@ DECISION S clause (d)). See `docs/ARCHITECTURE_DECISIONS.md` DECISION V.
   under `core/Database/` is authorized in P0-S7 only (DECISION E).
 - **Operations Console (DECISION V):** the console is **observability/diagnostics only, not a
   control plane** — restarting services/containers and infrastructure orchestration are
-  permanently out of scope. MVP is **server-rendered PHP + minimal vanilla JS** (no
-  node/npm/bundler). Provider PG reads **reuse the delivery `DatabaseConnectionInterface`**
+  permanently out of scope. Shipped MVP UI is **server-rendered PHP + minimal vanilla JS**
+  (_the new-admin-UI stack is superseded by DECISION W (a) — React+shadcn; the shipped console
+  stays as built_). Provider PG reads **reuse the delivery `DatabaseConnectionInterface`**
   (no fifth handle). Operations contracts live in `core/Contracts/Operations/` (Rule 5 holds).
   Console metrics are **derived on-demand** (DECISION Q — zero new persistence). Actions are
   **Replay + Reconcile only**, as thin delegators to the ratified services (no second repair
   path). **No Flush Queue** (destructive) and **no Restart Workers** (supervisor owns lifecycle).
+- **Onboarding & First-Run (DECISION W):** admin UI stack is **React + shadcn** (amends
+  DECISION V (a)); build in dev/CI, **commit `dist/`**, deploy = file copy (no host build).
+  Initial content backfill = **full-reconciliation re-emission via `ReconciliationService`**
+  (DECISION U) through the normal pipeline — **no direct WP→PG copy, no second repair path**
+  (write-spy proof in the DoD). A **live worker heartbeat is a hard prerequisite** for backfill.
+  Progress is **derived on-demand** (DECISION Q); completion = a single WP option
+  `hsp_onboarding_state` in MySQL (**no schema change**). Onboarding lives in `core/Onboarding/`
+  (NOT the console — V (j) holds). Until complete, **Operations + Playground pages are hidden**
+  and five preflight checks (pgsql ext, PG constants, PG reachable, migrations applied, PHP
+  version) **hard-block** progression. See `docs/ARCHITECTURE_DECISIONS.md` DECISION W.
 
 ---
 
