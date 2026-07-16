@@ -9,8 +9,14 @@ headless-sync/vendor/
 headless-sync/storage/*
 !headless-sync/storage/.gitkeep
 
-# Future Next.js frontend
+# Node dependencies (Next.js frontend + the React admin-UI toolchain).
+# The bare pattern ignores node_modules/ everywhere, including
+# headless-sync/resources/admin-ui/node_modules/.
 node_modules/
+
+# React admin UI (DECISION W (a)): the toolchain builds in dev/CI, but the compiled bundle is
+# COMMITTED (production deploy is a file copy, no host build step). So dist/ must NOT be ignored.
+!headless-sync/resources/admin-ui/dist/
 
 # OS
 .DS_Store

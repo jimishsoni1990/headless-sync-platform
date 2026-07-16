@@ -272,6 +272,13 @@ if (! function_exists('wp_create_nonce')) {
     }
 }
 
+if (! function_exists('rest_url')) {
+    function rest_url(string $path = ''): string
+    {
+        return 'http://example.test/wp-json/' . ltrim($path, '/');
+    }
+}
+
 if (! function_exists('current_user_can')) {
     function current_user_can(string $capability): bool
     {

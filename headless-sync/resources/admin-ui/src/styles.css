@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * shadcn design tokens (DECISION W (a) styling addendum).
+ *
+ * Tokens live on the mount container `.hsp-admin-ui` (NOT :root) so they never affect wp-admin.
+ * The dark theme is the DEFAULT: `.hsp-admin-ui.dark` supplies the shipped palette and the mount
+ * root always carries `.dark` (src/main.tsx). A `.hsp-admin-ui:not(.dark)` light variant is
+ * provided for completeness but is not the default.
+ */
+.hsp-admin-ui {
+  --radius: 0.5rem;
+
+  /* Light variant (not default). */
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 222.2 84% 4.9%;
+  --primary: 221.2 83.2% 53.3%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 210 40% 96.1%;
+  --secondary-foreground: 222.2 47.4% 11.2%;
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 214.3 31.8% 91.4%;
+  --input: 214.3 31.8% 91.4%;
+  --ring: 221.2 83.2% 53.3%;
+}
+
+.hsp-admin-ui.dark {
+  /* Dark is the DEFAULT (applied on the mount root only). */
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 47.4% 11.2%;
+  --card-foreground: 210 40% 98%;
+  --primary: 217.2 91.2% 59.8%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 224.3 76.3% 48%;
+}
+
+/*
+ * Mount-scoped base reset (replaces Tailwind preflight, which is disabled in tailwind.config.ts
+ * so wp-admin is untouched). Everything here is confined to the `.hsp-admin-ui` subtree.
+ */
+@layer base {
+  .hsp-admin-ui {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--border));
+    -webkit-font-smoothing: antialiased;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+      sans-serif;
+    line-height: 1.5;
+    box-sizing: border-box;
+  }
+
+  .hsp-admin-ui *,
+  .hsp-admin-ui *::before,
+  .hsp-admin-ui *::after {
+    box-sizing: border-box;
+    border-width: 0;
+    border-style: solid;
+    border-color: hsl(var(--border));
+  }
+
+  .hsp-admin-ui h1,
+  .hsp-admin-ui h2,
+  .hsp-admin-ui h3,
+  .hsp-admin-ui p {
+    margin: 0;
+  }
+}

@@ -10,6 +10,7 @@ use HSP\Core\Container\Definitions\DeliveryServiceProvider;
 use HSP\Core\Container\Definitions\DispatcherServiceProvider;
 use HSP\Core\Container\Definitions\MigrationServiceProvider;
 use HSP\Core\Container\Definitions\ModuleServiceProvider;
+use HSP\Core\Container\Definitions\OnboardingServiceProvider;
 use HSP\Core\Container\Definitions\OperationsServiceProvider;
 use HSP\Core\Container\Definitions\OutboxServiceProvider;
 use HSP\Core\Container\Definitions\QueueServiceProvider;
@@ -56,6 +57,11 @@ final class ContainerBuilder
         // reads ride the delivery DatabaseConnectionInterface (DECISION V (g)) — no fifth
         // handle (DECISION L Ruling 0 topology unchanged), no new pg_* wrapper (DECISION E).
         $registry->addProvider(new OperationsServiceProvider($config));
+        // Onboarding / First-Run (ONB-S1a): React+shadcn admin page skeleton + mount seam.
+        // Frontend + mount only — opens no PG handle, no new pg_* wrapper, no schema
+        // (DECISION W (a)/(e); DECISION K reuse / L Ruling 0 / E). core/Onboarding/, not
+        // core/Operations/ (DECISION V (j) console unaffected).
+        $registry->addProvider(new OnboardingServiceProvider());
         $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 

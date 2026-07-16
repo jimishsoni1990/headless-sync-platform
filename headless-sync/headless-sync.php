@@ -78,6 +78,19 @@ add_action('plugins_loaded', static function () use ($application): void {
     $container->get(HSP\Core\Operations\Admin\ConsoleAdminRegistrar::class)->register();
 }, 20);
 
+// Onboarding / First-Run (ONB-S1a): bind the wp-admin onboarding page and enqueue the committed
+// React dist/ bundle (DECISION W (a)/(e); DECISION V (b)). Renders from committed dist/ with no
+// host build step. Runs after boot (priority 20) so the container exists. OnboardingAdminRegistrar
+// no-ops outside a WordPress runtime.
+add_action('plugins_loaded', static function () use ($application): void {
+    $container = $application->getContainer();
+    if ($container === null) {
+        return;
+    }
+
+    $container->get(HSP\Core\Onboarding\OnboardingAdminRegistrar::class)->register();
+}, 20);
+
 // WP-CLI: register `hsp dlq …` and `hsp status` (DECISION S clause (d), DECISION Q).
 // Runs after boot (priority 20) so the container is available. No-op outside WP-CLI.
 if (defined('WP_CLI') && WP_CLI) {

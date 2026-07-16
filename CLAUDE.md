@@ -60,16 +60,26 @@ Namespace root: `HSP\` — mirrors folder structure (`HSP\Core\`, `HSP\Modules\C
 
 ## Build / Test / Run / Lint Commands
 
-> No `composer.json` exists yet. Commands below are TBD — confirm before use.
+> Backend (PHP) test/lint commands remain TBD — confirm before use. The **frontend (React admin
+> UI) build commands are settled by DECISION W (a)**: the toolchain lives in
+> `headless-sync/resources/admin-ui/` (npm), builds in dev/CI, and commits `dist/`; the
+> production deploy is a file copy (no host build step).
 
-| Task                    | Command                        |
-| ----------------------- | ------------------------------ |
-| Install dependencies    | `composer install`             |
-| Run all tests           | TBD — confirm                  |
-| Run unit tests          | TBD — confirm                  |
-| Run a single test       | TBD — confirm                  |
-| Lint / static analysis  | TBD — confirm                  |
-| Run worker (production) | WP-CLI command — TBD — confirm |
+| Task                        | Command                                                              |
+| --------------------------- | ------------------------------------------------------------------- |
+| Install PHP dependencies    | `composer install`                                                  |
+| Run all tests               | TBD — confirm                                                        |
+| Run unit tests              | TBD — confirm                                                        |
+| Run a single test           | TBD — confirm                                                        |
+| Lint / static analysis      | TBD — confirm                                                        |
+| Run worker (production)     | WP-CLI command — TBD — confirm                                       |
+| Install admin-UI deps       | `cd resources/admin-ui && npm install` (DECISION W (a))             |
+| Build admin UI → `dist/`    | `cd resources/admin-ui && npm run build` (DECISION W (a))           |
+| Watch-build admin UI (dev)  | `cd resources/admin-ui && npm run dev` (DECISION W (a))             |
+
+The admin-UI build outputs stable, non-hashed filenames
+(`resources/admin-ui/dist/hsp-onboarding.{js,css}`) so the PHP registrar enqueues deterministic
+paths. Commit `dist/`; never rely on a build step running on the WordPress host (DECISION W (a)).
 
 Workers run under **systemd / Supervisor / container runtime** in production.
 WP-Cron is a fallback only (recovery jobs, safety checks) — never the primary execution path.
