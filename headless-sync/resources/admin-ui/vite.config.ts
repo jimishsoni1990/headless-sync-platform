@@ -12,8 +12,17 @@ import { resolve } from 'node:path';
  * React/ReactDOM are bundled in (self-contained; no CDN, no external host) so the page renders
  * from committed dist/ with no node toolchain on the WordPress host. The build runs in dev/CI
  * only; production deploy is a plain file copy (matches the CLAUDE.md robocopy step).
+ *
+ * `define`: in Vite LIBRARY mode, process.env.NODE_ENV is NOT auto-replaced (libraries normally
+ * inherit it from the consuming bundler). This bundle runs directly in wp-admin with no bundler,
+ * so an unresolved `process.env.NODE_ENV` (read by React and friends) throws
+ * "process is not defined" and nothing mounts. We statically replace it at build time so no
+ * `process` global is referenced at runtime.
  */
 export default defineConfig({
+  define: {
+    'process.env.NODE_ENV': JSON.stringify('production'),
+  },
   plugins: [react()],
   resolve: {
     alias: {
