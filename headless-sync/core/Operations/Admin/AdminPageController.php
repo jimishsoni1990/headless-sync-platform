@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Operations\Admin;
 
+use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Operations\Diagnostics\ModuleInspector;
 use HSP\Core\Operations\Diagnostics\SystemInformationProvider;
 use HSP\Core\Operations\Services\OperationsService;
@@ -26,6 +27,11 @@ use HSP\Core\Operations\UI\PlaygroundView;
  * and never reaches, a DatabaseConnectionInterface, the OperationsQueryReader, or any concrete
  * provider. All PG reads live behind OperationsService / those services on the delivery handle.
  *
+ * Nav gating (ONB-S1b; DECISION W (f)): the Operations + API Playground menu pages are NOT
+ * registered until onboarding completes (`hsp_onboarding_state = complete`). Until then the
+ * onboarding page is the only HSP admin surface. The gate is read from OnboardingStateInterface —
+ * a plain MySQL WP-option read, no PG handle (DECISION W (d)/(e)) — so this remains free of infra.
+ *
  * Constructor injection only (ADR-012 / Rule 7).
  */
 final class AdminPageController
@@ -42,16 +48,26 @@ final class AdminPageController
         private readonly DashboardView $dashboardView,
         private readonly PlaygroundView $playgroundView,
         private readonly ConsoleAjaxController $ajax,
+        private readonly OnboardingStateInterface $onboarding,
     ) {}
 
     /**
      * Register the admin menu + submenus. Bound to `admin_menu` at the wiring site.
+     *
+     * Gated on onboarding completion (DECISION W (f)): while onboarding is incomplete the console
+     * pages are not registered at all — the onboarding page is the only HSP admin surface, so an
+     * operator can't reach a half-configured console (e.g. before PG is reachable).
      *
      * The parent menu and each submenu take the capability recorded on the corresponding
      * ConsolePage descriptor (discovered via OperationsService — never hardcoded here).
      */
     public function registerMenu(): void
     {
+        // Nav gate (DECISION W (f)): hide Operations + API Playground until onboarding completes.
+        if (! $this->onboarding->isComplete()) {
+            return;
+        }
+
         $operationsCap = $this->capabilityFor(self::PAGE_OPERATIONS, 'manage_options');
 
         add_menu_page(

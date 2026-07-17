@@ -15,6 +15,7 @@ use HSP\Core\Contracts\Operations\ConsolePage;
 use HSP\Core\Contracts\Operations\ConsoleWidget;
 use HSP\Core\Contracts\Operations\NavigationItem;
 use HSP\Core\Contracts\Operations\NavigationRegistryInterface;
+use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Contracts\Operations\PageRegistryInterface;
 use HSP\Core\Contracts\Operations\WidgetRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -204,6 +205,10 @@ final class OperationsServiceProvider extends ServiceProvider
                 $c->get(DashboardView::class),
                 $c->get(PlaygroundView::class),
                 $c->get(ConsoleAjaxController::class),
+                // Nav gate (ONB-S1b; DECISION W (f)): Operations + Playground menu registration is
+                // gated on onboarding completion. Bound by OnboardingServiceProvider; resolved
+                // lazily here, so provider registration order is irrelevant.
+                $c->get(OnboardingStateInterface::class),
             ),
         );
 
@@ -240,6 +245,9 @@ final class OperationsServiceProvider extends ServiceProvider
                 $c->get(AdminPageController::class),
                 $c->get(ConsoleAjaxController::class),
                 $c->get(ConsoleActionController::class),
+                // Nav gate (ONB-S1b; DECISION W (f)): registration of the whole console surface
+                // (pages + ajax endpoints) is gated on onboarding completion.
+                $c->get(OnboardingStateInterface::class),
             ),
         );
     }

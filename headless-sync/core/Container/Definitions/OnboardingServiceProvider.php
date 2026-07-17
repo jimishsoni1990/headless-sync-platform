@@ -7,22 +7,46 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Bootstrap\Version;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
+use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Onboarding\OnboardingAdminRegistrar;
+use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\OnboardingPageController;
+use HSP\Core\Onboarding\OnboardingRestController;
+use HSP\Core\Onboarding\OnboardingRestRegistrar;
+use HSP\Core\Onboarding\OnboardingState;
+use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
+use HSP\Core\Onboarding\Preflight\PgConstantsCheck;
+use HSP\Core\Onboarding\Preflight\PgReachableCheck;
+use HSP\Core\Onboarding\Preflight\PgsqlExtensionCheck;
+use HSP\Core\Onboarding\Preflight\PhpVersionCheck;
+use HSP\Core\Onboarding\PreflightRunner;
 
 /**
- * Registers the Onboarding / First-Run surface (ONB-S1a; DECISION W (a)/(e); ADR-012).
+ * Registers the Onboarding / First-Run surface (ONB-S1a + ONB-S1b; DECISION W (a)/(d)/(e)/(f);
+ * DECISION V (b); DECISION K/L Ruling 0/E; ADR-012; Rule 5).
  *
- * ONB-S1a is the React/shadcn toolchain bootstrap + onboarding page skeleton. Bindings (all
- * singletons, constructor-injected — ADR-012 / Rule 7):
+ * ONB-S1a bindings (page skeleton + mount seam):
  *   OnboardingPageController  — the wp-admin boundary: registers ONE capability-gated page,
- *                               renders the React mount shell, enqueues the committed dist/
- *                               bundle (no host build step — DECISION W (a)).
+ *                               renders the React mount shell, enqueues the committed dist/ bundle.
  *   OnboardingAdminRegistrar  — thin hook registrar (admin_menu + admin_enqueue_scripts).
  *
+ * ONB-S1b bindings (preflight + completion flag + REST):
+ *   OnboardingStateInterface  — the `hsp_onboarding_state` WP-option round-trip (DECISION W (d)).
+ *                               A single MySQL option; NO schema change, NO PG handle. Bound to
+ *                               the interface so the Operations nav gate depends on the contract.
+ *   OnboardingConnectionProbe — read-only PG probe reusing the EXISTING delivery
+ *                               DatabaseConnectionInterface (DECISION K) — no fifth handle
+ *                               (L Ruling 0), no new pg_* wrapper (E). Onboarding opens no handle.
+ *   Five preflight checks + PreflightRunner — the five hard-blocking prerequisite checks
+ *                               (DECISION W (f)); the two DB-touching checks delegate to the probe.
+ *   OnboardingRestController / OnboardingRestRegistrar — the WPCS-guarded JSON endpoints the
+ *                               React app calls (nonce + capability + sanitize — DECISION W (a) /
+ *                               V (b)); delegate-only, no infra.
+ *
  * Placement is core/Onboarding/ (NOT core/Operations/) so the observability-only console
- * (DECISION V (j)) is untouched (DECISION W (e)). This provider opens NO PG handle, adds NO
- * pg_* wrapper, and touches NO schema — ONB-S1a is frontend + mount only.
+ * (DECISION V (j)) is untouched (DECISION W (e)). This provider touches NO schema and opens NO PG
+ * handle of its own — the probe rides the delivery handle registered by DeliveryServiceProvider.
  */
 final class OnboardingServiceProvider extends ServiceProvider
 {
@@ -30,6 +54,7 @@ final class OnboardingServiceProvider extends ServiceProvider
     {
         assert($container instanceof Container);
 
+        // --- ONB-S1a page skeleton + mount seam -----------------------------------------
         $container->singleton(
             OnboardingPageController::class,
             fn () => new OnboardingPageController(Version::CURRENT),
@@ -39,6 +64,68 @@ final class OnboardingServiceProvider extends ServiceProvider
             OnboardingAdminRegistrar::class,
             fn (Container $c) => new OnboardingAdminRegistrar(
                 $c->get(OnboardingPageController::class),
+            ),
+        );
+
+        // --- ONB-S1b completion flag (single WP option, MySQL — DECISION W (d)) ----------
+        $container->singleton(OnboardingState::class, fn () => new OnboardingState());
+        $container->singleton(
+            OnboardingStateInterface::class,
+            fn (Container $c) => $c->get(OnboardingState::class),
+        );
+
+        // --- ONB-S1b PG probe (delivery-handle reuse — DECISION W (e); K/L Ruling 0/E) ---
+        // The delivery handle is resolved LAZILY: DeliveryServiceProvider opens libpq eagerly and
+        // THROWS when PG is unreachable, so a pre-resolved handle would make that throw fire during
+        // container resolution (before any check runs) → uncaught exception / HTTP 500 on the
+        // preflight endpoint. Passing a resolver defers the (possibly-throwing) open to inside the
+        // probe's try/catch, where connection failure becomes a preflight FAIL. Still the delivery
+        // handle (DECISION K), no fifth handle (L Ruling 0), no new pg_* wrapper (E).
+        $container->singleton(
+            OnboardingConnectionProbe::class,
+            fn (Container $c) => new OnboardingConnectionProbe(
+                static fn (): DatabaseConnectionInterface => $c->get(DatabaseConnectionInterface::class),
+            ),
+        );
+
+        // --- ONB-S1b five hard-blocking preflight checks (DECISION W (f)) ----------------
+        $container->singleton(PgsqlExtensionCheck::class, fn () => new PgsqlExtensionCheck());
+        $container->singleton(PgConstantsCheck::class, fn () => new PgConstantsCheck());
+        $container->singleton(
+            PgReachableCheck::class,
+            fn (Container $c) => new PgReachableCheck($c->get(OnboardingConnectionProbe::class)),
+        );
+        $container->singleton(
+            MigrationsAppliedCheck::class,
+            fn (Container $c) => new MigrationsAppliedCheck($c->get(OnboardingConnectionProbe::class)),
+        );
+        $container->singleton(PhpVersionCheck::class, fn () => new PhpVersionCheck());
+
+        // Runner in display order: extension → constants → reachable → migrations → PHP version.
+        $container->singleton(
+            PreflightRunner::class,
+            fn (Container $c) => new PreflightRunner(
+                $c->get(PgsqlExtensionCheck::class),
+                $c->get(PgConstantsCheck::class),
+                $c->get(PgReachableCheck::class),
+                $c->get(MigrationsAppliedCheck::class),
+                $c->get(PhpVersionCheck::class),
+            ),
+        );
+
+        // --- ONB-S1b WPCS-guarded REST endpoints the React app calls (DECISION W (a)) ----
+        $container->singleton(
+            OnboardingRestController::class,
+            fn (Container $c) => new OnboardingRestController(
+                $c->get(PreflightRunner::class),
+                $c->get(OnboardingStateInterface::class),
+            ),
+        );
+
+        $container->singleton(
+            OnboardingRestRegistrar::class,
+            fn (Container $c) => new OnboardingRestRegistrar(
+                $c->get(OnboardingRestController::class),
             ),
         );
     }

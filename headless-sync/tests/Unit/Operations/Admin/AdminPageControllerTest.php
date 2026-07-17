@@ -24,6 +24,8 @@ use HSP\Core\Operations\Services\OperationsService;
 use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Core\Operations\UI\DashboardView;
 use HSP\Core\Operations\UI\PlaygroundView;
+use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
+use HSP\Core\Onboarding\OnboardingState;
 use HSP\Tests\Support\WpJsonHalt;
 use HSP\Tests\Unit\Operations\Fakes\FakeQueueStatusProvider;
 use HSP\Tests\Unit\Operations\Fakes\ScriptedReaderConnection;
@@ -74,17 +76,13 @@ final class AdminPageControllerTest extends TestCase
             $store,
         );
 
-        $reader = new OperationsQueryReader($this->scriptedConnection());
-        $systemInfo = new SystemInformationProvider($reader, '0.1.0', '6.5', 'database');
+        // Default controller: onboarding COMPLETE so the console pages register (the ungated
+        // behaviour the render/enqueue tests exercise). Nav-gating tests build their own.
+        $GLOBALS['_hsp_stub_options'] = [
+            OnboardingStateInterface::OPTION_NAME => OnboardingStateInterface::COMPLETE,
+        ];
 
-        $this->controller = new AdminPageController(
-            $this->operations,
-            $systemInfo,
-            new ModuleInspector(),
-            new DashboardView(),
-            new PlaygroundView(),
-            new ConsoleAjaxController($this->operations, new PlaygroundRequestExecutor()),
-        );
+        $this->controller = $this->makeController(new OnboardingState());
 
         $GLOBALS['_hsp_stub_current_user_can'] = true;
         $GLOBALS['_hsp_stub_menu_pages']    = [];
@@ -97,6 +95,23 @@ final class AdminPageControllerTest extends TestCase
             $GLOBALS['_hsp_stub_current_user_can'],
             $GLOBALS['_hsp_stub_menu_pages'],
             $GLOBALS['_hsp_stub_submenu_pages'],
+            $GLOBALS['_hsp_stub_options'],
+        );
+    }
+
+    private function makeController(OnboardingStateInterface $onboarding): AdminPageController
+    {
+        $reader     = new OperationsQueryReader($this->scriptedConnection());
+        $systemInfo = new SystemInformationProvider($reader, '0.1.0', '6.5', 'database');
+
+        return new AdminPageController(
+            $this->operations,
+            $systemInfo,
+            new ModuleInspector(),
+            new DashboardView(),
+            new PlaygroundView(),
+            new ConsoleAjaxController($this->operations, new PlaygroundRequestExecutor()),
+            $onboarding,
         );
     }
 
@@ -189,5 +204,36 @@ final class AdminPageControllerTest extends TestCase
         self::assertSame([], $GLOBALS['_hsp_stub_enqueued_scripts']);
 
         unset($GLOBALS['_hsp_stub_enqueued_scripts']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Nav gating (ONB-S1b; DECISION W (f)) — console pages hidden until onboarding completes
+    // -------------------------------------------------------------------------
+
+    public function test_does_not_register_the_console_menu_until_onboarding_completes(): void
+    {
+        $GLOBALS['_hsp_stub_options'] = [
+            OnboardingStateInterface::OPTION_NAME => OnboardingStateInterface::PENDING,
+        ];
+
+        $gated = $this->makeController(new OnboardingState());
+        $gated->registerMenu();
+
+        // Neither the parent menu nor any submenu is registered while onboarding is incomplete.
+        self::assertSame([], $GLOBALS['_hsp_stub_menu_pages']);
+        self::assertSame([], $GLOBALS['_hsp_stub_submenu_pages']);
+    }
+
+    public function test_registers_the_console_menu_once_onboarding_is_complete(): void
+    {
+        $GLOBALS['_hsp_stub_options'] = [
+            OnboardingStateInterface::OPTION_NAME => OnboardingStateInterface::COMPLETE,
+        ];
+
+        $ungated = $this->makeController(new OnboardingState());
+        $ungated->registerMenu();
+
+        self::assertNotEmpty($GLOBALS['_hsp_stub_menu_pages']);
+        self::assertCount(2, $GLOBALS['_hsp_stub_submenu_pages']);
     }
 }

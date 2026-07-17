@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace HSP\Tests\Unit\Operations\Fakes;
 
 use HSP\Core\Container\Container;
+use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Onboarding\OnboardingState;
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\Strategies\ReconciliationWorkerStrategy;
@@ -29,6 +31,11 @@ final class WiringTestBindings
     public static function registerActionDependencies(Container $container): void
     {
         $container->singleton(StructuredLogger::class, static fn () => new StructuredLogger(static function (): void {}));
+
+        // ONB-S1b nav gate: AdminPageController now depends on the onboarding-state contract,
+        // bound by OnboardingServiceProvider in the real composition root. Provide it here so the
+        // console UI graph resolves in isolation.
+        $container->singleton(OnboardingStateInterface::class, static fn () => new OnboardingState());
 
         $container->singleton('worker.strategy.replay', static function () {
             $replayService = new ReplayService(new ScriptedReaderConnection(), [new NoopReplayEmitter()]);

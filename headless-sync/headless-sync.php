@@ -78,10 +78,11 @@ add_action('plugins_loaded', static function () use ($application): void {
     $container->get(HSP\Core\Operations\Admin\ConsoleAdminRegistrar::class)->register();
 }, 20);
 
-// Onboarding / First-Run (ONB-S1a): bind the wp-admin onboarding page and enqueue the committed
-// React dist/ bundle (DECISION W (a)/(e); DECISION V (b)). Renders from committed dist/ with no
-// host build step. Runs after boot (priority 20) so the container exists. OnboardingAdminRegistrar
-// no-ops outside a WordPress runtime.
+// Onboarding / First-Run (ONB-S1a/S1b): bind the wp-admin onboarding page (enqueuing the committed
+// React dist/ bundle) and the WPCS-guarded REST endpoints the React app calls (DECISION W (a)/(e);
+// DECISION V (b)). Renders from committed dist/ with no host build step. Runs after boot
+// (priority 20) so the container exists. Both registrars no-op outside a WordPress runtime; the
+// REST registrar attaches on rest_api_init.
 add_action('plugins_loaded', static function () use ($application): void {
     $container = $application->getContainer();
     if ($container === null) {
@@ -89,6 +90,12 @@ add_action('plugins_loaded', static function () use ($application): void {
     }
 
     $container->get(HSP\Core\Onboarding\OnboardingAdminRegistrar::class)->register();
+
+    // ONB-S1b: preflight + completion-flag REST endpoints under hsp/v1 (nonce + capability +
+    // sanitize at the JSON boundary — DECISION W (a)). Bound on rest_api_init.
+    add_action('rest_api_init', static function () use ($container): void {
+        $container->get(HSP\Core\Onboarding\OnboardingRestRegistrar::class)->register();
+    });
 }, 20);
 
 // WP-CLI: register `hsp dlq …` and `hsp status` (DECISION S clause (d), DECISION Q).

@@ -40,6 +40,11 @@ if (! function_exists('add_action')) {
     function add_action(string $hook, callable $callback, int $priority = 10, int $args = 1): void
     {
         // No-op in unit tests — hook registration is verified via direct method calls.
+        // When a test opts in by initialising $GLOBALS['_hsp_stub_actions'] = [], registered
+        // hook names are recorded so registration-gating can be asserted (ONB-S1b nav gate).
+        if (isset($GLOBALS['_hsp_stub_actions']) && is_array($GLOBALS['_hsp_stub_actions'])) {
+            $GLOBALS['_hsp_stub_actions'][] = $hook;
+        }
     }
 }
 
@@ -76,6 +81,9 @@ if (! class_exists(\WP_REST_Request::class)) {
             }
         }
 
+        /** @var array<string,string> case-insensitive header store (lower-cased keys) */
+        private array $headers = [];
+
         public function get_param(string $key): mixed
         {
             return $this->params[$key] ?? null;
@@ -84,6 +92,16 @@ if (! class_exists(\WP_REST_Request::class)) {
         public function set_param(string $key, mixed $value): void
         {
             $this->params[$key] = $value;
+        }
+
+        public function set_header(string $key, string $value): void
+        {
+            $this->headers[strtolower($key)] = $value;
+        }
+
+        public function get_header(string $key): ?string
+        {
+            return $this->headers[strtolower($key)] ?? null;
         }
 
         public function get_method(): string
@@ -293,6 +311,30 @@ if (! function_exists('check_ajax_referer')) {
         $GLOBALS['_hsp_stub_check_ajax_referer'][] = [$action, $query_arg];
 
         return 1;
+    }
+}
+
+if (! function_exists('wp_verify_nonce')) {
+    function wp_verify_nonce(string $nonce, string|int $action = -1): int|false
+    {
+        // Tests override validity via $GLOBALS['_hsp_stub_valid_nonce'] (default valid).
+        return ($GLOBALS['_hsp_stub_valid_nonce'] ?? true) ? 1 : false;
+    }
+}
+
+if (! function_exists('get_option')) {
+    function get_option(string $option, mixed $default = false): mixed
+    {
+        return $GLOBALS['_hsp_stub_options'][$option] ?? $default;
+    }
+}
+
+if (! function_exists('update_option')) {
+    function update_option(string $option, mixed $value): bool
+    {
+        $GLOBALS['_hsp_stub_options'][$option] = $value;
+
+        return true;
     }
 }
 
