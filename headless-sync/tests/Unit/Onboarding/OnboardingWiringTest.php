@@ -12,6 +12,11 @@ use HSP\Core\Onboarding\OnboardingAdminRegistrar;
 use HSP\Core\Onboarding\OnboardingPageController;
 use HSP\Core\Onboarding\OnboardingRestController;
 use HSP\Core\Onboarding\OnboardingRestRegistrar;
+use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
+use HSP\Core\Onboarding\Preflight\PgConstantsCheck;
+use HSP\Core\Onboarding\Preflight\PgReachableCheck;
+use HSP\Core\Onboarding\Preflight\PgsqlExtensionCheck;
+use HSP\Core\Onboarding\Preflight\PhpVersionCheck;
 use HSP\Core\Onboarding\PreflightRunner;
 use PHPUnit\Framework\TestCase;
 
@@ -87,6 +92,30 @@ final class OnboardingWiringTest extends TestCase
         $rest = $container->get(OnboardingRestRegistrar::class);
         self::assertInstanceOf(OnboardingRestRegistrar::class, $rest);
         self::assertSame($rest, $container->get(OnboardingRestRegistrar::class));
+    }
+
+    public function test_onb_s1b_preflight_ships_the_four_environment_checks_and_not_migrations(): void
+    {
+        // DECISION W (f) amendment (v1.22): the ONB-S1b environment preflight is FOUR checks
+        // (pgsql extension, PG constants, PG reachable, PHP version). The migration-engine-state
+        // check moved to ONB-S2 and must NOT appear in this runner, even though its class stays
+        // bound (for ONB-S2 to reuse).
+        $container = $this->containerWithDeliveryHandle();
+
+        $summary = $container->get(PreflightRunner::class)->summary();
+        $keys    = array_map(static fn (array $c) => $c['key'], $summary['checks']);
+
+        self::assertSame(
+            [PgsqlExtensionCheck::KEY, PgConstantsCheck::KEY, PgReachableCheck::KEY, PhpVersionCheck::KEY],
+            $keys,
+        );
+        self::assertNotContains(MigrationsAppliedCheck::KEY, $keys);
+
+        // The migration check class is still resolvable for ONB-S2 reuse.
+        self::assertInstanceOf(
+            MigrationsAppliedCheck::class,
+            $container->get(MigrationsAppliedCheck::class),
+        );
     }
 
     public function test_registrars_register_are_safe_no_ops_without_wordpress_hooks(): void

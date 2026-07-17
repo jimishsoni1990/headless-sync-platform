@@ -11,10 +11,12 @@ use HSP\Core\Contracts\Onboarding\PreflightResult;
  * Runs the ordered onboarding preflight checks and aggregates their results (ONB-S1b;
  * DECISION W (f)).
  *
- * The five hard-blocking checks are injected in display order. The runner executes ALL of them
- * (it never short-circuits on the first failure) so the operator sees the full prerequisite
- * picture at once; {@see allPassed()} is the single gate on progression. Checks never throw for
- * a failed condition (they report a PreflightResult), so the runner does not swallow exceptions
+ * The hard-blocking checks are injected in display order (four environment checks in ONB-S1b —
+ * DECISION W (f) amended v1.22; the migration-state check moved to ONB-S2). The runner executes
+ * ALL of them (it never short-circuits on the first failure) so the operator sees the full
+ * prerequisite picture at once; {@see allPassed()} is the single gate on progression. Checks
+ * never throw for a failed condition (they report a PreflightResult), so the runner does not
+ * swallow exceptions
  * — a thrown exception here would be a genuine bug, not an expected failure.
  *
  * Delegate-only (DECISION W (e)): the runner owns no PG handle; DB-touching checks reuse the

@@ -9,8 +9,14 @@ use HSP\Core\Contracts\Onboarding\PreflightResult;
 use HSP\Core\Onboarding\OnboardingConnectionProbe;
 
 /**
- * Preflight check 4 (DECISION W (f)): the migration engine state shows the required core +
+ * Migration-state hard-block check: the migration engine state shows the required core +
  * content migrations applied.
+ *
+ * DECISION W (f) amendment (v1.22, 2026-07-17): this check is a **backfill prerequisite evaluated
+ * in ONB-S2**, NOT part of the ONB-S1b environment preflight. It ships in ONB-S1b (bound + tested)
+ * so ONB-S2 reuses it, but it is deliberately excluded from the ONB-S1b PreflightRunner. Same
+ * hard-block semantics, same delivery-handle read path — moved to where delivery schema/data
+ * readiness actually gates work (immediately before backfill).
  *
  * Read via system.schema_versions (OPEN-8 read path) through the EXISTING delivery handle
  * ({@see OnboardingConnectionProbe} — no fifth handle, no new pg_* wrapper). The pipeline cannot

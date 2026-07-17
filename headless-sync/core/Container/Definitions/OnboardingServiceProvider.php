@@ -38,8 +38,11 @@ use HSP\Core\Onboarding\PreflightRunner;
  *   OnboardingConnectionProbe — read-only PG probe reusing the EXISTING delivery
  *                               DatabaseConnectionInterface (DECISION K) — no fifth handle
  *                               (L Ruling 0), no new pg_* wrapper (E). Onboarding opens no handle.
- *   Five preflight checks + PreflightRunner — the five hard-blocking prerequisite checks
- *                               (DECISION W (f)); the two DB-touching checks delegate to the probe.
+ *   Four preflight checks + PreflightRunner — the four hard-blocking environment prerequisite checks
+ *                               (DECISION W (f), amended v1.22): pgsql extension, PG constants, PG
+ *                               reachable (delegates to the probe), PHP version. The migration-state
+ *                               check (`MigrationsAppliedCheck`) is bound for ONB-S2 reuse but is
+ *                               NOT in this runner.
  *   OnboardingRestController / OnboardingRestRegistrar — the WPCS-guarded JSON endpoints the
  *                               React app calls (nonce + capability + sanitize — DECISION W (a) /
  *                               V (b)); delegate-only, no infra.
@@ -88,27 +91,32 @@ final class OnboardingServiceProvider extends ServiceProvider
             ),
         );
 
-        // --- ONB-S1b five hard-blocking preflight checks (DECISION W (f)) ----------------
+        // --- ONB-S1b FOUR hard-blocking environment preflight checks (DECISION W (f),
+        //     amended v1.22 — the migration-engine-state check moved to ONB-S2 as a backfill
+        //     prerequisite, so it is NOT part of this environment preflight). ----------------
         $container->singleton(PgsqlExtensionCheck::class, fn () => new PgsqlExtensionCheck());
         $container->singleton(PgConstantsCheck::class, fn () => new PgConstantsCheck());
         $container->singleton(
             PgReachableCheck::class,
             fn (Container $c) => new PgReachableCheck($c->get(OnboardingConnectionProbe::class)),
         );
+        $container->singleton(PhpVersionCheck::class, fn () => new PhpVersionCheck());
+
+        // MigrationsAppliedCheck is bound here (constructed over the same probe) so ONB-S2 can
+        // reuse it as its backfill migration-state gate — it is deliberately NOT added to the
+        // ONB-S1b PreflightRunner below (DECISION W (f) amendment v1.22).
         $container->singleton(
             MigrationsAppliedCheck::class,
             fn (Container $c) => new MigrationsAppliedCheck($c->get(OnboardingConnectionProbe::class)),
         );
-        $container->singleton(PhpVersionCheck::class, fn () => new PhpVersionCheck());
 
-        // Runner in display order: extension → constants → reachable → migrations → PHP version.
+        // Runner in display order: extension → constants → reachable → PHP version.
         $container->singleton(
             PreflightRunner::class,
             fn (Container $c) => new PreflightRunner(
                 $c->get(PgsqlExtensionCheck::class),
                 $c->get(PgConstantsCheck::class),
                 $c->get(PgReachableCheck::class),
-                $c->get(MigrationsAppliedCheck::class),
                 $c->get(PhpVersionCheck::class),
             ),
         );

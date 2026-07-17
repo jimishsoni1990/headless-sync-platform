@@ -8,7 +8,7 @@ use HSP\Core\Contracts\Onboarding\PreflightCheckInterface;
 use HSP\Core\Contracts\Onboarding\PreflightResult;
 
 /**
- * Preflight check 5 (DECISION W (f)): the PHP version meets the platform minimum.
+ * Preflight check 4 (DECISION W (f)): the PHP version meets the platform minimum.
  *
  * The minimum is injected (default 8.1, matching the plugin header "Requires PHP") so the single
  * source of truth stays at the wiring boundary rather than being hardcoded here. Pure environment

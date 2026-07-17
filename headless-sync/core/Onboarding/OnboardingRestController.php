@@ -14,7 +14,8 @@ use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
  * REST nonce, checks the operator capability, and sanitizes input before use.
  *
  * Two endpoints (registered under hsp/v1 by {@see OnboardingRestRegistrar}):
- *   GET  onboarding/preflight — run the five hard-blocking checks (DECISION W (f)) and return
+ *   GET  onboarding/preflight — run the four hard-blocking environment checks (DECISION W (f),
+ *                               amended v1.22 — migration-state check moved to ONB-S2) and return
  *                               their results plus the current onboarding state. Read-only.
  *   POST onboarding/complete  — flip `hsp_onboarding_state` to COMPLETE, the completion-flag
  *                               round-trip (DECISION W (d)). GUARDED: refuses unless preflight
