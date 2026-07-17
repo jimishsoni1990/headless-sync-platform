@@ -44,5 +44,22 @@ final class OnboardingRestRegistrar
             'callback'            => $this->controller->handleComplete(...),
             'permission_callback' => '__return_true',
         ]);
+
+        // ONB-S2: trigger the first-run backfill (thin delegation to reconcileFull re-emission —
+        // DECISION W (b)/(c)). Gated on a live worker heartbeat + applied migrations at the
+        // controller; 409 with per-gate remediation when blocked.
+        register_rest_route(self::NAMESPACE, '/onboarding/backfill', [
+            'methods'             => 'POST',
+            'callback'            => $this->controller->handleBackfill(...),
+            'permission_callback' => '__return_true',
+        ]);
+
+        // ONB-S2: derived-on-demand progress poll (DECISION W (d)); flips the completion flag on
+        // convergence and reports the redirect to Operations.
+        register_rest_route(self::NAMESPACE, '/onboarding/backfill/progress', [
+            'methods'             => 'GET',
+            'callback'            => $this->controller->handleBackfillProgress(...),
+            'permission_callback' => '__return_true',
+        ]);
     }
 }

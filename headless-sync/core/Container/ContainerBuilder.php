@@ -61,7 +61,7 @@ final class ContainerBuilder
         // Frontend + mount only — opens no PG handle, no new pg_* wrapper, no schema
         // (DECISION W (a)/(e); DECISION K reuse / L Ruling 0 / E). core/Onboarding/, not
         // core/Operations/ (DECISION V (j) console unaffected).
-        $registry->addProvider(new OnboardingServiceProvider());
+        $registry->addProvider(new OnboardingServiceProvider($config));
         $registry->addProvider(new ContentServiceProvider());
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 

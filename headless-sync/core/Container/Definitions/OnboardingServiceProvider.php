@@ -8,7 +8,12 @@ use HSP\Bootstrap\Version;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
+use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Onboarding\Backfill\BackfillGate;
+use HSP\Core\Onboarding\Backfill\BackfillProgress;
+use HSP\Core\Onboarding\Backfill\BackfillReader;
+use HSP\Core\Onboarding\Backfill\BackfillService;
 use HSP\Core\Onboarding\OnboardingAdminRegistrar;
 use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\OnboardingPageController;
@@ -21,6 +26,7 @@ use HSP\Core\Onboarding\Preflight\PgReachableCheck;
 use HSP\Core\Onboarding\Preflight\PgsqlExtensionCheck;
 use HSP\Core\Onboarding\Preflight\PhpVersionCheck;
 use HSP\Core\Onboarding\PreflightRunner;
+use HSP\Core\Reconciliation\ReconciliationService;
 
 /**
  * Registers the Onboarding / First-Run surface (ONB-S1a + ONB-S1b; DECISION W (a)/(d)/(e)/(f);
@@ -53,6 +59,14 @@ use HSP\Core\Onboarding\PreflightRunner;
  */
 final class OnboardingServiceProvider extends ServiceProvider
 {
+    /**
+     * @param array<string,mixed> $config platform config (heartbeat offline threshold + reconcile
+     *        page size are read from here — mirrors WorkerServiceProvider/OperationsServiceProvider).
+     */
+    public function __construct(
+        private readonly array $config = [],
+    ) {}
+
     public function register(object $container): void
     {
         assert($container instanceof Container);
@@ -121,12 +135,61 @@ final class OnboardingServiceProvider extends ServiceProvider
             ),
         );
 
-        // --- ONB-S1b WPCS-guarded REST endpoints the React app calls (DECISION W (a)) ----
+        // --- ONB-S2 backfill: reader + gate + progress + service (thin delegators) ----------
+        // All PG reads reuse the delivery handle via the SAME lazy resolver the probe uses
+        // (DECISION W (e); K/L Ruling 0/E) — onboarding opens no handle of its own.
+        $container->singleton(
+            BackfillReader::class,
+            fn (Container $c) => new BackfillReader(
+                static fn (): DatabaseConnectionInterface => $c->get(DatabaseConnectionInterface::class),
+            ),
+        );
+
+        // Backfill gate: live worker heartbeat (DECISION P freshness, same offline threshold the
+        // Worker Status provider uses) + applied migrations (reuses the ONB-S1b MigrationsAppliedCheck
+        // moved here by DECISION W (f) v1.22). Hard block with remediation when unmet.
+        $container->singleton(
+            BackfillGate::class,
+            fn (Container $c) => new BackfillGate(
+                $c->get(BackfillReader::class),
+                $c->get(MigrationsAppliedCheck::class),
+                $this->heartbeatOfflineAfterSeconds(),
+            ),
+        );
+
+        // Derived-on-demand progress (DECISION Q / W (d)): expected WP counts (via the existing
+        // WpReconciliationSourceInterface — Rule 5, no module import) vs live projection counts.
+        // WpReconciliationSourceInterface is bound by ContentServiceProvider; resolved lazily so
+        // provider order is safe.
+        $container->singleton(
+            BackfillProgress::class,
+            fn (Container $c) => new BackfillProgress(
+                $c->get(WpReconciliationSourceInterface::class),
+                $c->get(BackfillReader::class),
+                $this->reconcilePageSize(),
+            ),
+        );
+
+        // Backfill trigger: THIN DELEGATOR to ReconciliationService::reconcileFull() (DECISION W
+        // (b)). Holds only the gate + the reconciliation service — no DatabaseConnectionInterface,
+        // no adapter, no projection writer — so the write-spy proof holds by construction.
+        // ReconciliationService is bound by WorkerServiceProvider; resolved lazily.
+        $container->singleton(
+            BackfillService::class,
+            fn (Container $c) => new BackfillService(
+                $c->get(BackfillGate::class),
+                $c->get(ReconciliationService::class),
+            ),
+        );
+
+        // --- ONB-S1b/S2 WPCS-guarded REST endpoints the React app calls (DECISION W (a)) ----
         $container->singleton(
             OnboardingRestController::class,
             fn (Container $c) => new OnboardingRestController(
                 $c->get(PreflightRunner::class),
                 $c->get(OnboardingStateInterface::class),
+                $c->get(BackfillService::class),
+                $c->get(BackfillProgress::class),
             ),
         );
 
@@ -136,5 +199,30 @@ final class OnboardingServiceProvider extends ServiceProvider
                 $c->get(OnboardingRestController::class),
             ),
         );
+    }
+
+    /**
+     * The heartbeat freshness threshold the backfill worker-gate uses — the SAME config key the
+     * Operations Worker Status provider reads (DECISION P), so "live worker" means the same thing
+     * in both places.
+     */
+    private function heartbeatOfflineAfterSeconds(): int
+    {
+        $value = $this->config['worker']['heartbeat']['offline_after_seconds'] ?? 60;
+
+        return (int) $value;
+    }
+
+    /**
+     * Reconciliation/backfill page size (DECISION U D7 config-driven paging) — the same key
+     * WorkerServiceProvider uses to build ReconciliationService, so expected-count paging matches
+     * the reconcile paging.
+     */
+    private function reconcilePageSize(): int
+    {
+        $value = $this->config['worker']['reconciliation']['page_size'] ?? 500;
+        $value = (int) $value;
+
+        return $value > 0 ? $value : 500;
     }
 }

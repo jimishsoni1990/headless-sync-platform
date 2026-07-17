@@ -30,10 +30,66 @@ export interface CompleteResponse {
   ok: boolean;
 }
 
+/** One backfill gate (worker heartbeat / migrations), mirroring BackfillGate::summary(). */
+export interface BackfillGate {
+  key: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  remediation: string;
+}
+
+/** Gate summary block. */
+export interface GateSummary {
+  ready: boolean;
+  gates: BackfillGate[];
+}
+
+/** Derived progress snapshot, mirroring BackfillProgress::snapshot(). */
+export interface BackfillProgressSnapshot {
+  expected: Record<string, number>;
+  projected: Record<string, number>;
+  expected_total: number;
+  projected_total: number;
+  in_flight: number;
+  converged: boolean;
+  percent: number;
+}
+
+/** Response of POST onboarding/backfill. */
+export interface BackfillStartResponse {
+  state: string;
+  started: boolean;
+  complete?: boolean;
+  reemitted?: number;
+  scanned?: number;
+  progress: BackfillProgressSnapshot;
+}
+
+/** Response of GET onboarding/backfill/progress. */
+export interface BackfillProgressResponse {
+  state: string;
+  complete: boolean;
+  progress: BackfillProgressSnapshot;
+  gate: GateSummary;
+  redirect: string | null;
+}
+
+/** Raised on a 409 blocked-gate response so the UI can render per-gate remediation. */
+export class BackfillBlockedError extends Error {
+  constructor(
+    message: string,
+    public readonly gate: GateSummary | null,
+  ) {
+    super(message);
+    this.name = 'BackfillBlockedError';
+  }
+}
+
 export class OnboardingApi {
   constructor(private readonly bootstrap: OnboardingBootstrap) {}
 
-  /** Fetch the five preflight check results + current onboarding state. */
+  /** Fetch the preflight check results + current onboarding state. */
   async preflight(): Promise<PreflightResponse> {
     return this.request<PreflightResponse>('onboarding/preflight', 'GET');
   }
@@ -41,6 +97,20 @@ export class OnboardingApi {
   /** Mark onboarding complete (server refuses unless every preflight check passes). */
   async complete(): Promise<CompleteResponse> {
     return this.request<CompleteResponse>('onboarding/complete', 'POST');
+  }
+
+  /**
+   * Trigger the first-run backfill (reconcileFull re-emission, DECISION W (b)). Throws a
+   * {@link BackfillBlockedError} carrying the gate summary when a hard prerequisite (live worker /
+   * applied migrations) is unmet (server 409).
+   */
+  async startBackfill(): Promise<BackfillStartResponse> {
+    return this.request<BackfillStartResponse>('onboarding/backfill', 'POST');
+  }
+
+  /** Poll derived progress + gate status; the server flips to complete on convergence. */
+  async backfillProgress(): Promise<BackfillProgressResponse> {
+    return this.request<BackfillProgressResponse>('onboarding/backfill/progress', 'GET');
   }
 
   private async request<T>(path: string, method: 'GET' | 'POST'): Promise<T> {
@@ -61,6 +131,13 @@ export class OnboardingApi {
         body && typeof body === 'object' && 'message' in body
           ? String((body as { message: unknown }).message)
           : `Request failed (${response.status}).`;
+
+      // A 409 from the backfill endpoint carries the gate summary under data.gate.
+      if (response.status === 409 && body && typeof body === 'object' && 'data' in body) {
+        const data = (body as { data?: { gate?: GateSummary } }).data;
+        throw new BackfillBlockedError(message, data?.gate ?? null);
+      }
+
       throw new Error(message);
     }
 

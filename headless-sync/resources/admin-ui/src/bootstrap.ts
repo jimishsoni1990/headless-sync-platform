@@ -11,6 +11,8 @@ export interface OnboardingBootstrap {
   restUrl: string;
   /** Plugin/platform version, for display. */
   version: string;
+  /** wp-admin URL of the Operations console — the ONB-S2 redirect target on completion. */
+  operationsUrl: string;
 }
 
 declare global {
@@ -27,5 +29,6 @@ export function readBootstrap(): OnboardingBootstrap {
     nonce: typeof raw.nonce === 'string' ? raw.nonce : '',
     restUrl: typeof raw.restUrl === 'string' ? raw.restUrl : '',
     version: typeof raw.version === 'string' ? raw.version : '',
+    operationsUrl: typeof raw.operationsUrl === 'string' ? raw.operationsUrl : '',
   };
 }

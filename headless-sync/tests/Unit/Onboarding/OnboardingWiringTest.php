@@ -7,8 +7,19 @@ namespace HSP\Tests\Unit\Onboarding;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\Definitions\OnboardingServiceProvider;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
+use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Onboarding\Backfill\BackfillGate;
+use HSP\Core\Onboarding\Backfill\BackfillProgress;
+use HSP\Core\Onboarding\Backfill\BackfillReader;
+use HSP\Core\Onboarding\Backfill\BackfillService;
 use HSP\Core\Onboarding\OnboardingAdminRegistrar;
+use HSP\Core\Reconciliation\ReconciliationService;
+use HSP\Core\Replay\ReplayService;
+use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
+use HSP\Tests\Unit\Reconciliation\FakeReconConnection;
+use HSP\Tests\Unit\Reconciliation\FakeReconciliationSource;
+use HSP\Tests\Unit\Replay\FakeReplayEmitter;
 use HSP\Core\Onboarding\OnboardingPageController;
 use HSP\Core\Onboarding\OnboardingRestController;
 use HSP\Core\Onboarding\OnboardingRestRegistrar;
@@ -54,6 +65,22 @@ final class OnboardingWiringTest extends TestCase
 
             public function rollback(): void {}
         });
+
+        // ONB-S2 upstream deps normally bound by ContentServiceProvider / WorkerServiceProvider.
+        // Onboarding resolves them LAZILY, so binding them here proves the backfill graph wires up
+        // via constructor injection without onboarding owning them.
+        $container->singleton(
+            WpReconciliationSourceInterface::class,
+            fn () => new FakeReconciliationSource(),
+        );
+        $container->singleton(
+            ReconciliationService::class,
+            fn (Container $c) => new ReconciliationService(
+                new FakeReconConnection(),
+                $c->get(WpReconciliationSourceInterface::class),
+                new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+            ),
+        );
 
         (new OnboardingServiceProvider())->register($container);
 
@@ -118,6 +145,19 @@ final class OnboardingWiringTest extends TestCase
         );
     }
 
+    public function test_onb_s2_backfill_bindings_resolve_via_constructor_injection(): void
+    {
+        $container = $this->containerWithDeliveryHandle();
+
+        self::assertInstanceOf(BackfillReader::class, $container->get(BackfillReader::class));
+        self::assertInstanceOf(BackfillGate::class, $container->get(BackfillGate::class));
+        self::assertInstanceOf(BackfillProgress::class, $container->get(BackfillProgress::class));
+
+        $service = $container->get(BackfillService::class);
+        self::assertInstanceOf(BackfillService::class, $service);
+        self::assertSame($service, $container->get(BackfillService::class));
+    }
+
     public function test_registrars_register_are_safe_no_ops_without_wordpress_hooks(): void
     {
         $container = $this->containerWithDeliveryHandle();
@@ -140,6 +180,19 @@ final class OnboardingWiringTest extends TestCase
         $container->singleton(DatabaseConnectionInterface::class, static function (): DatabaseConnectionInterface {
             throw new \RuntimeException('Delivery PostgreSQL connect failed.');
         });
+        // Upstream deps (never resolve the throwing delivery handle during graph construction).
+        $container->singleton(
+            WpReconciliationSourceInterface::class,
+            fn () => new FakeReconciliationSource(),
+        );
+        $container->singleton(
+            ReconciliationService::class,
+            fn (Container $c) => new ReconciliationService(
+                new FakeReconConnection(),
+                $c->get(WpReconciliationSourceInterface::class),
+                new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+            ),
+        );
         (new OnboardingServiceProvider())->register($container);
 
         $controller = $container->get(OnboardingRestController::class);

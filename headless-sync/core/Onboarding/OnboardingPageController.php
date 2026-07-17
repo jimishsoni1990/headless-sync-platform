@@ -98,10 +98,24 @@ final class OnboardingPageController
         wp_enqueue_script(self::SCRIPT_HANDLE, $this->assetUrl(self::DIST_JS), [], $this->version, true);
 
         wp_localize_script(self::SCRIPT_HANDLE, self::BOOTSTRAP_OBJECT, [
-            'nonce'   => wp_create_nonce(self::NONCE_ACTION),
-            'restUrl' => $this->restBase(),
-            'version' => $this->version,
+            'nonce'          => wp_create_nonce(self::NONCE_ACTION),
+            'restUrl'        => $this->restBase(),
+            'version'        => $this->version,
+            // ONB-S2: the client redirects here once the backfill converges and onboarding
+            // completes (DECISION W (d)). Resolved at the WP boundary so the client never builds
+            // an admin URL itself.
+            'operationsUrl'  => $this->operationsUrl(),
         ]);
+    }
+
+    /** Absolute wp-admin URL of the Operations console page (un-gated once onboarding completes). */
+    private function operationsUrl(): string
+    {
+        if (function_exists('admin_url')) {
+            return admin_url('admin.php?page=hsp-operations');
+        }
+
+        return '';
     }
 
     /**

@@ -2,7 +2,9 @@ import { CheckCircle2, XCircle } from 'lucide-react';
 import type { PreflightCheck } from '@/api';
 
 /**
- * Renders the five hard-blocking onboarding preflight checks (ONB-S1b; DECISION W (f)).
+ * Renders the hard-blocking onboarding preflight checks (ONB-S1b; DECISION W (f), four checks as
+ * amended v1.22). Also reused for the ONB-S2 backfill gates (worker heartbeat + migrations), which
+ * share the same {key,label,passed,detail,remediation} shape.
  *
  * A failed check shows its remediation guidance inline — the operator cannot advance until every
  * check passes, so each failure must tell them exactly what to fix.
