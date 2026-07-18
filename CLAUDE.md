@@ -13,9 +13,9 @@ only; they never touch WordPress or PostgreSQL schemas directly.
 ## Tech Stack & Versions
 
 HSP targets the **latest stable release** of each dependency (PHP, WordPress, PostgreSQL,
-PHPUnit). Exact pinned versions live in `composer.json`, `.php-version`, and CI config — not
+PHPUnit). Exact pinned versions live in `composer.json`, the plugin header, and CI config — not
 here. PHP and PHPUnit versions must be a compatible pair. Do not invent or assume version
-numbers; read them from those files when present.
+numbers; read them from those files. Platform minimum PHP is the plugin header "Requires PHP".
 
 ---
 
@@ -36,10 +36,13 @@ headless-sync/
 │   │                      #   providers, services, diagnostics). Shipped MVP UI is
 │   │                      #   server-rendered PHP (DECISION V); new admin UI is
 │   │                      #   React+shadcn (DECISION W amends V (a))
+│   ├── Workers/           #   WP-Cron Processing Engine — bounded stateless cycle,
+│   │                      #   strategies, heartbeat publisher, cron registrar (ADR-054)
 │   └── Onboarding/         #   First-run/onboarding: preflight, nav gating,
 │                          #   backfill trigger (thin delegator to
-│                          #   ReconciliationService), derived progress; React UI
-│                          #   (DECISION W) — NOT under Operations/ (V (j))
+│                          #   ReconciliationService), self-remediation endpoints,
+│                          #   derived progress; React UI (DECISION W) — NOT under
+│                          #   Operations/ (V (j))
 ├── modules/              # Business domains (Content, WooCommerce, …); each
 │                         # module is self-contained with its own events,
 │                         # transformers, canonical models, migrations, tests
@@ -48,7 +51,7 @@ headless-sync/
 │                         # committed dist/ build output (DECISION W (a) — build in
 │                         # dev/CI, deploy = file copy, no host build step)
 ├── storage/              # Runtime storage (logs, cache)
-├── tests/                # Unit / Integration / Contract / Module / E2E
+├── tests/                # Unit / Integration
 ├── tools/                # Developer tooling
 ├── docs/                 # Architecture & design documents
 └── vendor/               # Composer dependencies
@@ -60,51 +63,58 @@ Namespace root: `HSP\` — mirrors folder structure (`HSP\Core\`, `HSP\Modules\C
 
 ## Build / Test / Run / Lint Commands
 
-> Backend (PHP) test/lint commands remain TBD — confirm before use. The **frontend (React admin
-> UI) build commands are settled by DECISION W (a)**: the toolchain lives in
-> `headless-sync/resources/admin-ui/` (npm), builds in dev/CI, and commits `dist/`; the
-> production deploy is a file copy (no host build step).
+Backend commands run from `headless-sync/`. The **frontend (React admin UI) toolchain** lives in
+`resources/admin-ui/` (npm), builds in dev/CI, and commits `dist/`; the production deploy is a
+file copy (no host build step — DECISION W (a)).
 
-| Task                        | Command                                                              |
-| --------------------------- | ------------------------------------------------------------------- |
-| Install PHP dependencies    | `composer install`                                                  |
-| Run all tests               | TBD — confirm                                                        |
-| Run unit tests              | TBD — confirm                                                        |
-| Run a single test           | TBD — confirm                                                        |
-| Lint / static analysis      | TBD — confirm                                                        |
-| Run worker (production)     | WP-CLI command — TBD — confirm                                       |
-| Install admin-UI deps       | `cd resources/admin-ui && npm install` (DECISION W (a))             |
-| Build admin UI → `dist/`    | `cd resources/admin-ui && npm run build` (DECISION W (a))           |
-| Watch-build admin UI (dev)  | `cd resources/admin-ui && npm run dev` (DECISION W (a))             |
+| Task                        | Command                                                             |
+| --------------------------- | ------------------------------------------------------------------ |
+| Install PHP dependencies    | `composer install`                                                 |
+| Run all tests               | `vendor/bin/phpunit`                                               |
+| Run unit tests              | `vendor/bin/phpunit --testsuite Unit`                             |
+| Run integration tests       | `vendor/bin/phpunit --testsuite Integration`                      |
+| Run a single test           | `vendor/bin/phpunit --filter <TestName>` (or a path)              |
+| Lint / static analysis      | TBD — no phpcs/phpstan tooling in the repo yet (flag before use)   |
+| Install admin-UI deps       | `cd resources/admin-ui && npm install` (DECISION W (a))           |
+| Build admin UI → `dist/`    | `cd resources/admin-ui && npm run build` (DECISION W (a))         |
+| Watch-build admin UI (dev)  | `cd resources/admin-ui && npm run dev` (DECISION W (a))           |
+
+**Integration tests require live databases** and the `pgsql` PHP extension; they self-skip when
+absent. Provide PostgreSQL via `HSP_TEST_PGSQL_{HOST,PORT,USER,PASSWORD,DATABASE}` and MySQL via
+`HSP_TEST_MYSQL_{HOST,PORT,USER,PASSWORD,DATABASE}`. Unit tests need neither (WordPress + `$wpdb`
+are stubbed in `tests/bootstrap.php`).
 
 The admin-UI build outputs stable, non-hashed filenames
 (`resources/admin-ui/dist/hsp-onboarding.{js,css}`) so the PHP registrar enqueues deterministic
 paths. Commit `dist/`; never rely on a build step running on the WordPress host (DECISION W (a)).
 
-Workers run under **systemd / Supervisor / container runtime** in production.
-WP-Cron is a fallback only (recovery jobs, safety checks) — never the primary execution path.
+**Execution model (ADR-054):** background processing runs **only** as bounded, stateless cycles
+on the `hsp_processing_cycle` WP-Cron event — one cycle per invocation (relay → dispatch →
+project → maintenance), exiting before `max_execution_time`. WP-Cron is the **only** v1.x
+execution mechanism; there are **no** systemd / Supervisor / container / CLI-daemon workers. The
+platform operates immediately after activation with **zero configuration** (Principle 8). System
+cron may invoke `wp cron event run --due-now` as a reliable *trigger*; each invocation still runs
+one bounded cycle and exits. `system.worker_heartbeats` records **processing-cycle freshness**
+(not daemon liveness).
 
 ---
 
 ## Coding Standard
 
-Settled by **DECISION V** (FLAG-4 A, 2026-07-15):
+Settled by **DECISION V**:
 
 - **PSR-12 for all platform code.**
 - **WPCS security requirements — output escaping, input sanitization, capability checks,
   nonces — apply at WordPress entry points only** (admin pages, form/action handlers, REST
-  registration, `$wpdb` calls). **Extended by DECISION W (a):** these WPCS security rules
-  also apply at the **REST/ajax endpoints the React admin UI calls** (the untrusted-client
-  JSON boundary) — sanitize input, check capability, verify nonce at every such endpoint.
+  registration, `$wpdb` calls), and — per **DECISION W (a)** — at the **REST/ajax endpoints the
+  React admin UI calls** (the untrusted-client JSON boundary): sanitize input, check capability,
+  verify nonce at every such endpoint.
 
-This replaces the prior "TBD" hold. The WP-admin boundary is now open (it was deferred by
-DECISION S clause (d)). See `docs/ARCHITECTURE_DECISIONS.md` DECISION V.
-
-**Admin UI stack (DECISION W (a), 2026-07-16 — amends DECISION V (a)):** **React + shadcn is
-the admin UI stack.** The build toolchain runs in **dev/CI only**; the compiled `dist/` bundle
-is **committed to the repo** and the production deploy is a **file copy** (no node/npm build
-step on the WordPress host). The already-shipped OPSC-S1..S4 server-rendered PHP Operations
-Console remains as built; only **new** admin UI (including onboarding) is React. See DECISION W.
+**Admin UI stack (DECISION W (a) — amends DECISION V (a)):** **React + shadcn** is the admin UI
+stack. The build toolchain runs in **dev/CI only**; the compiled `dist/` bundle is **committed**
+and the production deploy is a **file copy** (no node/npm build step on the WordPress host). The
+already-shipped OPSC server-rendered PHP Operations Console remains as built; only **new** admin
+UI (including onboarding) is React. See `docs/ARCHITECTURE_DECISIONS.md` DECISIONS V and W.
 
 ---
 
@@ -150,39 +160,49 @@ Console remains as built; only **new** admin UI (including onboarding) is React.
     ```
 - **Column-type canon** (supersedes Doc 3 types — OPEN-3/4/5/7 v1.1): all timestamps are
   `TIMESTAMPTZ`; all checksums are `VARCHAR(64)` (sha256); all worker-identity columns are
-  `UUID` (UUIDv7 self-assigned at worker startup).
-- **Worker state:** workers reload current WordPress state on each event (state sync, not event
-  sourcing). Workers are stateless (ADR-044).
+  `UUID`. `worker_id` is a **fresh UUIDv7 minted per processing cycle** — a per-cycle
+  processing-component identity, not a long-lived daemon id (ADR-054 §8 / DECISION X (1)).
+- **Worker state:** each cycle reloads current WordPress state per event (state sync, not event
+  sourcing) and holds no state between cron executions (ADR-044 / ADR-054 §2).
 - **Write-suppress logic:** compare a freshly-computed _projection_ checksum against the stored
   checksum in the target store. Never compare against the event's own checksum — that is for
   traceability only (DECISION 3).
 - **Atomicity:** projection upsert + `system.processed_events` insert +
   `system.aggregate_versions` upsert **must** commit in one PostgreSQL transaction (DECISION 3).
 - **WordPress wins reconciliation** (ADR-045). Never repair WordPress from PostgreSQL state.
-- **Runtime PG connection layer:** runtime DML subsystems (relay, queue, worker) share one
-  PostgreSQL connection abstraction; the migration engine keeps its own DDL-only abstraction.
-  The three existing `pg_*` wrappers are accepted temporary duplication — no new raw `pg_*`
-  wrapper may be introduced in P0-S6. Consolidation to a shared `DatabaseConnectionInterface`
-  under `core/Database/` is authorized in P0-S7 only (DECISION E).
+- **Runtime PG connection layer (DECISION E):** runtime DML subsystems (relay, queue, worker)
+  share one PostgreSQL `DatabaseConnectionInterface`; the migration engine keeps its own
+  DDL-only abstraction. The connection topology is frozen at four handles — **no fifth handle
+  and no new raw `pg_*` wrapper** may be introduced (DECISION L Ruling 0).
+- **Plugin lifecycle migrations (OPEN-9 / DECISION W (f)):** `Application::activate()` /
+  `upgrade()` (and module `activate()`/`upgrade()` hooks) attempt pending migrations through the
+  shared migration engine **iff `HSP_PG_*` are defined AND PostgreSQL is reachable**, and are a
+  **silent no-op otherwise** — activation must never fatal on an unconfigured site.
 - **Operations Console (DECISION V):** the console is **observability/diagnostics only, not a
   control plane** — restarting services/containers and infrastructure orchestration are
-  permanently out of scope. Shipped MVP UI is **server-rendered PHP + minimal vanilla JS**
-  (_the new-admin-UI stack is superseded by DECISION W (a) — React+shadcn; the shipped console
-  stays as built_). Provider PG reads **reuse the delivery `DatabaseConnectionInterface`**
-  (no fifth handle). Operations contracts live in `core/Contracts/Operations/` (Rule 5 holds).
-  Console metrics are **derived on-demand** (DECISION Q — zero new persistence). Actions are
-  **Replay + Reconcile only**, as thin delegators to the ratified services (no second repair
-  path). **No Flush Queue** (destructive) and **no Restart Workers** (supervisor owns lifecycle).
-- **Onboarding & First-Run (DECISION W):** admin UI stack is **React + shadcn** (amends
-  DECISION V (a)); build in dev/CI, **commit `dist/`**, deploy = file copy (no host build).
-  Initial content backfill = **full-reconciliation re-emission via `ReconciliationService`**
-  (DECISION U) through the normal pipeline — **no direct WP→PG copy, no second repair path**
-  (write-spy proof in the DoD). A **live worker heartbeat is a hard prerequisite** for backfill.
+  permanently out of scope. Shipped MVP UI is **server-rendered PHP + minimal vanilla JS** (the
+  new-admin-UI stack is superseded by DECISION W (a) — React+shadcn; the shipped console stays as
+  built). Provider PG reads **reuse the delivery `DatabaseConnectionInterface`** (no fifth handle).
+  Operations contracts live in `core/Contracts/Operations/` (Rule 5 holds). Console metrics are
+  **derived on-demand** (DECISION Q — zero new persistence). Actions are **Replay + Reconcile
+  only**, thin delegators to the ratified services (no second repair path). **No Flush Queue**
+  (destructive) and **no Restart Workers** (nothing to restart under ADR-054).
+- **Onboarding & First-Run (DECISION W):** admin UI stack is **React + shadcn** (amends V (a));
+  build in dev/CI, **commit `dist/`**, deploy = file copy. Initial content backfill =
+  **full-reconciliation re-emission via `ReconciliationService`** (DECISION U) through the normal
+  pipeline — **no direct WP→PG copy, no second repair path** (write-spy proof in the DoD).
   Progress is **derived on-demand** (DECISION Q); completion = a single WP option
   `hsp_onboarding_state` in MySQL (**no schema change**). Onboarding lives in `core/Onboarding/`
-  (NOT the console — V (j) holds). Until complete, **Operations + Playground pages are hidden**
-  and five preflight checks (pgsql ext, PG constants, PG reachable, migrations applied, PHP
-  version) **hard-block** progression. See `docs/ARCHITECTURE_DECISIONS.md` DECISION W.
+  (NOT the console — V (j) holds). Until complete, **Operations + Playground pages are hidden**.
+  **Four environment preflight checks hard-block progression** (ONB-S1b): `pgsql` extension
+  loaded, `HSP_PG_*` constants defined, PostgreSQL reachable, PHP ≥ platform minimum. The
+  **migrations-applied check is an ONB-S2 backfill gate** (not preflight). Both ONB-S2 backfill
+  gates — **migrations applied** and **processing pipeline advancing** (scheduled
+  `hsp_processing_cycle` cron **and** a recent heartbeat, DECISION X (4)) — are **hard blocks
+  with in-product self-remediation** (W (f) v1.23): `POST hsp/v1/onboarding/migrate` (thin
+  delegator to the migration engine) and `POST hsp/v1/onboarding/spawn-worker` (non-blocking
+  `spawn_cron()`; no in-request drain — action, not bypass; each gate still blocks until it
+  genuinely passes). See `docs/ARCHITECTURE_DECISIONS.md` DECISIONS W and X.
 
 ---
 
@@ -208,14 +228,16 @@ Out of scope for MVP (do not introduce):
 - Silently drop a failed sync (failed events go to DLQ; replays are always possible).
 - Bypass the outbox.
 - Import one module from another module.
+- Introduce a supervised daemon / CLI-worker / systemd / Supervisor / container-restart execution
+  path — WP-Cron is the only v1.x mechanism (ADR-054).
 
 ---
 
 ## Notes on What Belongs Elsewhere
 
-Deployment runbooks, per-environment configuration, WP-CLI worker launch commands, one-off
-migration procedures, and fast-changing operational details belong in skills, path-scoped
-rules, or hooks — not here.
+Deployment runbooks, per-environment configuration, WP-Cron cadence tuning, one-off migration
+procedures, and fast-changing operational details belong in skills, path-scoped rules, or hooks —
+not here.
 
 ---
 
