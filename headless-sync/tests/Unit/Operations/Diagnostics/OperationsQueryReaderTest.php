@@ -64,6 +64,42 @@ final class OperationsQueryReaderTest extends TestCase
         self::assertEqualsWithDelta(3.0, (new OperationsQueryReader($conn))->processingRatePerMinute(600), 0.0001);
     }
 
+    public function test_cycle_metrics_return_empty_or_null_for_non_positive_window(): void
+    {
+        $reader = new OperationsQueryReader(new ScriptedReaderConnection());
+
+        self::assertSame([], $reader->cyclesCompletedByType(0));
+        self::assertSame([], $reader->cyclesCompletedByType(-5));
+        self::assertNull($reader->averageCycleDurationSeconds(0));
+        self::assertNull($reader->averageCycleDurationSeconds(-5));
+    }
+
+    public function test_cycles_completed_by_type_counts_recent_cycle_rows(): void
+    {
+        $conn = (new ScriptedReaderConnection())->on('GROUP BY worker_type', [
+            ['worker_type' => 'processing', 'c' => '8'],
+            ['worker_type' => 'maintenance', 'c' => '2'],
+        ]);
+
+        $byType = (new OperationsQueryReader($conn))->cyclesCompletedByType(300);
+
+        self::assertSame(['processing' => 8, 'maintenance' => 2], $byType);
+    }
+
+    public function test_average_cycle_duration_reads_avg_or_null(): void
+    {
+        $withRows = (new ScriptedReaderConnection())->on('AVG(EXTRACT', [['avg_secs' => '2.25']]);
+        self::assertEqualsWithDelta(
+            2.25,
+            (new OperationsQueryReader($withRows))->averageCycleDurationSeconds(300),
+            0.0001,
+        );
+
+        // No cycles in the window → AVG(...) yields NULL → null (nothing to average).
+        $empty = (new ScriptedReaderConnection())->on('AVG(EXTRACT', [['avg_secs' => null]]);
+        self::assertNull((new OperationsQueryReader($empty))->averageCycleDurationSeconds(300));
+    }
+
     public function test_module_versions_map_and_migration_state(): void
     {
         $conn = (new ScriptedReaderConnection())

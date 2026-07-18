@@ -21,10 +21,10 @@ declare(strict_types=1);
  *                               the cron registrar registers the interval).
  *   interval_seconds          — interval (seconds) for the custom 'hsp_processing' schedule.
  *
- * maintenance.recovery_interval_seconds — DECISION R (v1.16): retained config key. Under
- *   ADR-054 the MaintenanceWorkerStrategy sweep runs once per WP-Cron cycle (the cron
- *   cadence IS the maintenance cadence); the strategy no longer self-throttles, so this
- *   value is no longer read by the strategy but is kept for operators/back-compat.
+ * maintenance — under ADR-054 the MaintenanceWorkerStrategy sweep runs once per WP-Cron cycle
+ *   (the cron cadence IS the maintenance cadence — DECISION X); the strategy no longer
+ *   self-throttles. The old recovery_interval_seconds throttle key is REMOVED (superseded per
+ *   DECISION X — it was inert after ALIGN-S1 and is not read anywhere).
  *
  * reconciliation — DECISION U (v1.19): reconciliation cadence + paging, config-driven.
  *   schedules  — WP-Cron schedule name per mode (hourly / hsp_nightly / hsp_weekly are
@@ -50,8 +50,7 @@ return [
         'interval_seconds'          => 60,
     ],
     'maintenance' => [
-        'recovery_interval_seconds' => 30,
-        'partitions'                => ['content', 'commerce', 'system'],
+        'partitions' => ['content', 'commerce', 'system'],
     ],
     'reconciliation' => [
         'schedules' => [

@@ -9,16 +9,19 @@ use HSP\Core\Contracts\Operations\WorkerStatusProviderInterface;
 use HSP\Core\Operations\Diagnostics\OperationsQueryReader;
 
 /**
- * Current-state worker status provider (OPSC-S2; Doc 12 §12/§13; DECISION P).
+ * Current-state processing-cycle status provider (OPSC-S2; Doc 12 §12/§13; DECISION P; ADR-054 §5).
  *
- * Reads the single current-state heartbeat row per worker (DECISION P — upsert per tick, no
- * history) via the delivery-handle reader (DECISION V (g)) and derives "online" at read time
- * as a heartbeat-age comparison against a config-driven threshold (DECISION P crash-detection
- * semantics; no hardcoded timing — mirrors the DECISION R config-driven-cadence precedent).
+ * Reads the current-state heartbeat rows (DECISION P — upsert per cycle, no history) via the
+ * delivery-handle reader (DECISION V (g)) and derives CYCLE-FRESHNESS at read time as a
+ * heartbeat-age comparison against a config-driven threshold (no hardcoded timing — mirrors the
+ * DECISION R config-driven-cadence precedent). Under the ADR-054 WP-Cron cycle model each row is
+ * a processing-cycle execution (fresh UUIDv7 per cycle — DECISION X ruling (1)), so `online`
+ * means "this cycle ran within the freshness window" (advancing), not "a daemon is up".
  *
- * READ-ONLY surface. Worker lifecycle belongs to the process supervisor, NOT the console
- * (DECISION V (f)); this provider carries no lifecycle affordance — it only reports status.
- * ZERO new persistence (DECISION V (c)).
+ * READ-ONLY surface. There is no supervised worker to control: the engine is a bounded WP-Cron
+ * cycle (ADR-054). When cycles are not advancing, remediation is WP-Cron ("ensure WP-Cron is
+ * firing / run `wp cron event run`"), NEVER a Restart Workers action (DECISION V (f) — the
+ * console remains read-only). ZERO new persistence (DECISION V (c)).
  */
 final class WorkerStatusProvider implements WorkerStatusProviderInterface
 {

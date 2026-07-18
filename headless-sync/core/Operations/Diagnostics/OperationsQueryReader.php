@@ -20,10 +20,18 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  *     at four) and introduces NO new raw pg_* wrapper (DECISION E) — it reuses the existing
  *     connection abstraction.
  *   DECISION Q / DECISION V (c) — derived-on-demand, ZERO new persistence. No metrics table,
- *     no rollups, no history; every value is computed by aggregate query at call time.
- *   DECISION P — worker rows come from the single current-state system.worker_heartbeats
- *     table (upsert per tick, no history); "offline" is a last_heartbeat_at-age comparison
- *     computed by the WorkerStatusProvider, not stored.
+ *     no rollups, no history; every value is computed by aggregate query at call time. This
+ *     includes the ADR-054 §17/§27 cycle metrics (cycles_completed / avg_cycle_duration /
+ *     per-stage throughput): they are counted/averaged on demand from the per-cycle heartbeat
+ *     rows, which is exactly what the fresh-UUID-per-cycle cardinality (DECISION X ruling (1))
+ *     makes possible without any stored counter.
+ *   DECISION P / ADR-054 §5 — worker rows come from the single current-state
+ *     system.worker_heartbeats table. Under the WP-Cron cycle model (ADR-054 / DECISION X) a
+ *     row represents a PROCESSING-CYCLE EXECUTION, not a daemon identity: each cycle mints a
+ *     fresh UUIDv7, so recent rows are recent cycles. Heartbeat age is a CYCLE-FRESHNESS
+ *     comparison — "cycles are advancing" vs "cycles have stalled" (stale WHILE queue
+ *     non-empty) — computed by the providers at read time, never stored, never "daemon
+ *     online/offline".
  *   OPEN-8 — System Information reads system.module_versions / system.schema_versions.
  *   ADR-012 — connection injected via constructor; no service-locator call.
  *
@@ -88,9 +96,10 @@ final class OperationsQueryReader
     /**
      * Every current-state heartbeat row with the DB-computed age of its last heartbeat.
      *
-     * "Offline" is NOT decided here — the age is returned and the WorkerStatusProvider
-     * compares it against the config threshold. Age is computed with the DB clock so it is
-     * consistent with oldestPendingAgeSeconds() and immune to PHP/DB clock skew.
+     * Cycle-freshness is NOT decided here — the age is returned and the WorkerStatusProvider
+     * compares it against the config threshold ("this cycle ran recently" vs "cycles have gone
+     * stale", ADR-054 §5). Age is computed with the DB clock so it is consistent with
+     * oldestPendingAgeSeconds() and immune to PHP/DB clock skew.
      *
      * @return array<int, array{
      *     worker_id:string,
@@ -124,6 +133,65 @@ final class OperationsQueryReader
         }
 
         return $out;
+    }
+
+    // -------------------------------------------------------------------------
+    // Cycle metrics (ADR-054 §17/§27) — derived on demand from per-cycle heartbeat rows
+    // -------------------------------------------------------------------------
+
+    /**
+     * Number of processing cycles that heartbeated within the trailing window, per stage
+     * (worker_type). Under the ADR-054 cycle model each cycle mints a fresh UUIDv7
+     * (DECISION X ruling (1)), so a heartbeat row IS a cycle execution — counting recent rows
+     * per worker_type yields cycles-completed with ZERO persistence (DECISION Q). Returns an
+     * empty map when no cycle heartbeated in the window; 0-width windows also return empty.
+     *
+     * @return array<string,int> worker_type → cycles completed in the window
+     */
+    public function cyclesCompletedByType(int $windowSeconds): array
+    {
+        if ($windowSeconds <= 0) {
+            return [];
+        }
+
+        $rows = $this->conn->query(
+            "SELECT worker_type, COUNT(*) AS c
+             FROM   system.worker_heartbeats
+             WHERE  last_heartbeat_at >= NOW() - make_interval(secs => $1)
+             GROUP BY worker_type",
+            [$windowSeconds],
+        );
+
+        $out = [];
+        foreach ($rows as $row) {
+            $out[(string) $row['worker_type']] = (int) $row['c'];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Average cycle duration (seconds) over the cycles that heartbeated within the trailing
+     * window. A cycle's duration is last_heartbeat_at − started_at on its per-cycle row (both
+     * are frozen DECISION P columns), averaged on demand — no stored duration, no history
+     * (DECISION Q). Returns null when no cycle heartbeated in the window (nothing to average).
+     */
+    public function averageCycleDurationSeconds(int $windowSeconds): ?float
+    {
+        if ($windowSeconds <= 0) {
+            return null;
+        }
+
+        $rows = $this->conn->query(
+            "SELECT AVG(EXTRACT(EPOCH FROM (last_heartbeat_at - started_at))) AS avg_secs
+             FROM   system.worker_heartbeats
+             WHERE  last_heartbeat_at >= NOW() - make_interval(secs => $1)",
+            [$windowSeconds],
+        );
+
+        $avg = $rows[0]['avg_secs'] ?? null;
+
+        return $avg === null ? null : (float) $avg;
     }
 
     // -------------------------------------------------------------------------

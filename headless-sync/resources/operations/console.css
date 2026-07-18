@@ -63,8 +63,9 @@
 .hsp-ops-badge--error    { background: #d63638; }
 .hsp-ops-badge--critical { background: #8c1c1c; }
 
-.hsp-ops-state--online  { color: #2a7d2e; }
-.hsp-ops-state--offline { color: #d63638; }
+/* Cycle-freshness (ADR-054 §5), not daemon liveness: fresh = cycle ran recently; stale = not advancing. */
+.hsp-ops-state--fresh { color: #2a7d2e; }
+.hsp-ops-state--stale { color: #d63638; }
 
 .hsp-ops-response-body {
     background: #1d2327;

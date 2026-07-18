@@ -59,9 +59,10 @@ final class DashboardViewTest extends TestCase
         self::assertStringContainsString('OK', $html);
         // Metrics widget
         self::assertStringContainsString('queue_depth', $html);
-        // Workers widget
+        // Workers widget — cycle-freshness state (ADR-054 §5), not daemon online/offline.
         self::assertStringContainsString('w-1', $html);
-        self::assertStringContainsString('online', $html);
+        self::assertStringContainsString('fresh', $html);
+        self::assertStringNotContainsString('online', $html);
         // Each widget titled + tagged with its provider key
         self::assertStringContainsString('data-provider="workers"', $html);
     }

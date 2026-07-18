@@ -12,6 +12,7 @@ use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
+use HSP\Core\Workers\ProcessingCronRegistrar;
 use HSP\Tests\Integration\Reconciliation\WriteSpyConnection;
 use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
 use HSP\Tests\Unit\Reconciliation\FakeReconConnection;
@@ -37,6 +38,17 @@ final class BackfillServiceTest extends TestCase
         '0008_create_system_schema_versions',
         '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
     ];
+
+    protected function setUp(): void
+    {
+        // DECISION X (4) Option-C: a "ready" gate also needs the processing cron scheduled.
+        $GLOBALS['_hsp_stub_scheduled'] = [ProcessingCronRegistrar::HOOK => 'hsp_processing'];
+    }
+
+    protected function tearDown(): void
+    {
+        unset($GLOBALS['_hsp_stub_scheduled']);
+    }
 
     public function test_start_reemits_through_reconcile_full_with_zero_direct_writes(): void
     {

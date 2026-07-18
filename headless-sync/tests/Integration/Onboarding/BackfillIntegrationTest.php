@@ -12,6 +12,7 @@ use HSP\Core\Events\Outbox\Connection\MysqliOutboxConnection;
 use HSP\Core\Events\Outbox\Connection\PgsqlOutboxConnection;
 use HSP\Core\Events\Outbox\OutboxWriter;
 use HSP\Core\Onboarding\Backfill\BackfillGate;
+use HSP\Core\Workers\ProcessingCronRegistrar;
 use HSP\Core\Onboarding\Backfill\BackfillProgress;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
 use HSP\Core\Onboarding\Backfill\BackfillService;
@@ -101,10 +102,16 @@ final class BackfillIntegrationTest extends TestCase
 
         $this->createMysqlSchema();
         $this->createPgsqlSchema();
+
+        // DECISION X (4) Option-C: the worker gate requires the processing cron to be scheduled.
+        // Opt the WP-Cron stub into recording and schedule it by default; the block/unblock test
+        // clears it to exercise the not-scheduled branch.
+        $GLOBALS['_hsp_stub_scheduled'] = [ProcessingCronRegistrar::HOOK => 'hsp_processing'];
     }
 
     protected function tearDown(): void
     {
+        unset($GLOBALS['_hsp_stub_scheduled']);
         if ($this->mysqli !== null) {
             $this->mysqli->query("DROP TABLE IF EXISTS `{$this->outbox}`");
             $this->mysqli->query("DROP TABLE IF EXISTS `{$this->counters}`");
@@ -184,13 +191,18 @@ final class BackfillIntegrationTest extends TestCase
         self::assertFalse($worker['passed']);
         self::assertNotSame('', $worker['remediation']);
 
-        // A stale heartbeat still blocks (older than the offline threshold).
+        // A stale heartbeat still blocks (older than the freshness threshold).
         $this->seedHeartbeat(ageSeconds: 3600);
         self::assertFalse($this->gate()->isReady(), 'stale heartbeat still blocks');
 
-        // A fresh heartbeat unblocks — no lifecycle action was taken; only observation changed.
+        // A fresh cycle heartbeat WITH the processing cron scheduled unblocks — no lifecycle
+        // action was taken; only observation changed (DECISION X (4) Option-C, both halves).
         $this->seedHeartbeat(ageSeconds: 2);
-        self::assertTrue($this->gate()->isReady(), 'fresh heartbeat unblocks the gate');
+        self::assertTrue($this->gate()->isReady(), 'fresh cycle heartbeat + scheduled cron unblocks the gate');
+
+        // Option-C: clearing the processing cron re-blocks even though the heartbeat is fresh.
+        $GLOBALS['_hsp_stub_scheduled'] = [];
+        self::assertFalse($this->gate()->isReady(), 'cron not scheduled re-blocks despite a fresh heartbeat');
     }
 
     // =========================================================================

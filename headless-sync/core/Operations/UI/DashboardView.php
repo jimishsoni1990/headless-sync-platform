@@ -167,7 +167,10 @@ final class DashboardView
             . '</tr></thead><tbody>';
 
         foreach ($workers as $worker) {
-            $state = $worker->online ? 'online' : 'offline';
+            // Cycle-freshness, not daemon liveness (ADR-054 §5): a fresh heartbeat means the
+            // processing cycle ran within the freshness window; "stale" means cycles are not
+            // advancing (only a problem while the queue is non-empty — see HealthProvider).
+            $state = $worker->online ? 'fresh' : 'stale';
             $beat  = $worker->lastHeartbeatAt?->format('Y-m-d H:i:s') ?? '—';
             $html .= '<tr>'
                 . '<td>' . Html::text($worker->workerId) . '</td>'

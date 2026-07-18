@@ -26,6 +26,9 @@ final class MetricsProviderTest extends TestCase
             ->on('FROM system.dead_letter_jobs WHERE replayed_at IS NULL', [['c' => '2']])
             ->on('FROM system.dead_letter_jobs WHERE replayed_at IS NOT NULL', [['c' => '3']])
             ->on('FROM system.dead_letter_jobs', [['c' => '5']])
+            // Cycle metrics (matched before the plain worker_heartbeats needle):
+            ->on('GROUP BY worker_type', [['worker_type' => 'processing', 'c' => '6']])
+            ->on('AVG(EXTRACT', [['avg_secs' => '1.5']])
             ->on('worker_heartbeats', [$this->workerRow(), $this->workerRow()])
             ->on("status = 'completed'", [['c' => '10']])
             ->on('MIN(available_at)', [['age' => '12.0']])
@@ -47,6 +50,19 @@ final class MetricsProviderTest extends TestCase
         // oldest_pending_age present because the queue is non-empty.
         self::assertArrayHasKey('oldest_pending_age', $by);
         self::assertEqualsWithDelta(12.0, $by['oldest_pending_age']->value, 0.001);
+
+        // ADR-054 §17/§27 cycle metrics, derived from the per-cycle heartbeat rows.
+        self::assertSame(6, $by['cycles_completed']->value);
+        self::assertSame('cycles', $by['cycles_completed']->unit);
+        self::assertEqualsWithDelta(1.5, $by['avg_cycle_duration']->value, 0.001);
+        self::assertSame('seconds', $by['avg_cycle_duration']->unit);
+        // per_stage_throughput.processing = 6 cycles over 300s (=5 min) → 1.2/min.
+        self::assertArrayHasKey('per_stage_throughput.processing', $by);
+        self::assertEqualsWithDelta(1.2, $by['per_stage_throughput.processing']->value, 0.001);
+        self::assertSame('per_minute', $by['per_stage_throughput.processing']->unit);
+        // Daemon metrics never appear (ADR-054 §6).
+        self::assertArrayNotHasKey('worker_uptime', $by);
+        self::assertArrayNotHasKey('restart_count', $by);
     }
 
     public function test_oldest_pending_age_sample_is_omitted_when_queue_empty(): void
@@ -78,6 +94,9 @@ final class MetricsProviderTest extends TestCase
         $by = $this->byName((new MetricsProvider(new OperationsQueryReader($conn), 0))->samples());
 
         self::assertEqualsWithDelta(0.0, $by['processing_rate']->value, 0.0001);
+        // A zero window yields zero cycles and no avg/per-stage samples (nothing to average).
+        self::assertSame(0, $by['cycles_completed']->value);
+        self::assertArrayNotHasKey('avg_cycle_duration', $by);
     }
 
     /** @return array<string,string> a full worker_heartbeats row as the reader SELECTs it. */

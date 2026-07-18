@@ -136,6 +136,13 @@ final class OperationsProvidersIntegrationTest extends TestCase
         self::assertSame(1, $by['replay_completed']);
         self::assertSame(1, $by['reconciliation_backlog'], 'aggregate behind its latest event counts as backlog');
         self::assertGreaterThan(0.0, $by['processing_rate'], 'a job completed in-window → positive rate');
+        // ADR-054 §17/§27 cycle metrics derived from the per-cycle heartbeat rows (one 'event'
+        // heartbeat was inserted at age 1s → one cycle in the 3600s window).
+        self::assertSame(1, $by['cycles_completed'], 'one recent cycle heartbeat → one cycle');
+        self::assertArrayHasKey('avg_cycle_duration', $by, 'a recent cycle → an average duration');
+        self::assertArrayHasKey('per_stage_throughput.event', $by, 'per-stage throughput for the event stage');
+        self::assertArrayNotHasKey('worker_uptime', $by, 'daemon metrics are gone (ADR-054 §6)');
+        self::assertArrayNotHasKey('restart_count', $by);
     }
 
     // =========================================================================
@@ -154,7 +161,9 @@ final class OperationsProvidersIntegrationTest extends TestCase
         }
 
         self::assertSame(\HSP\Core\Contracts\Operations\Severity::OK, $by['database']->severity);
-        self::assertSame(\HSP\Core\Contracts\Operations\Severity::OK, $by['workers']->severity);
+        // Cycle-freshness (ADR-054 §5): a recent cycle heartbeat with an empty queue → processing OK.
+        self::assertSame(\HSP\Core\Contracts\Operations\Severity::OK, $by['processing']->severity);
+        self::assertStringNotContainsStringIgnoringCase('offline', $by['processing']->summary);
         // One DLQ row → warning.
         self::assertSame(\HSP\Core\Contracts\Operations\Severity::WARNING, $by['dead_letter_queue']->severity);
     }

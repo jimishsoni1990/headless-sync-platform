@@ -18,6 +18,7 @@ use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
 use HSP\Core\Onboarding\PreflightRunner;
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
+use HSP\Core\Workers\ProcessingCronRegistrar;
 use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
 use HSP\Tests\Unit\Onboarding\Backfill\ScriptedConnection;
 use HSP\Tests\Unit\Reconciliation\FakeReconConnection;
@@ -40,6 +41,8 @@ final class OnboardingRestControllerTest extends TestCase
         $GLOBALS['_hsp_stub_options']      = [];
         $GLOBALS['_hsp_stub_valid_nonce']  = true;
         $GLOBALS['_hsp_stub_current_user_can'] = true;
+        // DECISION X (4) Option-C: a ready backfill gate also needs the processing cron scheduled.
+        $GLOBALS['_hsp_stub_scheduled']    = [ProcessingCronRegistrar::HOOK => 'hsp_processing'];
     }
 
     protected function tearDown(): void
@@ -48,6 +51,7 @@ final class OnboardingRestControllerTest extends TestCase
             $GLOBALS['_hsp_stub_options'],
             $GLOBALS['_hsp_stub_valid_nonce'],
             $GLOBALS['_hsp_stub_current_user_can'],
+            $GLOBALS['_hsp_stub_scheduled'],
         );
     }
 
