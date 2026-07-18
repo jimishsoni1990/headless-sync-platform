@@ -7,6 +7,9 @@ namespace HSP\Bootstrap;
 use HSP\Core\Configuration\ConfigLoader;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ContainerBuilder;
+use HSP\Core\Onboarding\MigrationApplier;
+use HSP\Core\Onboarding\OnboardingConnectionProbe;
+use HSP\Core\Onboarding\Preflight\PgConstantsCheck;
 
 /**
  * Plugin application singleton.
@@ -76,7 +79,20 @@ final class Application
             $container->get(\HSP\Core\Reconciliation\ReconciliationCronRegistrar::class)->register();
         }
 
-        // Module activation lifecycle is owned by P0-S3 (module registry).
+        // OPEN-9 lifecycle + ADR-054 Principle 8 (zero-configuration operation): attempt the pending
+        // core + content migrations on activation so a correctly-configured fresh install is ready to
+        // sync with no manual CLI/engine step. Attempted IFF the HSP_PG_* constants are defined AND
+        // PostgreSQL is reachable — otherwise a SILENT no-op. Activation must NEVER fatal on an
+        // unconfigured site (the applier catches all failures; the reachability precondition avoids
+        // even attempting a connection when unconfigured). The onboarding migrate endpoint remains the
+        // in-product path for sites configured after activation.
+        $this->attemptPendingMigrations();
+
+        // Module activation lifecycle (OPEN-9): fire module activate() hooks (idempotent; content
+        // migrations are additionally applied above through the shared engine).
+        if ($container !== null) {
+            $container->get('module.registrar')->activate();
+        }
     }
 
     public function deactivate(): void
@@ -93,8 +109,57 @@ final class Application
         // Module deactivation lifecycle is owned by P0-S3.
     }
 
+    /**
+     * Plugin version-bump hook (OPEN-9 lifecycle). Attempts any pending migrations through the
+     * shared engine (idempotent — already-applied migrations are skipped) and fires module upgrade()
+     * hooks. Same guard as activation: attempted IFF HSP_PG_* defined AND PG reachable; never fatal.
+     */
+    public function upgrade(): void
+    {
+        if (! $this->booted) {
+            $this->boot();
+        }
+
+        $this->attemptPendingMigrations();
+
+        $container = $this->container;
+        if ($container !== null) {
+            $container->get('module.registrar')->upgrade();
+        }
+    }
+
     public function getContainer(): ?Container
     {
         return $this->container;
+    }
+
+    /**
+     * Apply pending core + content migrations through the EXISTING engine, but ONLY when the site is
+     * actually configured for PostgreSQL — HSP_PG_* constants defined AND a live connection succeeds.
+     * Otherwise a SILENT no-op, so activation/upgrade never fatals on an unconfigured or unreachable
+     * site (ADR-054 Principle 8; DECISION W (f) v1.23). The MigrationApplier itself also catches every
+     * failure; this reachability precondition avoids even attempting a connection when unconfigured.
+     */
+    private function attemptPendingMigrations(): void
+    {
+        $container = $this->container;
+        if ($container === null) {
+            return;
+        }
+
+        // Cheap, connection-free gate first: are the required HSP_PG_* constants defined? (Reuses the
+        // ONB-S1b PgConstantsCheck so "configured" means the same thing as in onboarding preflight.)
+        if (! (new PgConstantsCheck())->run()->passed) {
+            return;
+        }
+
+        // Reachability precondition — the probe swallows connect/query failure and returns false, so
+        // an unreachable PG is a silent no-op, not a fatal.
+        if (! $container->get(OnboardingConnectionProbe::class)->isReachable()) {
+            return;
+        }
+
+        // Delegate to the shared engine (never throws — catches internally).
+        $container->get(MigrationApplier::class)->apply();
     }
 }

@@ -45,6 +45,24 @@ final class OnboardingRestRegistrar
             'permission_callback' => '__return_true',
         ]);
 
+        // ONB-S2 self-remediation: apply the outstanding core + content migrations through the
+        // EXISTING engine (DECISION W (e)/(f) v1.23; ADR-054 Principle 8). Gated on the four
+        // environment preflight checks at the controller; 409 when they fail. Nonce + capability
+        // enforced in the controller.
+        register_rest_route(self::NAMESPACE, '/onboarding/migrate', [
+            'methods'             => 'POST',
+            'callback'            => $this->controller->handleMigrate(...),
+            'permission_callback' => '__return_true',
+        ]);
+
+        // ONB-S2 self-remediation: nudge WP-Cron so a processing cycle runs and a heartbeat appears
+        // (DECISION W (c); DECISION X (4)). Non-blocking spawn — no in-request drain.
+        register_rest_route(self::NAMESPACE, '/onboarding/spawn-worker', [
+            'methods'             => 'POST',
+            'callback'            => $this->controller->handleSpawnWorker(...),
+            'permission_callback' => '__return_true',
+        ]);
+
         // ONB-S2: trigger the first-run backfill (thin delegation to reconcileFull re-emission —
         // DECISION W (b)/(c)). Gated on a live worker heartbeat + applied migrations at the
         // controller; 409 with per-gate remediation when blocked.

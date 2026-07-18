@@ -7,13 +7,18 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Bootstrap\Version;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
+use HSP\Core\Contracts\MigrationInterface;
+use HSP\Core\Contracts\ModuleInterface;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Core\Migrations\MigrationRunner;
+use HSP\Core\Module\ModuleRegistry;
 use HSP\Core\Onboarding\Backfill\BackfillGate;
 use HSP\Core\Onboarding\Backfill\BackfillProgress;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
 use HSP\Core\Onboarding\Backfill\BackfillService;
+use HSP\Core\Onboarding\MigrationApplier;
 use HSP\Core\Onboarding\OnboardingAdminRegistrar;
 use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\OnboardingPageController;
@@ -26,7 +31,9 @@ use HSP\Core\Onboarding\Preflight\PgReachableCheck;
 use HSP\Core\Onboarding\Preflight\PgsqlExtensionCheck;
 use HSP\Core\Onboarding\Preflight\PhpVersionCheck;
 use HSP\Core\Onboarding\PreflightRunner;
+use HSP\Core\Onboarding\WorkerCronSpawner;
 use HSP\Core\Reconciliation\ReconciliationService;
+use HSP\Core\Workers\ProcessingCronRegistrar;
 
 /**
  * Registers the Onboarding / First-Run surface (ONB-S1a + ONB-S1b; DECISION W (a)/(d)/(e)/(f);
@@ -182,6 +189,45 @@ final class OnboardingServiceProvider extends ServiceProvider
             ),
         );
 
+        // --- ONB-S2 self-remediation: migration applier + worker cron spawner (DECISION W (e)/(f)
+        //     v1.23; DECISION W (c); DECISION X (4); ADR-054 Principle 8) ----------------------
+        // MigrationApplier: THIN DELEGATOR to the EXISTING migration engine over the DECISION W (e)
+        // delegate list (core migrations from `migrations.core` + module migrations collected via the
+        // module registry's declarative getMigrations() — Rule 5, core imports no module migration
+        // class). All three inputs are resolved LAZILY: the engine + pgsql migration connection open
+        // libpq eagerly and throw when PG is unreachable, so building them at container-resolution
+        // time would fatal an unconfigured site. Adds no new engine / DDL / schema (DECISION E).
+        $container->singleton(
+            MigrationApplier::class,
+            fn (Container $c) => new MigrationApplier(
+                static fn (): MigrationRunner => $c->get('migration.runner'),
+                /** @return list<MigrationInterface> */
+                static fn (): array => array_values($c->get('migrations.core')),
+                /** @return list<MigrationInterface> */
+                static function () use ($c): array {
+                    $migrations = [];
+                    /** @var ModuleInterface $module */
+                    foreach ($c->get('module.registry')->all() as $module) {
+                        foreach ($module->getMigrations() as $migration) {
+                            $migrations[] = $migration;
+                        }
+                    }
+
+                    return $migrations;
+                },
+            ),
+        );
+
+        // WorkerCronSpawner: THIN DELEGATOR that ensures the processing cron is scheduled and issues a
+        // NON-BLOCKING WP-Cron spawn (no in-request drain — DECISION W (c)). Reuses the existing
+        // ProcessingCronRegistrar (bound by WorkerServiceProvider); resolved lazily.
+        $container->singleton(
+            WorkerCronSpawner::class,
+            fn (Container $c) => new WorkerCronSpawner(
+                $c->get(ProcessingCronRegistrar::class),
+            ),
+        );
+
         // --- ONB-S1b/S2 WPCS-guarded REST endpoints the React app calls (DECISION W (a)) ----
         $container->singleton(
             OnboardingRestController::class,
@@ -190,6 +236,9 @@ final class OnboardingServiceProvider extends ServiceProvider
                 $c->get(OnboardingStateInterface::class),
                 $c->get(BackfillService::class),
                 $c->get(BackfillProgress::class),
+                $c->get(MigrationApplier::class),
+                $c->get(MigrationsAppliedCheck::class),
+                $c->get(WorkerCronSpawner::class),
             ),
         );
 

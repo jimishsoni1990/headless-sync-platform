@@ -13,7 +13,9 @@ use HSP\Core\Onboarding\Backfill\BackfillGate;
 use HSP\Core\Onboarding\Backfill\BackfillProgress;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
 use HSP\Core\Onboarding\Backfill\BackfillService;
+use HSP\Core\Onboarding\MigrationApplier;
 use HSP\Core\Onboarding\OnboardingAdminRegistrar;
+use HSP\Core\Onboarding\WorkerCronSpawner;
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
@@ -82,9 +84,41 @@ final class OnboardingWiringTest extends TestCase
             ),
         );
 
+        $this->bindSelfRemediationDeps($container);
+
         (new OnboardingServiceProvider())->register($container);
 
         return $container;
+    }
+
+    /**
+     * Bind the upstream deps the ONB-S2 self-remediation graph (MigrationApplier / WorkerCronSpawner)
+     * resolves — normally provided by MigrationServiceProvider / ModuleServiceProvider /
+     * WorkerServiceProvider. WorkerCronSpawner needs ProcessingCronRegistrar at construction; the
+     * migrate delegate closures resolve migration.runner / migrations.core / module.registry lazily.
+     */
+    private function bindSelfRemediationDeps(Container $container): void
+    {
+        $container->singleton(
+            \HSP\Core\Workers\ProcessingCronRegistrar::class,
+            fn () => new \HSP\Core\Workers\ProcessingCronRegistrar(
+                static fn (): \HSP\Core\Contracts\WorkerInterface => throw new \LogicException(
+                    'engine never materialised in wiring tests',
+                ),
+                [],
+            ),
+        );
+
+        // Lazy delegate-list inputs for MigrationApplier (resolved only if apply() runs).
+        $container->singleton('migration.runner', fn () => null);
+        $container->singleton('migrations.core', fn (): array => []);
+        $container->singleton('module.registry', fn () => new class {
+            /** @return array<string,object> */
+            public function all(): array
+            {
+                return [];
+            }
+        });
     }
 
     public function test_bindings_resolve_via_constructor_injection_as_singletons(): void
@@ -193,6 +227,7 @@ final class OnboardingWiringTest extends TestCase
                 new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
             ),
         );
+        $this->bindSelfRemediationDeps($container);
         (new OnboardingServiceProvider())->register($container);
 
         $controller = $container->get(OnboardingRestController::class);

@@ -21,11 +21,19 @@ use HSP\Modules\Content\Subscribers\ContentSubscriberRegistrar;
  */
 final class ContentModule implements ModuleInterface
 {
+    /**
+     * @param \Closure(): list<MigrationInterface> $migrationsFactory builds the content migrations
+     *        (over the pgsql migration connection) LAZILY — resolving them eagerly would open the
+     *        libpq DDL link at module-construction time, which fatals on an unconfigured site. The
+     *        closure keeps ContentModule free of a Container reference (ADR-012 / FLAG-P1AS6A-5),
+     *        matching the ContentRestRegistrarFactory / ContentSubscriberRegistrar pattern.
+     */
     public function __construct(
         private readonly HookWiring                    $hookWiring,
         private readonly EventProviderInterface        $eventProvider,
         private readonly ContentRestRegistrarFactory   $restRegistrarFactory,
         private readonly ContentSubscriberRegistrar    $subscriberRegistrar,
+        private readonly \Closure                      $migrationsFactory,
     ) {}
 
     // -------------------------------------------------------------------------
@@ -52,8 +60,11 @@ final class ContentModule implements ModuleInterface
      */
     public function getMigrations(): array
     {
-        // Content migrations delivered in P1A-S4.
-        return [];
+        // Content projection migrations (0001_create_content_schema … 0005_create_content_entity_taxonomies),
+        // built lazily over the pgsql migration connection. The onboarding MigrationApplier collects
+        // these via the module registry's declarative discovery (OPEN-9) so core never imports a
+        // module migration class (Rule 5).
+        return ($this->migrationsFactory)();
     }
 
     /**
@@ -87,16 +98,22 @@ final class ContentModule implements ModuleInterface
 
     public function activate(): void
     {
-        // Migrations run here in P1A-S4; no-op for now.
+        // Content migrations are applied through the SHARED migration engine (Application::activate()
+        // → MigrationApplier), which collects them via getMigrations() (Rule 5 / OPEN-9). Running
+        // them here too would open a second migration path, so this stays a no-op — the module
+        // declares its migrations; the engine applies them.
     }
 
     public function deactivate(): void
     {
-        // No runtime registrations to remove at this scope.
+        // No runtime registrations to remove at this scope. Migrations are never rolled back on
+        // deactivate (OPEN-9 — do NOT drop data).
     }
 
     public function upgrade(): void
     {
-        // Pending migrations run here in P1A-S4; no-op for now.
+        // Pending content migrations are applied through the SHARED engine on plugin version bump
+        // (Application::upgrade() → MigrationApplier), not here — single migration path (see
+        // activate()).
     }
 }

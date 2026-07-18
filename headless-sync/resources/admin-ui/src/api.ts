@@ -75,6 +75,31 @@ export interface BackfillProgressResponse {
   redirect: string | null;
 }
 
+/** One migrations-gate result, mirroring MigrationsAppliedCheck::run()->toArray(). */
+export interface MigrationGate {
+  key: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  remediation: string;
+}
+
+/** Response of POST onboarding/migrate. */
+export interface MigrateResponse {
+  state: string;
+  ran: boolean;
+  total?: number;
+  complete?: boolean;
+  gate: MigrationGate;
+}
+
+/** Response of POST onboarding/spawn-worker. */
+export interface SpawnWorkerResponse {
+  state: string;
+  spawn: { spawned: boolean; disabled: boolean; warning: string };
+  gate: GateSummary;
+}
+
 /** Raised on a 409 blocked-gate response so the UI can render per-gate remediation. */
 export class BackfillBlockedError extends Error {
   constructor(
@@ -111,6 +136,23 @@ export class OnboardingApi {
   /** Poll derived progress + gate status; the server flips to complete on convergence. */
   async backfillProgress(): Promise<BackfillProgressResponse> {
     return this.request<BackfillProgressResponse>('onboarding/backfill/progress', 'GET');
+  }
+
+  /**
+   * Apply the outstanding core + content migrations through the platform's own engine (ONB-S2
+   * self-remediation, DECISION W (e)/(f) v1.23). Zero-config: no CLI needed. The server blocks with
+   * 409 until the environment preflight passes and returns the refreshed migrations gate on success.
+   */
+  async migrate(): Promise<MigrateResponse> {
+    return this.request<MigrateResponse>('onboarding/migrate', 'POST');
+  }
+
+  /**
+   * Nudge WP-Cron so a processing cycle runs and a heartbeat appears (ONB-S2 self-remediation,
+   * DECISION W (c)). Non-blocking — the cycle runs inside WP-Cron, not this request.
+   */
+  async spawnWorker(): Promise<SpawnWorkerResponse> {
+    return this.request<SpawnWorkerResponse>('onboarding/spawn-worker', 'POST');
   }
 
   private async request<T>(path: string, method: 'GET' | 'POST'): Promise<T> {

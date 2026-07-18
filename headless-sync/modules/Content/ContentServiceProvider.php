@@ -29,6 +29,11 @@ use HSP\Modules\Content\Events\ContentEventTypes;
 use HSP\Modules\Content\Extractors\CategoryExtractor;
 use HSP\Modules\Content\Extractors\PageExtractor;
 use HSP\Modules\Content\Extractors\PostExtractor;
+use HSP\Modules\Content\Migrations\CreateContentSchemaMigration;
+use HSP\Modules\Content\Migrations\CreateContentPagesMigration;
+use HSP\Modules\Content\Migrations\CreateContentPostsMigration;
+use HSP\Modules\Content\Migrations\CreateContentTaxonomiesMigration;
+use HSP\Modules\Content\Migrations\CreateContentEntityTaxonomiesMigration;
 use HSP\Modules\Content\Handlers\CategoryTombstoneHandler;
 use HSP\Modules\Content\Handlers\CategoryUpsertHandler;
 use HSP\Modules\Content\Handlers\PageTombstoneHandler;
@@ -141,6 +146,21 @@ final class ContentServiceProvider extends ServiceProvider
                     fn () => $c->get(EventRegistry::class),
                     fn () => $c->get(ContentSubscriber::class),
                 ),
+                // Content migrations built lazily over the pgsql migration connection (the EXISTING
+                // DDL abstraction — DECISION E; no new pg_* wrapper). Resolved on demand so the libpq
+                // DDL link is not opened at module construction (fatals on an unconfigured site). The
+                // onboarding MigrationApplier collects these through the module registry (Rule 5).
+                function () use ($c): array {
+                    $pgsql = $c->get('migration.connection.pgsql');
+
+                    return [
+                        new CreateContentSchemaMigration($pgsql),
+                        new CreateContentPagesMigration($pgsql),
+                        new CreateContentPostsMigration($pgsql),
+                        new CreateContentTaxonomiesMigration($pgsql),
+                        new CreateContentEntityTaxonomiesMigration($pgsql),
+                    ];
+                },
             )
         );
 

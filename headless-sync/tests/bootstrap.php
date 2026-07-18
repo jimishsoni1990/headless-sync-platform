@@ -100,6 +100,18 @@ if (! function_exists('wp_clear_scheduled_hook')) {
     }
 }
 
+// spawn_cron() stub — records a non-blocking WP-Cron spawn for WorkerCronSpawner tests.
+//   $GLOBALS['_hsp_stub_spawn_cron_calls'] = 0;  // opt in to counting
+if (! function_exists('spawn_cron')) {
+    function spawn_cron(int $gmt_time = 0)
+    {
+        if (isset($GLOBALS['_hsp_stub_spawn_cron_calls'])) {
+            $GLOBALS['_hsp_stub_spawn_cron_calls']++;
+        }
+        return true;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WordPress REST API stubs — for ContentRestRegistrar unit tests.
 // ---------------------------------------------------------------------------

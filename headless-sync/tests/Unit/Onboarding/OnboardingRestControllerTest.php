@@ -11,11 +11,13 @@ use HSP\Core\Onboarding\Backfill\BackfillGate;
 use HSP\Core\Onboarding\Backfill\BackfillProgress;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
 use HSP\Core\Onboarding\Backfill\BackfillService;
+use HSP\Core\Onboarding\MigrationApplier;
 use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\OnboardingRestController;
 use HSP\Core\Onboarding\OnboardingState;
 use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
 use HSP\Core\Onboarding\PreflightRunner;
+use HSP\Core\Onboarding\WorkerCronSpawner;
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\ProcessingCronRegistrar;
@@ -158,12 +160,210 @@ final class OnboardingRestControllerTest extends TestCase
         self::assertArrayNotHasKey(OnboardingStateInterface::OPTION_NAME, $GLOBALS['_hsp_stub_options']);
     }
 
+    // -------------------------------------------------------------------------
+    // ONB-S2 self-remediation: POST onboarding/migrate (DECISION W (e)/(f) v1.23)
+    // -------------------------------------------------------------------------
+
+    public function test_migrate_rejects_a_missing_or_invalid_nonce_with_401(): void
+    {
+        $GLOBALS['_hsp_stub_valid_nonce'] = false;
+
+        $response = $this->migrateController(envOk: true, applied: self::ALL, ran: true)
+            ->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_Error::class, $response);
+        self::assertSame(401, $response->data['status']);
+    }
+
+    public function test_migrate_rejects_an_insufficient_capability_with_403(): void
+    {
+        $GLOBALS['_hsp_stub_current_user_can'] = false;
+
+        $response = $this->migrateController(envOk: true, applied: self::ALL, ran: true)
+            ->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_Error::class, $response);
+        self::assertSame(403, $response->data['status']);
+    }
+
+    public function test_migrate_is_blocked_with_409_until_the_environment_preflight_passes(): void
+    {
+        // Env preflight fails (e.g. PG unreachable) → 409 carrying the failing checks; engine NOT run.
+        $applier = new SpyMigrationApplier(true);
+        $controller = $this->migrateControllerWith(envOk: false, applied: [], applier: $applier);
+
+        $response = $controller->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_Error::class, $response);
+        self::assertSame(409, $response->data['status']);
+        self::assertArrayHasKey('preflight', $response->data);
+        self::assertFalse($response->data['preflight']['ok']);
+        // The engine must not have been invoked when the environment is not ready.
+        self::assertSame(0, $applier->applyCalls);
+    }
+
+    public function test_migrate_runs_the_engine_and_returns_the_passing_gate_on_success(): void
+    {
+        // Env ok; after apply, the migrations check reads all required migrations as applied.
+        $applier = new SpyMigrationApplier(true);
+        $controller = $this->migrateControllerWith(envOk: true, applied: self::ALL, applier: $applier);
+
+        $response = $controller->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_REST_Response::class, $response);
+        $data = $response->get_data();
+        self::assertTrue($data['ran']);
+        self::assertTrue($data['gate']['passed']);
+        self::assertSame(1, $applier->applyCalls);
+    }
+
+    public function test_migrate_is_idempotent_on_re_run_engine_reports_ran_gate_still_passes(): void
+    {
+        // A re-run over an already-migrated DB: the engine still runs (it internally skips applied
+        // migrations) and the gate stays passed. Two calls → two engine invocations, both safe.
+        $applier = new SpyMigrationApplier(true);
+        $controller = $this->migrateControllerWith(envOk: true, applied: self::ALL, applier: $applier);
+
+        $first  = $controller->handleMigrate($this->request());
+        $second = $controller->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_REST_Response::class, $first);
+        self::assertInstanceOf(\WP_REST_Response::class, $second);
+        self::assertTrue($second->get_data()['ran']);
+        self::assertTrue($second->get_data()['gate']['passed']);
+        self::assertSame(2, $applier->applyCalls);
+    }
+
+    public function test_migrate_reports_409_when_the_engine_fails(): void
+    {
+        // Env ok but the engine could not complete (e.g. mid-run connection drop) → 409 with the
+        // error, never a 500. The migrations gate is still reported (unpassed).
+        $applier = new SpyMigrationApplier(false, 'connection dropped');
+        $controller = $this->migrateControllerWith(envOk: true, applied: [], applier: $applier);
+
+        $response = $controller->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_Error::class, $response);
+        self::assertSame(409, $response->data['status']);
+        self::assertSame('connection dropped', $response->data['error']);
+        self::assertFalse($response->data['gate']['passed']);
+    }
+
+    public function test_migrate_short_circuits_when_onboarding_already_complete(): void
+    {
+        $applier = new SpyMigrationApplier(true);
+        $controller = $this->migrateControllerWith(envOk: true, applied: self::ALL, applier: $applier);
+        // Pre-mark complete.
+        $GLOBALS['_hsp_stub_options'][OnboardingStateInterface::OPTION_NAME] = OnboardingStateInterface::COMPLETE;
+
+        $response = $controller->handleMigrate($this->request());
+
+        self::assertInstanceOf(\WP_REST_Response::class, $response);
+        self::assertTrue($response->get_data()['complete']);
+        self::assertFalse($response->get_data()['ran']);
+        self::assertSame(0, $applier->applyCalls);
+    }
+
+    // -------------------------------------------------------------------------
+    // ONB-S2 self-remediation: POST onboarding/spawn-worker (DECISION W (c); X (4))
+    // -------------------------------------------------------------------------
+
+    public function test_spawn_worker_rejects_a_missing_or_invalid_nonce_with_401(): void
+    {
+        $GLOBALS['_hsp_stub_valid_nonce'] = false;
+
+        $response = $this->spawnController()->handleSpawnWorker($this->request());
+
+        self::assertInstanceOf(\WP_Error::class, $response);
+        self::assertSame(401, $response->data['status']);
+    }
+
+    public function test_spawn_worker_issues_a_spawn_and_returns_the_gate(): void
+    {
+        $GLOBALS['_hsp_stub_spawn_cron_calls'] = 0;
+
+        $response = $this->spawnController()->handleSpawnWorker($this->request());
+
+        self::assertInstanceOf(\WP_REST_Response::class, $response);
+        $data = $response->get_data();
+        self::assertTrue($data['spawn']['spawned']);
+        self::assertFalse($data['spawn']['disabled']);
+        self::assertArrayHasKey('gate', $data);
+        // A non-blocking WP-Cron spawn was issued (no in-request drain).
+        self::assertSame(1, $GLOBALS['_hsp_stub_spawn_cron_calls']);
+    }
+
     private const ALL = [
         '0002_create_system_events', '0003_create_system_queue_jobs',
+        '0011_add_unique_event_id_to_queue_jobs',
         '0005_create_system_aggregate_versions', '0006_create_system_processed_events',
         '0008_create_system_schema_versions',
         '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
     ];
+
+    /**
+     * Controller for migrate tests: a PreflightRunner whose single check passes/fails per $envOk, a
+     * MigrationsAppliedCheck reading $applied migrations, and a real (no-op) applier.
+     *
+     * @param list<string> $applied
+     */
+    private function migrateController(bool $envOk, array $applied, bool $ran): OnboardingRestController
+    {
+        return $this->migrateControllerWith($envOk, $applied, new SpyMigrationApplier($ran));
+    }
+
+    /** @param list<string> $applied */
+    private function migrateControllerWith(bool $envOk, array $applied, SpyMigrationApplier $applier): OnboardingRestController
+    {
+        $migRows = array_map(static fn (string $n) => ['migration_name' => $n], $applied);
+        $probe   = new OnboardingConnectionProbe(
+            fn (): ScriptedConnection => (new ScriptedConnection())->on('system.schema_versions', $migRows),
+        );
+
+        return new OnboardingRestController(
+            new PreflightRunner($this->check('env', $envOk)),
+            new OnboardingState(),
+            $this->backfillService(),
+            $this->backfillProgress(),
+            $applier,
+            new MigrationsAppliedCheck($probe),
+            $this->spawner(),
+        );
+    }
+
+    /** Controller for spawn tests: gate reads a fresh heartbeat so the gate summary is populated. */
+    private function spawnController(): OnboardingRestController
+    {
+        $conn = (new ScriptedConnection())
+            ->on('system.worker_heartbeats', [['age' => 5.0]])
+            ->on('FROM content.posts', [['c' => 0]])
+            ->on('FROM content.pages', [['c' => 0]])
+            ->on('FROM content.taxonomies', [['c' => 0]])
+            ->on('behind', [['c' => 0]]);
+        $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+        $probe  = new OnboardingConnectionProbe(
+            fn (): ScriptedConnection => (new ScriptedConnection())->on(
+                'system.schema_versions',
+                array_map(static fn (string $n) => ['migration_name' => $n], self::ALL),
+            ),
+        );
+        $gate = new BackfillGate($reader, new MigrationsAppliedCheck($probe), 60);
+        $reconciliation = new ReconciliationService(
+            new FakeReconConnection(),
+            new FakeReconciliationSource(),
+            new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+        );
+
+        return new OnboardingRestController(
+            new PreflightRunner($this->check('env', true)),
+            new OnboardingState(),
+            new BackfillService($gate, $reconciliation),
+            $this->backfillProgress(),
+            $this->noopApplier(),
+            new MigrationsAppliedCheck($probe),
+            $this->spawner(),
+        );
+    }
 
     /**
      * Build a controller whose backfill gate + progress read a scripted connection (empty corpus).
@@ -202,6 +402,9 @@ final class OnboardingRestControllerTest extends TestCase
             new OnboardingState(),
             new BackfillService($gate, $reconciliation),
             $progress,
+            $this->noopApplier(),
+            new MigrationsAppliedCheck($probe),
+            $this->spawner(),
         );
     }
 
@@ -217,6 +420,32 @@ final class OnboardingRestControllerTest extends TestCase
             new OnboardingState(),
             $this->backfillService(),
             $this->backfillProgress(),
+            $this->noopApplier(),
+            new MigrationsAppliedCheck(
+                new OnboardingConnectionProbe(fn (): ScriptedConnection => new ScriptedConnection()),
+            ),
+            $this->spawner(),
+        );
+    }
+
+    /** A MigrationApplier whose delegate closures are never invoked by these tests. */
+    private function noopApplier(): MigrationApplier
+    {
+        return new MigrationApplier(
+            static fn () => null,
+            static fn (): array => [],
+            static fn (): array => [],
+        );
+    }
+
+    /** A WorkerCronSpawner over a ProcessingCronRegistrar whose engine is never materialised. */
+    private function spawner(): WorkerCronSpawner
+    {
+        return new WorkerCronSpawner(
+            new ProcessingCronRegistrar(
+                static fn () => throw new \LogicException('engine never materialised in these tests'),
+                [],
+            ),
         );
     }
 

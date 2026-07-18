@@ -40,6 +40,8 @@ export function App({ bootstrap }: { bootstrap: OnboardingBootstrap }): JSX.Elem
   const [progress, setProgress] = useState<BackfillProgressSnapshot | null>(null);
   const [running, setRunning] = useState(false);
   const [complete, setComplete] = useState(false);
+  const [remediating, setRemediating] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -115,6 +117,60 @@ export function App({ bootstrap }: { bootstrap: OnboardingBootstrap }): JSX.Elem
     }
   }, [api, pollProgress, stopPolling, redirectToOperations]);
 
+  // Read-only gate refresh (no side effects) so blocked prerequisites + their remediation actions
+  // render before the operator clicks "Begin setup".
+  const refreshGate = useCallback(async () => {
+    try {
+      const data = await api.backfillProgress();
+      setGate(data.gate);
+      setProgress(data.progress);
+      if (data.complete) {
+        setComplete(true);
+      }
+    } catch {
+      // Non-fatal: the gate simply stays unknown until the next poll/action.
+    }
+  }, [api]);
+
+  // ONB-S2 self-remediation (DECISION W (e)/(f) v1.23): apply the outstanding migrations in-product.
+  const applyMigrations = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setRemediating(true);
+    try {
+      const data = await api.migrate();
+      if (data.ran) {
+        setNotice('Migrations applied. Re-checking prerequisites…');
+      }
+      await refreshGate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to apply migrations.');
+    } finally {
+      setRemediating(false);
+    }
+  }, [api, refreshGate]);
+
+  // ONB-S2 self-remediation (DECISION W (c)): trigger a WP-Cron processing cycle so a heartbeat
+  // appears. Non-blocking — the cycle runs inside WP-Cron, not this request.
+  const startProcessing = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setRemediating(true);
+    try {
+      const data = await api.spawnWorker();
+      setGate(data.gate);
+      setNotice(
+        data.spawn.disabled
+          ? data.spawn.warning
+          : 'Started a processing cycle. It runs in the background — re-checking shortly…',
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start processing.');
+    } finally {
+      setRemediating(false);
+    }
+  }, [api]);
+
   useEffect(() => {
     void loadPreflight();
   }, [loadPreflight]);
@@ -122,6 +178,13 @@ export function App({ bootstrap }: { bootstrap: OnboardingBootstrap }): JSX.Elem
   useEffect(() => stopPolling, [stopPolling]);
 
   const allPassed = preflight?.ok === true;
+
+  // Once the environment preflight passes, surface the backfill gate (+ its remediation actions).
+  useEffect(() => {
+    if (allPassed && !complete) {
+      void refreshGate();
+    }
+  }, [allPassed, complete, refreshGate]);
 
   return (
     <div className="mx-auto max-w-3xl p-6">
@@ -140,6 +203,12 @@ export function App({ bootstrap }: { bootstrap: OnboardingBootstrap }): JSX.Elem
       {error !== null && (
         <p className="mb-4 rounded-md border border-destructive p-3 text-sm text-destructive">
           {error}
+        </p>
+      )}
+
+      {notice !== null && (
+        <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">
+          {notice}
         </p>
       )}
 
@@ -201,10 +270,20 @@ export function App({ bootstrap }: { bootstrap: OnboardingBootstrap }): JSX.Elem
                   it through the normal pipeline. A running worker is required.
                 </p>
 
-                <BackfillPanel gates={gate?.gates ?? []} progress={progress} running={running} />
+                <BackfillPanel
+                  gates={gate?.gates ?? []}
+                  progress={progress}
+                  running={running}
+                  remediating={remediating}
+                  onApplyMigrations={() => void applyMigrations()}
+                  onStartProcessing={() => void startProcessing()}
+                />
 
                 <div>
-                  <Button onClick={() => void startBackfill()} disabled={running}>
+                  <Button
+                    onClick={() => void startBackfill()}
+                    disabled={running || remediating || gate?.ready === false}
+                  >
                     <Rocket className={running ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} />
                     {running ? 'Backfill running…' : 'Begin setup'}
                   </Button>
