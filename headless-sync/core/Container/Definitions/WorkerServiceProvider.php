@@ -213,8 +213,12 @@ final class WorkerServiceProvider extends ServiceProvider
             /** @var array<string,mixed> $processing */
             $processing = $this->config['worker']['processing'] ?? [];
 
+            // HOTFIX: pass a LAZY engine resolver, not the built engine. Resolving the
+            // registrar (done on every request at plugins_loaded) must NOT construct the
+            // engine — that would cascade into opening the outbox MySQL connection and
+            // fatal wp-admin. The closure defers WorkerInterface resolution to runCycle().
             return new ProcessingCronRegistrar(
-                $c->get(WorkerInterface::class),
+                static fn (): WorkerInterface => $c->get(WorkerInterface::class),
                 $processing,
             );
         });

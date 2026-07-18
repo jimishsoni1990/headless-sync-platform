@@ -176,7 +176,7 @@ $deliveryConn = connectPgsql(forceNew: true);
 $deliveryDb   = new PostgresDatabaseConnection($deliveryConn);
 
 // Relay outbox connection
-$relayMysqlConn = new MysqliOutboxConnection($mysqli);
+$relayMysqlConn = new MysqliOutboxConnection(static fn (): \mysqli => $mysqli);
 $relayPgsqlConn = new PgsqlOutboxConnection($pgConn);
 $relayWorker    = new RelayWorkerStrategy($relayMysqlConn, $relayPgsqlConn, 'wp_', 100);
 

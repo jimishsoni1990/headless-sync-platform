@@ -386,7 +386,7 @@ final class DispatcherIntegrationTest extends TestCase
         $stmt->execute();
         $stmt->close();
 
-        $mysqlConn = new MysqliOutboxConnection($mysqli);
+        $mysqlConn = new MysqliOutboxConnection(static fn (): \mysqli => $mysqli);
         $pgsqlConn = new PgsqlOutboxConnection(
             new PostgresDatabaseConnection(
                 \pg_connect($this->pgsqlDsn(), PGSQL_CONNECT_FORCE_NEW)

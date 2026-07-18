@@ -141,7 +141,7 @@ final class RelayEndToEndTest extends TestCase
 
         // Wrap the MySQL connection with a saboteur that throws on COMMIT,
         // simulating a crash after the PG insert has already committed.
-        $mysqlConn = new MysqliOutboxConnection($this->mysqli);
+        $mysqlConn = new MysqliOutboxConnection(fn () => $this->mysqli);
         $saboteur  = new CommitSaboteurMysqlConnection($mysqlConn);
 
         $relay = new RelayWorkerStrategy($saboteur, $this->makePgsqlConn(), $this->prefix, 10);
@@ -262,7 +262,7 @@ final class RelayEndToEndTest extends TestCase
     private function makeRelay(): RelayWorkerStrategy
     {
         return new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             $this->makePgsqlConn(),
             $this->prefix,
             100,

@@ -247,13 +247,18 @@ final class CredentialResolverTest extends TestCase
         }
     }
 
-    public function test_mysql_port_defaults_to_3306(): void
+    public function test_mysql_port_defaults_to_zero_when_unconfigured(): void
     {
+        // HOTFIX: an unconfigured MySQL port resolves to 0 (defer to mysqli.default_port),
+        // NEVER a hardcoded 3306. See the dedicated precedence tests below.
         $envVal = getenv('HSP_MYSQL_PORT');
         if ($envVal !== false && $envVal !== '') {
             self::assertIsInt($this->resolver->mysqlPort());
+        } elseif (defined('DB_HOST') && str_contains((string) DB_HOST, ':')) {
+            // DB_HOST embeds a port in this environment — port comes from there.
+            self::assertIsInt($this->resolver->mysqlPort());
         } else {
-            self::assertSame(3306, $this->resolver->mysqlPort());
+            self::assertSame(0, $this->resolver->mysqlPort());
         }
     }
 
@@ -330,5 +335,123 @@ final class CredentialResolverTest extends TestCase
     {
         $key = 'HSP_TEST_LAST_RESORT_' . uniqid();
         self::assertSame('last', $this->resolver->resolve($key, 'last'));
+    }
+
+    // -------------------------------------------------------------------------
+    // parseDbHost() — wpdb::parse_db_host() parity (HOTFIX)
+    // mysqli does not parse host:port / host:socket the way wpdb does, so the
+    // resolver must split DB_HOST into {host, port, socket} explicitly.
+    // -------------------------------------------------------------------------
+
+    public function test_parse_db_host_bare_host(): void
+    {
+        self::assertSame(
+            ['host' => 'localhost', 'port' => null, 'socket' => null],
+            $this->resolver->parseDbHost('localhost'),
+        );
+    }
+
+    public function test_parse_db_host_host_and_port(): void
+    {
+        self::assertSame(
+            ['host' => 'localhost', 'port' => 10004, 'socket' => null],
+            $this->resolver->parseDbHost('localhost:10004'),
+        );
+    }
+
+    public function test_parse_db_host_ip_and_port(): void
+    {
+        self::assertSame(
+            ['host' => '127.0.0.1', 'port' => 3306, 'socket' => null],
+            $this->resolver->parseDbHost('127.0.0.1:3306'),
+        );
+    }
+
+    public function test_parse_db_host_host_and_socket(): void
+    {
+        self::assertSame(
+            ['host' => 'localhost', 'port' => null, 'socket' => '/tmp/mysql.sock'],
+            $this->resolver->parseDbHost('localhost:/tmp/mysql.sock'),
+        );
+    }
+
+    public function test_parse_db_host_socket_only_empty_host(): void
+    {
+        self::assertSame(
+            ['host' => '', 'port' => null, 'socket' => '/tmp/mysql.sock'],
+            $this->resolver->parseDbHost(':/tmp/mysql.sock'),
+        );
+    }
+
+    public function test_parse_db_host_ipv6_bare(): void
+    {
+        self::assertSame(
+            ['host' => '::1', 'port' => null, 'socket' => null],
+            $this->resolver->parseDbHost('[::1]'),
+        );
+    }
+
+    public function test_parse_db_host_ipv6_with_port(): void
+    {
+        self::assertSame(
+            ['host' => '::1', 'port' => 3306, 'socket' => null],
+            $this->resolver->parseDbHost('[::1]:3306'),
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // mysqlPort() precedence — DB_HOST-embedded port > HSP_MYSQL_PORT > 0.
+    // Critically: an UNCONFIGURED port must yield exactly 0 (defer to
+    // mysqli.default_port), NEVER a hardcoded 3306 (the HOTFIX root cause).
+    // -------------------------------------------------------------------------
+
+    public function test_mysql_port_is_zero_when_unconfigured(): void
+    {
+        // No HSP_MYSQL_PORT override, and DB_HOST (if defined in this process) is bare
+        // 'localhost' with no embedded port → must be 0, never 3306.
+        if (getenv('HSP_MYSQL_PORT') !== false && getenv('HSP_MYSQL_PORT') !== '') {
+            $this->markTestSkipped('HSP_MYSQL_PORT is set in this environment.');
+        }
+        if (defined('DB_HOST') && str_contains((string) DB_HOST, ':')) {
+            $this->markTestSkipped('DB_HOST carries an embedded port in this environment.');
+        }
+
+        self::assertSame(0, $this->resolver->mysqlPort());
+        self::assertNotSame(3306, $this->resolver->mysqlPort(), 'must never hardcode 3306');
+    }
+
+    public function test_mysql_host_strips_embedded_port_from_override(): void
+    {
+        putenv('HSP_MYSQL_HOST=db.example.com:33060');
+        try {
+            self::assertSame('db.example.com', $this->resolver->mysqlHost());
+            self::assertSame(null, $this->resolver->mysqlSocket());
+        } finally {
+            putenv('HSP_MYSQL_HOST');
+        }
+    }
+
+    public function test_mysql_socket_from_override(): void
+    {
+        putenv('HSP_MYSQL_HOST=localhost:/var/run/mysqld/mysqld.sock');
+        try {
+            self::assertSame('localhost', $this->resolver->mysqlHost());
+            self::assertSame('/var/run/mysqld/mysqld.sock', $this->resolver->mysqlSocket());
+        } finally {
+            putenv('HSP_MYSQL_HOST');
+        }
+    }
+
+    public function test_mysql_socket_is_null_when_unconfigured(): void
+    {
+        // No HSP_MYSQL_HOST override and a bare DB_HOST → no socket (defer to ini default).
+        if (getenv('HSP_MYSQL_HOST') !== false && getenv('HSP_MYSQL_HOST') !== '') {
+            $this->markTestSkipped('HSP_MYSQL_HOST is set in this environment.');
+        }
+        if (defined('DB_HOST') && str_contains((string) DB_HOST, ':/')) {
+            $this->markTestSkipped('DB_HOST carries a socket in this environment.');
+        }
+
+        self::assertNull($this->resolver->mysqlSocket());
     }
 }

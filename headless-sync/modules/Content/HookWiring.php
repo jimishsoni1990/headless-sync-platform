@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Content;
 
 use HSP\Core\Contracts\EventProviderInterface;
+use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
 use HSP\Modules\Content\Events\ContentEventTypes;
 
 /**
@@ -46,9 +47,64 @@ final class HookWiring
     /** @var array<int,true> post_ids handled by transition_post_status this request */
     private array $handledByTransition = [];
 
+    /** True once a capture failed this request — drives the one-shot admin notice. */
+    private bool $captureFailed = false;
+
     public function __construct(
         private readonly EventProviderInterface $eventProvider,
     ) {}
+
+    /**
+     * Capture one Content event, translating any capture-path failure into a logged,
+     * operator-visible warning WITHOUT fataling the WordPress request.
+     *
+     * IMPORTANT: a failed capture is a LOST SYNC until reconciliation repairs it
+     * (Rule 1 / DECISION U) — it is NOT a silently-ignorable error. We deliberately do
+     * not re-throw (that would fatal the editor/admin request that triggered the save),
+     * but we MUST make the failure loud: an error_log entry carrying aggregate_type,
+     * aggregate_id and event_type, plus a wp-admin notice. Never swallow silently.
+     *
+     * @param array<string, mixed> $context
+     */
+    private function capture(string $eventType, string $aggregateId, array $context): void
+    {
+        try {
+            $this->eventProvider->provide($eventType, $aggregateId, $context);
+        } catch (OutboxWriteException $e) {
+            // A failed capture is a lost sync until reconciliation — never swallow silently.
+            $aggregateType = explode('.', $eventType)[1] ?? '';
+            error_log(sprintf(
+                '[HSP] outbox capture FAILED (lost sync until reconciliation) — '
+                . 'aggregate_type=%s aggregate_id=%s event_type=%s: %s',
+                $aggregateType,
+                $aggregateId,
+                $eventType,
+                $e->getMessage(),
+            ));
+
+            $this->flagCaptureFailure();
+        }
+    }
+
+    /** Register a one-shot wp-admin warning notice on the first capture failure. */
+    private function flagCaptureFailure(): void
+    {
+        if ($this->captureFailed) {
+            return;
+        }
+        $this->captureFailed = true;
+
+        if (! function_exists('add_action')) {
+            return; // Not in a WordPress runtime (e.g. unit tests).
+        }
+
+        add_action('admin_notices', static function (): void {
+            echo '<div class="notice notice-warning"><p><strong>Headless Sync Platform:</strong> '
+                . 'A content change could not be captured to the sync outbox and will remain '
+                . 'out of sync until reconciliation runs. Check the PHP error log and verify the '
+                . 'database connection.</p></div>';
+        });
+    }
 
     /**
      * Register all seven WordPress action hooks.
@@ -102,7 +158,7 @@ final class HookWiring
 
         $this->handledByTransition[$postId] = true;
 
-        $this->eventProvider->provide(
+        $this->capture(
             $eventType,
             (string) $postId,
             $this->postContext($post),
@@ -145,7 +201,7 @@ final class HookWiring
             ? $this->resolveUpdateEventType($post->post_type)
             : $this->resolveCreateEventType($post->post_type);
 
-        $this->eventProvider->provide(
+        $this->capture(
             $eventType,
             (string) $postId,
             $this->postContext($post),
@@ -175,7 +231,7 @@ final class HookWiring
 
         $eventType = $this->resolveDeleteEventType($post->post_type);
 
-        $this->eventProvider->provide(
+        $this->capture(
             $eventType,
             (string) $postId,
             $this->postContext($post),
@@ -199,7 +255,7 @@ final class HookWiring
 
         $eventType = $this->resolveDeleteEventType($post->post_type);
 
-        $this->eventProvider->provide(
+        $this->capture(
             $eventType,
             (string) $postId,
             $this->postContext($post),
@@ -223,7 +279,7 @@ final class HookWiring
             return;
         }
 
-        $this->eventProvider->provide(
+        $this->capture(
             ContentEventTypes::CATEGORY_CREATED,
             (string) $termId,
             $this->categoryContext($termId),
@@ -243,7 +299,7 @@ final class HookWiring
             return;
         }
 
-        $this->eventProvider->provide(
+        $this->capture(
             ContentEventTypes::CATEGORY_UPDATED,
             (string) $termId,
             $this->categoryContext($termId),
@@ -264,7 +320,7 @@ final class HookWiring
             return;
         }
 
-        $this->eventProvider->provide(
+        $this->capture(
             ContentEventTypes::CATEGORY_DELETED,
             (string) $termId,
             $this->categoryContext($termId),

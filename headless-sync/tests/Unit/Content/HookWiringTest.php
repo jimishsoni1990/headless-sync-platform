@@ -659,6 +659,37 @@ final class HookWiringTest extends TestCase
     }
 
     // =========================================================================
+    // Capture failure visibility (HOTFIX) — a failed outbox write must NOT fatal the
+    // WP request; it is logged + surfaced as an admin notice and treated as a lost sync
+    // until reconciliation. HookWiring catches OutboxWriteException at the capture site.
+    // =========================================================================
+
+    public function test_capture_failure_does_not_propagate_out_of_hook_handler(): void
+    {
+        $writer = new ThrowingOutboxWriter();
+        $wiring = new HookWiring(new EventProvider($writer));
+        $post   = $this->makePost(500, 'post', 'publish');
+
+        // Must NOT throw — a failed capture cannot be allowed to fatal a post save.
+        $wiring->onTransitionPostStatus('publish', 'draft', $post);
+
+        self::assertSame(1, $writer->attempts, 'the write was attempted (and failed) exactly once');
+    }
+
+    public function test_capture_failure_across_multiple_events_never_throws(): void
+    {
+        $writer = new ThrowingOutboxWriter();
+        $wiring = new HookWiring(new EventProvider($writer));
+
+        // Several failing captures in one request — none may propagate.
+        $wiring->onTransitionPostStatus('publish', 'draft', $this->makePost(1, 'post', 'publish'));
+        $wiring->onCreatedTerm(2, 0, 'category');
+        $wiring->onEditedTerm(3, 0, 'category');
+
+        self::assertSame(3, $writer->attempts);
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
@@ -671,5 +702,30 @@ final class HookWiringTest extends TestCase
         $post->post_modified_gmt = '2026-06-23 10:00:00';
 
         return $post;
+    }
+}
+
+/**
+ * OutboxWriterInterface double whose write() always fails on the capture path,
+ * exactly as MysqliOutboxConnection/$wpdb would surface a connection or insert error.
+ */
+final class ThrowingOutboxWriter implements \HSP\Core\Contracts\OutboxWriterInterface
+{
+    public int $attempts = 0;
+
+    public function write(
+        string             $eventType,
+        int                $eventVersion,
+        string             $aggregateType,
+        string             $aggregateId,
+        array              $payload,
+        string             $correlationId,
+        ?string            $causationId,
+        \DateTimeImmutable $sourceUpdatedAt,
+    ): \HSP\Core\Contracts\EventInterface {
+        $this->attempts++;
+        throw new \HSP\Core\Events\Outbox\Exception\OutboxWriteException(
+            'simulated capture failure: connection refused'
+        );
     }
 }

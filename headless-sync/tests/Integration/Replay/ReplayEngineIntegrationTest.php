@@ -329,7 +329,7 @@ final class ReplayEngineIntegrationTest extends TestCase
     private function relayOnly(): void
     {
         (new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             new PgsqlOutboxConnection($this->pgConn),
             $this->prefix,
             100,

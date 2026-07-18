@@ -39,10 +39,22 @@ final class ProcessingCronRegistrar
     private array $config;
 
     /**
-     * @param array<string,mixed> $config The 'processing' config block (schedule + interval).
+     * HOTFIX: the engine is resolved LAZILY via a `\Closure(): WorkerInterface`, not
+     * injected as a built instance. register() binds the WP-Cron hook and schedules the
+     * event WITHOUT constructing the engine — so a normal wp-admin request never builds
+     * the Processing Engine (and never opens the outbox MySQL connection at plugins_loaded).
+     * The engine is materialised only when the cron callback actually fires (runCycle()),
+     * i.e. in the cron/CLI execution context. This preserves ADR-054's requirement that
+     * the schedule exists and the callback is bound on every request (Doc 8 v2.0 §23),
+     * while removing the eager engine/connection construction that fataled page loads.
+     *
+     * @param \Closure(): WorkerInterface $engineResolver Resolves the bounded-cycle engine
+     *        from the container on demand. Invoked only inside runCycle().
+     * @param array<string,mixed>         $config         The 'processing' config block
+     *        (schedule + interval).
      */
     public function __construct(
-        private readonly WorkerInterface $engine,
+        private readonly \Closure $engineResolver,
         array $config = [],
     ) {
         $this->config = $config;
@@ -86,7 +98,9 @@ final class ProcessingCronRegistrar
      */
     public function runCycle(): void
     {
-        $this->engine->runCycle();
+        // Materialise the engine only now, when the cron event actually fires — this is
+        // the first point the outbox MySQL connection is legitimately needed.
+        ($this->engineResolver)()->runCycle();
     }
 
     /**

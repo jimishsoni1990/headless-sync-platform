@@ -18,11 +18,56 @@ use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
  * contract (DECISION E v1.6). Does NOT implement DatabaseConnectionInterface,
  * which is PostgreSQL-only.
  *
- * The mysqli handle is injected — its lifecycle (connect/close) belongs to the caller.
+ * Lazy connection (HOTFIX): a `\Closure(): \mysqli` CONNECTOR is injected rather than
+ * an already-open handle. The socket is opened on FIRST real use (execute / query /
+ * beginTransaction), then memoized — so container resolution and worker/cron wiring do
+ * NOT open a connection, and a wp-admin page load never fatals on a MySQL outage. Any
+ * connect failure (connector throwing, or a returned handle carrying connect_errno) is
+ * translated to OutboxWriteException at THIS boundary (DECISION E v1.6 error semantics),
+ * never surfaced as a raw \RuntimeException or mysqli exception.
  */
 final class MysqliOutboxConnection implements MysqlOutboxConnectionInterface
 {
-    public function __construct(private readonly \mysqli $mysqli) {}
+    /** Memoized handle; null until the first real use triggers connect(). */
+    private ?\mysqli $mysqli = null;
+
+    /**
+     * @param \Closure(): \mysqli $connector Opens and returns a ready mysqli handle.
+     *        Invoked at most once, on first use. Its own connect failures are caught
+     *        here and re-thrown as OutboxWriteException.
+     */
+    public function __construct(private readonly \Closure $connector) {}
+
+    /**
+     * Return the memoized mysqli handle, opening it on first call.
+     *
+     * @throws OutboxWriteException on any connect failure (translated at this boundary).
+     */
+    private function connection(): \mysqli
+    {
+        if ($this->mysqli !== null) {
+            return $this->mysqli;
+        }
+
+        try {
+            $mysqli = ($this->connector)();
+        } catch (\Throwable $e) {
+            // mysqli may throw (mysqli_sql_exception under MYSQLI_REPORT_STRICT) or the
+            // connector may raise; either way it is a capture-path connect failure.
+            throw new OutboxWriteException(
+                'Outbox MySQL connect failed: ' . $e->getMessage(),
+                previous: $e,
+            );
+        }
+
+        if ($mysqli->connect_errno) {
+            throw new OutboxWriteException(
+                'Outbox MySQL connect failed: ' . $mysqli->connect_error
+            );
+        }
+
+        return $this->mysqli = $mysqli;
+    }
 
     public function execute(string $sql, array $params = []): int
     {
@@ -54,34 +99,39 @@ final class MysqliOutboxConnection implements MysqlOutboxConnectionInterface
 
     public function beginTransaction(): void
     {
-        if (! $this->mysqli->begin_transaction()) {
+        $mysqli = $this->connection();
+        if (! $mysqli->begin_transaction()) {
             throw new OutboxWriteException(
-                'MySQL BEGIN TRANSACTION failed: ' . $this->mysqli->error
+                'MySQL BEGIN TRANSACTION failed: ' . $mysqli->error
             );
         }
     }
 
     public function commit(): void
     {
-        if (! $this->mysqli->commit()) {
+        $mysqli = $this->connection();
+        if (! $mysqli->commit()) {
             throw new OutboxWriteException(
-                'MySQL COMMIT failed: ' . $this->mysqli->error
+                'MySQL COMMIT failed: ' . $mysqli->error
             );
         }
     }
 
     public function rollback(): void
     {
-        $this->mysqli->rollback();
+        // Only roll back if a connection was actually opened; a rollback before first
+        // use (e.g. after a failed relay claim that never connected) is a no-op.
+        $this->mysqli?->rollback();
     }
 
     private function prepare(string $sql, array $params): \mysqli_stmt
     {
-        $stmt = $this->mysqli->prepare($sql);
+        $mysqli = $this->connection();
+        $stmt   = $mysqli->prepare($sql);
 
         if ($stmt === false) {
             throw new OutboxWriteException(
-                "MySQL outbox prepare failed: {$this->mysqli->error}\nSQL: {$sql}"
+                "MySQL outbox prepare failed: {$mysqli->error}\nSQL: {$sql}"
             );
         }
 

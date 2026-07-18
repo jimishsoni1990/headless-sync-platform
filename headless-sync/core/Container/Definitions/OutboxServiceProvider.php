@@ -28,6 +28,12 @@ use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
  * Constructor injection only — ADR-012.
  * DECISION E v1.6: MySQL capture path and PG delivery path are distinct contracts.
  * DECISION O (v1.15): credentials resolved via CredentialResolver (define→getenv→default).
+ *
+ * HOTFIX: the MySQL binding builds a CONNECTOR closure and hands it to
+ * MysqliOutboxConnection — NO socket is opened at container-resolution or worker-wiring
+ * time. The connection opens lazily on first real relay use, and any connect failure is
+ * translated to OutboxWriteException at the connection boundary rather than fataling the
+ * WordPress request (previously an uncaught \RuntimeException at plugins_loaded).
  */
 final class OutboxServiceProvider extends ServiceProvider
 {
@@ -41,23 +47,36 @@ final class OutboxServiceProvider extends ServiceProvider
         assert($container instanceof Container);
 
         $container->singleton('outbox.connection.mysql', function () {
-            $mysqli = new \mysqli(
-                $this->resolver->mysqlHost(),
-                $this->resolver->mysqlUser(),
-                $this->resolver->mysqlPassword(),
-                $this->resolver->mysqlDbname(),
-                $this->resolver->mysqlPort(),
-            );
+            // HOTFIX: build a CONNECTOR closure — no socket is opened here, at container
+            // resolution time. MysqliOutboxConnection invokes it lazily on first real use
+            // and translates any connect failure to OutboxWriteException (DECISION E v1.6).
+            // Credentials/host/port/socket derive from the CredentialResolver (DECISION O):
+            //   - host/port/socket are split from DB_HOST (wpdb::parse_db_host parity)
+            //   - port 0 + socket null let mysqli fall back to mysqli.default_port /
+            //     mysqli.default_socket (how $wpdb reaches non-3306 stacks like Local).
+            $resolver = $this->resolver;
 
-            if ($mysqli->connect_errno) {
-                throw new \RuntimeException(
-                    'Outbox MySQL connect failed: ' . $mysqli->connect_error
+            $connector = static function () use ($resolver): \mysqli {
+                $host   = $resolver->mysqlHost();
+                $socket = $resolver->mysqlSocket();
+
+                // A socket-only DB_HOST (":/path.sock") yields an empty host; mysqli wants
+                // null there so it uses the socket rather than an empty TCP hostname.
+                $mysqli = new \mysqli(
+                    $host !== '' ? $host : null,
+                    $resolver->mysqlUser(),
+                    $resolver->mysqlPassword(),
+                    $resolver->mysqlDbname(),
+                    $resolver->mysqlPort(),   // 0 → defer to mysqli.default_port
+                    $socket,                  // null → defer to mysqli.default_socket
                 );
-            }
 
-            $mysqli->set_charset('utf8mb4');
+                $mysqli->set_charset('utf8mb4');
 
-            return new MysqliOutboxConnection($mysqli);
+                return $mysqli;
+            };
+
+            return new MysqliOutboxConnection($connector);
         });
 
         $container->singleton('outbox.connection.pgsql', function () {

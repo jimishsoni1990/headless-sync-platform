@@ -244,7 +244,7 @@ final class OperationsActionIntegrationTest extends TestCase
     private function drainPipeline(): void
     {
         (new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             new PgsqlOutboxConnection($this->pgConn),
             $this->prefix,
             100,

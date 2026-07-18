@@ -141,7 +141,7 @@ final class ReliabilityValidationTest extends TestCase
 
         // ---- Stage 1: Relay (MySQL wp_hsp_outbox → PostgreSQL system.events) ----
         $relay = new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             new PgsqlOutboxConnection($this->pgConn),
             $this->prefix,
             100,
@@ -224,7 +224,7 @@ final class ReliabilityValidationTest extends TestCase
         $eventId = $this->insertOutboxRow(ContentEventTypes::POST_CREATED, 'post', '500', 1);
 
         $relay = new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             new PgsqlOutboxConnection($this->pgConn),
             $this->prefix,
             100,
@@ -437,7 +437,7 @@ final class ReliabilityValidationTest extends TestCase
     private function runFullPipelineOnce(): void
     {
         (new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             new PgsqlOutboxConnection($this->pgConn),
             $this->prefix,
             100,
@@ -480,7 +480,7 @@ final class ReliabilityValidationTest extends TestCase
     private function drainPipeline(): void
     {
         (new RelayWorkerStrategy(
-            new MysqliOutboxConnection($this->mysqli),
+            new MysqliOutboxConnection(fn () => $this->mysqli),
             new PgsqlOutboxConnection($this->pgConn),
             $this->prefix,
             100,
