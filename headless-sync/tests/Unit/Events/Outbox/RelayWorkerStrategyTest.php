@@ -335,15 +335,28 @@ final class RelayWorkerStrategyTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // Worker identity
+    // Relay-stage batch reporting (ADR-054 — bounded batch primitive; DECISION X)
     // -------------------------------------------------------------------------
 
-    public function test_worker_id_is_uuidv7(): void
+    public function test_last_relayed_count_reports_batch_size(): void
     {
-        self::assertMatchesRegularExpression(
-            '/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i',
-            $this->relay->getWorkerId(),
-        );
+        $this->mysql->nextQueryRows = [
+            $this->makeRow('row-1'),
+            $this->makeRow('row-2'),
+        ];
+
+        $this->relay->tick();
+
+        self::assertSame(2, $this->relay->lastRelayedCount());
+    }
+
+    public function test_last_relayed_count_is_zero_when_queue_empty(): void
+    {
+        $this->mysql->nextQueryRows = [];
+
+        $this->relay->tick();
+
+        self::assertSame(0, $this->relay->lastRelayedCount());
     }
 
     public function test_queue_names_contains_relay(): void

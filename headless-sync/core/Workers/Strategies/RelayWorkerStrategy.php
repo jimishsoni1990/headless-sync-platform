@@ -4,15 +4,19 @@ declare(strict_types=1);
 
 namespace HSP\Core\Workers\Strategies;
 
-use HSP\Core\Contracts\WorkerInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\Outbox\Connection\MysqlOutboxConnectionInterface;
 use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
 
 /**
- * Relay worker: copies pending outbox rows from wp_hsp_outbox (MySQL) into
+ * Relay stage: copies pending outbox rows from wp_hsp_outbox (MySQL) into
  * system.events (PostgreSQL), then marks each row 'relayed' inside the same
  * MySQL transaction that holds the row lock.
+ *
+ * ADR-054: this is the RELAY STAGE of the WP-Cron Processing Engine cycle — a bounded
+ * batch primitive invoked once per cycle by WorkerEngine::runCycle(), not a daemon.
+ * tick() relays at most $batchSize rows and returns; a backlog larger than one batch is
+ * continued by the next cron cycle (Doc 8 v2.0 §9/§12).
  *
  * Authority:
  *   OPEN-6 v1.3  — relay fidelity; status 'relayed' set only after PG insert succeeds
@@ -31,29 +35,26 @@ use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
  *   COMMIT (MySQL);
  *
  * The MySQL row lock (acquired by FOR UPDATE) is the claim guard — concurrent
- * workers skip already-locked rows via SKIP LOCKED and never see the same rows.
+ * cycles skip already-locked rows via SKIP LOCKED and never see the same rows.
  * No intermediate 'relaying' status is needed or used; ENUM('pending','relayed')
  * is the complete set per the frozen OPEN-6 v1.3 DDL.
  *
- * Crash safety: if the process dies before COMMIT, the MySQL transaction rolls back
- * and rows revert to 'pending'. Any rows already inserted into system.events are
- * re-inserted on the next relay attempt and ignored by ON CONFLICT DO NOTHING.
+ * Crash safety: if the process is hard-killed before COMMIT, the MySQL transaction rolls
+ * back and rows revert to 'pending'. Any rows already inserted into system.events are
+ * re-inserted on the next relay batch and ignored by ON CONFLICT DO NOTHING.
  *
  * Idempotency: system.events INSERT uses ON CONFLICT (id) DO NOTHING.
  */
-final class RelayWorkerStrategy implements WorkerInterface
+final class RelayWorkerStrategy
 {
-    private bool   $running  = false;
-    private string $workerId;
+    private int $lastRelayedCount = 0;
 
     public function __construct(
         private readonly MysqlOutboxConnectionInterface $mysqlConn,
         private readonly DatabaseConnectionInterface    $pgsqlConn,
         private readonly string                        $tablePrefix,
         private readonly int                           $batchSize = 100,
-    ) {
-        $this->workerId = $this->uuidv7();
-    }
+    ) {}
 
     /**
      * Claim a batch of pending outbox rows, relay each to system.events,
@@ -64,6 +65,7 @@ final class RelayWorkerStrategy implements WorkerInterface
     {
         $outbox = $this->tablePrefix . 'hsp_outbox';
 
+        $this->lastRelayedCount = 0;
         $this->mysqlConn->beginTransaction();
 
         try {
@@ -93,11 +95,12 @@ final class RelayWorkerStrategy implements WorkerInterface
             }
 
             $this->mysqlConn->commit();
+            $this->lastRelayedCount = count($rows);
 
         } catch (\Throwable $e) {
             $this->mysqlConn->rollback();
             throw new OutboxWriteException(
-                "Relay tick failed: {$e->getMessage()}",
+                "Relay batch failed: {$e->getMessage()}",
                 previous: $e,
             );
         }
@@ -105,26 +108,10 @@ final class RelayWorkerStrategy implements WorkerInterface
         return true;
     }
 
-    /** Block and tick until shutdown() is called. */
-    public function run(): void
+    /** Number of rows relayed by the most recent tick() (0 if the batch was empty). */
+    public function lastRelayedCount(): int
     {
-        $this->running = true;
-
-        while ($this->running) {
-            if (! $this->tick()) {
-                usleep(200_000); // 200 ms idle pause
-            }
-        }
-    }
-
-    public function shutdown(): void
-    {
-        $this->running = false;
-    }
-
-    public function getWorkerId(): string
-    {
-        return $this->workerId;
+        return $this->lastRelayedCount;
     }
 
     public function getQueueNames(): array
@@ -192,25 +179,5 @@ final class RelayWorkerStrategy implements WorkerInterface
              WHERE `id` = ?",
             [$relayedAt, $id],
         );
-    }
-
-    /**
-     * Generate a UUIDv7 for worker identity (ADR-015, v1.1 canon).
-     */
-    private function uuidv7(): string
-    {
-        $ms    = (int) (microtime(true) * 1000);
-        $bytes = random_bytes(10);
-
-        $tsHex   = sprintf('%012x', $ms);
-        $rand12  = (ord($bytes[0]) & 0x0f) << 8 | ord($bytes[1]);
-        $b67hex  = sprintf('%04x', 0x7000 | $rand12);
-        $rand14  = (ord($bytes[2]) & 0x3f) << 8 | ord($bytes[3]);
-        $b89hex  = sprintf('%04x', 0x8000 | $rand14);
-        $tailHex = bin2hex(substr($bytes, 4, 6));
-
-        $hex = $tsHex . $b67hex . $b89hex . $tailHex;
-
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split($hex, 4));
     }
 }

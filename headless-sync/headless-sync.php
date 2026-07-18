@@ -52,6 +52,21 @@ register_deactivation_hook(__FILE__, [$application, 'deactivate']);
 
 add_action('plugins_loaded', [$application, 'boot'], 5);
 
+// WP-Cron: register the Processing Engine trigger (ADR-054 — WP-Cron is the ONLY v1.x
+// execution mechanism). The recurring `hsp_processing_cycle` event fires ONE bounded
+// Processing Engine cycle per tick (relay → dispatch → projection → maintenance → clean
+// exit); a backlog larger than one cycle is continued by the next tick. No daemon, no
+// supervisor. Runs in normal web requests too so the schedule exists and the callback is
+// bound; for reliable cadence point a system cron at `wp cron event run --due-now`.
+add_action('plugins_loaded', static function () use ($application): void {
+    $container = $application->getContainer();
+    if ($container === null) {
+        return;
+    }
+
+    $container->get(HSP\Core\Workers\ProcessingCronRegistrar::class)->register();
+}, 20);
+
 // WP-Cron: register reconciliation triggers (DECISION U point 5). Runs in normal web
 // requests too (not WP-CLI-only) so the schedules exist and callbacks are bound. The cron
 // callback only TRIGGERS a pass on the worker-bootstrapped process — it never processes PG.

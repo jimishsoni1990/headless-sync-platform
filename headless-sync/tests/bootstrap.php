@@ -49,6 +49,58 @@ if (! function_exists('add_action')) {
 }
 
 // ---------------------------------------------------------------------------
+// WordPress WP-Cron stubs — for ProcessingCronRegistrar / activation-scheduling tests.
+// A test opts in to recording by initialising the $GLOBALS keys below.
+//   $GLOBALS['_hsp_stub_filters']   = [];  // records add_filter() hook names
+//   $GLOBALS['_hsp_stub_scheduled'] = [];  // hook => schedule (wp_schedule_event / clear)
+// wp_next_scheduled() returns the scheduled hook's marker if present, else false.
+// ---------------------------------------------------------------------------
+
+if (! defined('DAY_IN_SECONDS'))  { define('DAY_IN_SECONDS', 86400); }
+if (! defined('HOUR_IN_SECONDS')) { define('HOUR_IN_SECONDS', 3600); }
+
+if (! function_exists('add_filter')) {
+    function add_filter(string $hook, callable $callback, int $priority = 10, int $args = 1): void
+    {
+        if (isset($GLOBALS['_hsp_stub_filters']) && is_array($GLOBALS['_hsp_stub_filters'])) {
+            $GLOBALS['_hsp_stub_filters'][] = $hook;
+        }
+    }
+}
+
+if (! function_exists('wp_next_scheduled')) {
+    function wp_next_scheduled(string $hook)
+    {
+        if (isset($GLOBALS['_hsp_stub_scheduled']) && is_array($GLOBALS['_hsp_stub_scheduled'])) {
+            return array_key_exists($hook, $GLOBALS['_hsp_stub_scheduled'])
+                ? (time() + 60)
+                : false;
+        }
+        return false;
+    }
+}
+
+if (! function_exists('wp_schedule_event')) {
+    function wp_schedule_event(int $timestamp, string $recurrence, string $hook)
+    {
+        if (isset($GLOBALS['_hsp_stub_scheduled']) && is_array($GLOBALS['_hsp_stub_scheduled'])) {
+            $GLOBALS['_hsp_stub_scheduled'][$hook] = $recurrence;
+        }
+        return true;
+    }
+}
+
+if (! function_exists('wp_clear_scheduled_hook')) {
+    function wp_clear_scheduled_hook(string $hook)
+    {
+        if (isset($GLOBALS['_hsp_stub_scheduled']) && is_array($GLOBALS['_hsp_stub_scheduled'])) {
+            unset($GLOBALS['_hsp_stub_scheduled'][$hook]);
+        }
+        return 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WordPress REST API stubs — for ContentRestRegistrar unit tests.
 // ---------------------------------------------------------------------------
 

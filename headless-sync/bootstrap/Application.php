@@ -65,12 +65,31 @@ final class Application
             $this->boot();
         }
 
+        // ADR-054 / Doc 8 v2.0 §2b/§24 (Zero-Configuration Operation, Principle 8): scheduling
+        // the processing-cycle WP-Cron event on activation is what makes "activate and
+        // synchronization begins" true — nothing outside WordPress is provisioned. Reconciliation
+        // events are scheduled here too for consistency. Both registrars are wp_next_scheduled-
+        // guarded, so scheduling is idempotent.
+        $container = $this->container;
+        if ($container !== null) {
+            $container->get(\HSP\Core\Workers\ProcessingCronRegistrar::class)->ensureScheduled();
+            $container->get(\HSP\Core\Reconciliation\ReconciliationCronRegistrar::class)->register();
+        }
+
         // Module activation lifecycle is owned by P0-S3 (module registry).
-        // Nothing to do here until the registry exists.
     }
 
     public function deactivate(): void
     {
+        // ADR-054: clear the scheduled processing-cycle event on deactivation
+        // (wp_clear_scheduled_hook). Reconciliation events are cleared here too for symmetry.
+        if (function_exists('wp_clear_scheduled_hook')) {
+            \wp_clear_scheduled_hook(\HSP\Core\Workers\ProcessingCronRegistrar::HOOK);
+            \wp_clear_scheduled_hook(\HSP\Core\Reconciliation\ReconciliationCronRegistrar::HOOK_DRIFT);
+            \wp_clear_scheduled_hook(\HSP\Core\Reconciliation\ReconciliationCronRegistrar::HOOK_INCREMENTAL);
+            \wp_clear_scheduled_hook(\HSP\Core\Reconciliation\ReconciliationCronRegistrar::HOOK_FULL);
+        }
+
         // Module deactivation lifecycle is owned by P0-S3.
     }
 

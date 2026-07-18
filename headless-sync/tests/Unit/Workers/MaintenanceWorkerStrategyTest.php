@@ -11,19 +11,19 @@ use HSP\Core\Workers\WorkerExecutionContext;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit tests for MaintenanceWorkerStrategy (DECISION R).
+ * Unit tests for MaintenanceWorkerStrategy (DECISION R; ADR-054 cycle model).
  *
- * Proves: drives requeueTimedOut() per partition on the first tick; enforces the
- * config-driven cadence (no second sweep within the interval); no hardcoded timing.
+ * Proves: drives requeueTimedOut() per partition once per cycle (execute()); the cron
+ * cadence IS the maintenance cadence (no in-process throttle state — T3), so every cycle
+ * sweeps; requeue counts are exposed for observability.
  */
 final class MaintenanceWorkerStrategyTest extends TestCase
 {
-    public function test_first_tick_sweeps_every_partition(): void
+    public function test_execute_sweeps_every_partition(): void
     {
         $queue    = new RecordingRequeueProvider();
         $strategy = new MaintenanceWorkerStrategy($queue, [
-            'recovery_interval_seconds' => 30,
-            'partitions'                => ['content', 'commerce', 'system'],
+            'partitions' => ['content', 'commerce', 'system'],
         ]);
 
         $did = $strategy->execute($this->ctx());
@@ -32,46 +32,26 @@ final class MaintenanceWorkerStrategyTest extends TestCase
         self::assertSame(['content', 'commerce', 'system'], $queue->requeuedPartitions);
     }
 
-    public function test_second_tick_within_interval_does_not_sweep(): void
+    public function test_each_cycle_sweeps_no_in_process_throttle(): void
     {
+        // ADR-054 (T3): the in-memory cadence gate is removed — a fresh cron cycle must
+        // not silently skip the sweep. Every execute() sweeps exactly once.
         $queue    = new RecordingRequeueProvider();
-        $strategy = new MaintenanceWorkerStrategy($queue, [
-            'recovery_interval_seconds' => 3600, // large window
-            'partitions'                => ['content'],
-        ]);
-
-        $strategy->execute($this->ctx());          // sweeps
-        $queue->requeuedPartitions = [];            // reset observation
-        $second = $strategy->execute($this->ctx()); // within interval → no sweep
-
-        self::assertFalse($second, 'no sweep within cadence window → idle');
-        self::assertSame([], $queue->requeuedPartitions, 'requeueTimedOut not called again');
-    }
-
-    public function test_zero_interval_sweeps_every_tick(): void
-    {
-        $queue    = new RecordingRequeueProvider();
-        $strategy = new MaintenanceWorkerStrategy($queue, [
-            'recovery_interval_seconds' => 0,
-            'partitions'                => ['content'],
-        ]);
+        $strategy = new MaintenanceWorkerStrategy($queue, ['partitions' => ['content']]);
 
         self::assertTrue($strategy->execute($this->ctx()));
         self::assertTrue($strategy->execute($this->ctx()));
         self::assertSame(['content', 'content'], $queue->requeuedPartitions);
     }
 
-    public function test_default_interval_is_used_when_config_absent(): void
+    public function test_default_partitions_used_when_config_absent(): void
     {
-        // No hardcoded timing at the call site; the default lives in the strategy.
         $queue    = new RecordingRequeueProvider();
         $strategy = new MaintenanceWorkerStrategy($queue); // no config
 
         $strategy->execute($this->ctx());
-        $queue->requeuedPartitions = [];
-        $second = $strategy->execute($this->ctx());
 
-        self::assertFalse($second, 'default 30s interval blocks an immediate re-sweep');
+        self::assertSame(['content', 'commerce', 'system'], $queue->requeuedPartitions);
     }
 
     public function test_last_requeued_counts_exposed_for_observability(): void
@@ -79,8 +59,7 @@ final class MaintenanceWorkerStrategyTest extends TestCase
         $queue                = new RecordingRequeueProvider();
         $queue->requeueReturn = 4;
         $strategy             = new MaintenanceWorkerStrategy($queue, [
-            'recovery_interval_seconds' => 0,
-            'partitions'                => ['content', 'system'],
+            'partitions' => ['content', 'system'],
         ]);
 
         $strategy->execute($this->ctx());

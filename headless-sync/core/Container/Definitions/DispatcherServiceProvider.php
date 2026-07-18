@@ -11,8 +11,6 @@ use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
-use HSP\Core\Workers\HeartbeatPublisherInterface;
-use HSP\Core\Workers\WorkerEngine;
 
 /**
  * Registers the Dispatcher stage (system.events → system.queue_jobs).
@@ -20,7 +18,12 @@ use HSP\Core\Workers\WorkerEngine;
  * Bindings:
  *   'dispatcher.connection.pgsql' — PostgresDatabaseConnection, FORCE_NEW
  *   'dispatcher.strategy'         — DispatcherWorkerStrategy
- *   'dispatcher.engine'           — WorkerEngine driven by DispatcherWorkerStrategy
+ *
+ * ADR-054 (DECISION X, v1.24): dispatch is a STAGE of the one Processing Engine cycle, not a
+ * standalone daemon. The former 'dispatcher.engine' (a standalone WorkerEngine daemon driven
+ * by DispatcherWorkerStrategy) is RETIRED from the execution path — WorkerServiceProvider's
+ * single cycle engine composes 'dispatcher.strategy' as its dispatch stage. The strategy +
+ * its dedicated connection are kept.
  *
  * Connection wiring (DECISION L v1.12):
  *   The Dispatcher is relay/queue-side system DML — it MUST NOT use the DECISION K
@@ -71,18 +74,17 @@ final class DispatcherServiceProvider extends ServiceProvider
         });
 
         $container->singleton('dispatcher.strategy', function (Container $c): DispatcherWorkerStrategy {
+            // ADR-054: the dispatch stage's per-cycle max batch size is config-driven
+            // (processing.dispatch_batch_size — Doc 8 v2.0 §9). Default 100 if unset.
+            $processing = $this->config['worker']['processing'] ?? [];
+            $batchSize  = (int) ($processing['dispatch_batch_size'] ?? 100);
+
             return new DispatcherWorkerStrategy(
                 new EventDispatcher(
                     $c->get('dispatcher.connection.pgsql'),
                     $c->get(DatabaseQueueProvider::class),
+                    $batchSize > 0 ? $batchSize : 100,
                 ),
-            );
-        });
-
-        $container->singleton('dispatcher.engine', function (Container $c): WorkerEngine {
-            return new WorkerEngine(
-                $c->get('dispatcher.strategy'),
-                $c->get(HeartbeatPublisherInterface::class),
             );
         });
     }

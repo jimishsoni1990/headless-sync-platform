@@ -18,9 +18,7 @@ use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\DatabaseHeartbeatPublisher;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
 use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
-use HSP\Core\Workers\WorkerEngine;
 use HSP\Core\Workers\WorkerExecutionContext;
-use HSP\Core\Workers\WorkerStrategyInterface;
 use HSP\Modules\Content\Adapters\CategoryAdapter;
 use HSP\Modules\Content\Adapters\PageAdapter;
 use HSP\Modules\Content\Adapters\PostAdapter;
@@ -145,46 +143,48 @@ final class OperabilityValidationTest extends TestCase
 
         $publisher = new DatabaseHeartbeatPublisher($this->db);
 
-        // An idle strategy so the engine ticks without needing a queued job — the tick still
-        // publishes a heartbeat (the health signal). This is the real WorkerEngine tick path.
-        $idleStrategy = new class implements WorkerStrategyInterface {
-            public function execute(WorkerExecutionContext $c): bool { return false; }
-            public function getQueueNames(): array { return ['content']; }
-        };
+        // ADR-054: a processing CYCLE writes one fresh-UUID current-state heartbeat row (its
+        // freshness IS the health signal — Doc 8 v2.0 §15). Record a just-ran healthy cycle.
+        $healthyWorkerId = '01900000-0000-7000-8000-00000000cea1';
+        $publisher->publish(new \HSP\Core\Workers\HeartbeatRecord(
+            workerId:        $healthyWorkerId,
+            status:          'idle',
+            lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+            workerType:      'processing',
+            startedAt:       new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+        ));
 
-        $healthy = new WorkerEngine($idleStrategy, $publisher, idleWaitMs: 0, workerType: 'event');
-        $healthy->tick();
+        // ---- Health is VISIBLE: the cycle's current-state row is queryable. ----
+        $row = $this->heartbeatRow($healthyWorkerId);
+        self::assertNotNull($row, 'processing health visible: a heartbeat row exists after a cycle');
+        self::assertSame('processing', $row['worker_type'], 'worker_type visible');
+        self::assertSame('idle', $row['status'], 'status visible (idle — the cycle found no work)');
+        self::assertSame(1, $this->countRows('system.worker_heartbeats'), 'exactly one current-state row for this cycle');
 
-        // ---- Health is VISIBLE: the worker's current-state row is queryable. ----
-        $row = $this->heartbeatRow($healthy->getWorkerId());
-        self::assertNotNull($row, 'worker health visible: a heartbeat row exists after the first tick');
-        self::assertSame('event', $row['worker_type'], 'worker_type visible');
-        self::assertSame('idle', $row['status'], 'status visible (idle — the tick had no job)');
-        self::assertSame(1, $this->countRows('system.worker_heartbeats'), 'exactly one current-state row (DECISION P: no history)');
+        // A monitor query surfaces the fresh cycle as NOT stale.
+        self::assertSame(0, $this->countStaleWorkers($cycleSeconds), 'a just-run cycle is not flagged as stalled');
 
-        // A monitor query surfaces the healthy worker as NOT stale (fresh heartbeat).
-        self::assertSame(0, $this->countStaleWorkers($cycleSeconds), 'a just-ticked worker is not flagged as crashed');
-
-        // ---- FAILURE DETECTION within one heartbeat cycle. ----
-        // Simulate a SECOND worker that ticked once and then CRASHED (stops ticking). Its row
-        // is written with a last_heartbeat_at from one cycle ago (nothing to refresh it).
-        $crashedWorkerId = '01900000-0000-7000-8000-00000000c7a5';
+        // ---- STALL DETECTION within one heartbeat cycle. ----
+        // A cycle that ran once and then stopped advancing (cron not firing / every cycle
+        // erroring) leaves a stale row — detected by heartbeat age (ADR-054 §5). Status set is
+        // running/idle only (DECISION X ruling (2)); 'processing'/'shutdown' are gone.
+        $stalledWorkerId = '01900000-0000-7000-8000-00000000c7a5';
         $stale           = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
             ->sub(new \DateInterval('PT' . ($cycleSeconds + 3) . 'S'));
         $publisher->publish(new \HSP\Core\Workers\HeartbeatRecord(
-            workerId:        $crashedWorkerId,
-            status:          'processing',
+            workerId:        $stalledWorkerId,
+            status:          'running',
             lastHeartbeatAt: $stale,
-            workerType:      'event',
+            workerType:      'processing',
             startedAt:       $stale,
         ));
 
-        // The monitor's heartbeat-age read detects exactly the crashed worker, within one
-        // cycle of its last beat — the healthy worker (fresh beat) is NOT flagged.
-        self::assertSame(1, $this->countStaleWorkers($cycleSeconds), 'the crashed worker is detected within one heartbeat cycle');
+        // The monitor's heartbeat-age read detects exactly the stalled cycle, within one cycle
+        // of its last beat — the fresh cycle is NOT flagged.
+        self::assertSame(1, $this->countStaleWorkers($cycleSeconds), 'the stalled cycle is detected within one heartbeat cycle');
         $staleIds = $this->staleWorkerIds($cycleSeconds);
-        self::assertContains($crashedWorkerId, $staleIds, 'the crashed worker is the one flagged');
-        self::assertNotContains($healthy->getWorkerId(), $staleIds, 'the healthy worker is not flagged');
+        self::assertContains($stalledWorkerId, $staleIds, 'the stalled cycle is the one flagged');
+        self::assertNotContains($healthyWorkerId, $staleIds, 'the fresh cycle is not flagged');
 
         // The derived worker_count metric (DECISION Q) reports both workers as visible.
         $metrics = new OperationalMetricsQuery($this->db);

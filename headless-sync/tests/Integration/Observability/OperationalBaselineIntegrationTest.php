@@ -19,6 +19,9 @@ use HSP\Core\Workers\Strategies\MaintenanceWorkerStrategy;
 use HSP\Core\Workers\WorkerEngine;
 use PHPUnit\Framework\TestCase;
 
+// Split-outbox fakes reused so the relay stage can idle without a live MySQL connection.
+require_once __DIR__ . '/../../Unit/Events/Outbox/FakeOutboxConnection.php';
+
 /**
  * OPS-S1 Early Operational Baseline — live-PostgreSQL integration proofs (DoD).
  *
@@ -183,34 +186,43 @@ final class OperationalBaselineIntegrationTest extends TestCase
     // Heartbeat visible + advances per tick (DECISION P)
     // =========================================================================
 
-    public function test_heartbeat_row_is_visible_and_last_heartbeat_advances_per_tick(): void
+    public function test_heartbeat_row_is_visible_per_cycle_with_running_or_idle_status(): void
     {
+        // ADR-054 / DECISION X: each processing cycle mints a FRESH UUIDv7 and upserts one
+        // current-state heartbeat row (DECISION P schema, reused verbatim). Two cycles → two
+        // distinct rows (processing-cycle executions, not one daemon identity). Status is only
+        // ever 'running' | 'idle'. Drive the publisher directly with two fresh cycle identities.
         $publisher = new DatabaseHeartbeatPublisher($this->db);
-        // An idle strategy so the engine ticks without a queue.
-        $strategy  = new class implements \HSP\Core\Workers\WorkerStrategyInterface {
-            public function execute(\HSP\Core\Workers\WorkerExecutionContext $c): bool { return false; }
-            public function getQueueNames(): array { return ['system']; }
-        };
-        $engine = new WorkerEngine($strategy, $publisher, idleWaitMs: 0, workerType: 'event');
 
-        $engine->tick();
-        $first = $this->heartbeatRow($engine->getWorkerId());
-        self::assertNotNull($first, 'heartbeat row visible after first tick');
-        self::assertSame('event', $first['worker_type']);
-        self::assertSame('idle', $first['status']);
+        $cycleOne = '01900000-0000-7000-8000-0000000000a1';
+        $publisher->publish(new \HSP\Core\Workers\HeartbeatRecord(
+            workerId:        $cycleOne,
+            status:          'running',
+            lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+            workerType:      'processing',
+            startedAt:       new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+        ));
 
-        usleep(1500); // ensure a measurable clock advance
-        $engine->tick();
-        $second = $this->heartbeatRow($engine->getWorkerId());
+        $first = $this->heartbeatRow($cycleOne);
+        self::assertNotNull($first, 'heartbeat row visible after the first cycle');
+        self::assertSame('processing', $first['worker_type']);
+        self::assertSame('running', $first['status']);
 
-        self::assertSame(1, $this->countRows('system.worker_heartbeats'), 'single current-state row (no history)');
-        self::assertGreaterThanOrEqual(
-            strtotime($first['last_heartbeat_at']),
-            strtotime($second['last_heartbeat_at']),
-            'last_heartbeat_at advances (or holds) per tick',
-        );
-        self::assertNotSame($first['last_heartbeat_at'], $second['last_heartbeat_at'],
-            'last_heartbeat_at value changed on the second tick');
+        $cycleTwo = '01900000-0000-7000-8000-0000000000a2';
+        $publisher->publish(new \HSP\Core\Workers\HeartbeatRecord(
+            workerId:        $cycleTwo,
+            status:          'idle',
+            lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+            workerType:      'processing',
+            startedAt:       new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+        ));
+
+        $second = $this->heartbeatRow($cycleTwo);
+        self::assertNotNull($second, 'the second cycle wrote its own fresh-UUID row');
+        self::assertSame('idle', $second['status']);
+
+        self::assertSame(2, $this->countRows('system.worker_heartbeats'),
+            'two cycles → two distinct worker_id rows (DECISION X ruling (1))');
     }
 
     // =========================================================================
@@ -231,21 +243,14 @@ final class OperationalBaselineIntegrationTest extends TestCase
         self::assertNotNull($claimed);
         self::assertSame('claimed', $this->jobStatus($eventId));
 
-        // Drive recovery THROUGH the real runtime driver: a WorkerEngine ticking a
-        // MaintenanceWorkerStrategy (DECISION R) — NOT a direct requeueTimedOut() call.
-        $maintenance = new MaintenanceWorkerStrategy($queue, [
-            'recovery_interval_seconds' => 0, // sweep every tick for the test
-            'partitions'                => ['content'],
-        ]);
-        $engine = new WorkerEngine(
-            $maintenance,
-            new DatabaseHeartbeatPublisher($this->db),
-            idleWaitMs: 0,
-            workerType: 'maintenance',
-        );
+        // Drive recovery THROUGH the real runtime driver: the MaintenanceWorkerStrategy sweep
+        // (DECISION R) — this is exactly the maintenance STAGE the ADR-054 Processing Engine
+        // cycle invokes once per cycle (no in-process cadence throttle — the cron tick is the
+        // cadence). NOT a direct requeueTimedOut() call.
+        $maintenance = new MaintenanceWorkerStrategy($queue, ['partitions' => ['content']]);
 
-        $didWork = $engine->tick(); // maintenance sweep runs here
-        self::assertTrue($didWork, 'the maintenance tick ran a recovery sweep');
+        $didWork = $maintenance->execute($this->ctx('01900000-0000-7000-8000-00000000ma1n'));
+        self::assertTrue($didWork, 'the maintenance sweep ran');
 
         // The crashed job is available again and claimable by a fresh worker.
         self::assertSame('available', $this->jobStatus($eventId), 'expired job requeued to available');
@@ -292,8 +297,12 @@ final class OperationalBaselineIntegrationTest extends TestCase
     // Runtime counters emitted as structured logs (DECISION Q clause 2)
     // =========================================================================
 
-    public function test_runtime_counters_appear_in_structured_logs_on_a_processed_tick(): void
+    public function test_runtime_counters_appear_in_structured_logs_on_a_processed_cycle(): void
     {
+        // ADR-054: a processed cycle emits ONE 'processing.cycle' structured log carrying the
+        // per-cycle result plus the runtime counters snapshot (DECISION Q clause 2). Here a job
+        // is already queued (relay/dispatch find nothing); the projection stage processes it and
+        // increments the processed counter, and the engine emits the cycle metric.
         $queue = new DatabaseQueueProvider($this->db, ['retry_limit' => 5]);
 
         $eventId = $this->seedEvent('content.post.updated', 'post', '600', 1);
@@ -306,23 +315,46 @@ final class OperationalBaselineIntegrationTest extends TestCase
         $captured = [];
         $logger   = new StructuredLogger(static function (string $l) use (&$captured): void { $captured[] = $l; });
 
-        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, retryLimit: 5, counters: $counters);
-        $engine   = new WorkerEngine(
-            $strategy,
+        // Real Processing Engine cycle: relay stage over split-outbox fakes (idle — no outbox
+        // rows); dispatch stage over live PG (idle — system.events empty); real projection
+        // stage processes the queued job; maintenance sweep over the live queue.
+        $relay = new \HSP\Core\Workers\Strategies\RelayWorkerStrategy(
+            new \HSP\Tests\Unit\Events\Outbox\FakeMysqlOutboxConnection(),
+            new \HSP\Tests\Unit\Events\Outbox\FakePgsqlOutboxConnection(),
+            'wp_',
+            100,
+        );
+        $dispatch    = new \HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy(
+            new \HSP\Core\Events\Dispatcher\EventDispatcher($this->db, $queue, 100),
+        );
+        $projection  = new EventWorkerStrategy($queue, $registry, $this->db, retryLimit: 5, counters: $counters);
+        $maintenance = new MaintenanceWorkerStrategy($queue, ['partitions' => ['content']]);
+
+        $engine = new WorkerEngine(
+            $relay,
+            $dispatch,
+            $projection,
+            $maintenance,
             new DatabaseHeartbeatPublisher($this->db),
-            idleWaitMs: 0,
-            workerType: 'event',
-            counters: $counters,
-            logger: $logger,
+            projectionBatchSize:    100,
+            cycleTimeBudgetSeconds:  20,
+            workerType:              'processing',
+            counters:                $counters,
+            logger:                  $logger,
         );
 
-        self::assertTrue($engine->tick(), 'a job was processed');
+        $result = $engine->runCycle();
 
-        self::assertNotEmpty($captured, 'a structured counter line was emitted');
+        self::assertSame(1, $result->projected, 'the queued job was projected this cycle');
+        self::assertTrue($result->didWork());
+
+        self::assertNotEmpty($captured, 'a structured cycle line was emitted');
         $decoded = json_decode($captured[0], true);
-        self::assertSame('worker.counters', $decoded['event']);
-        self::assertSame(1, $decoded['processed'], 'processed counter reflects the successful job');
-        self::assertSame(0, $decoded['failure']);
+        self::assertSame('processing.cycle', $decoded['event']);
+        self::assertSame(1, $decoded['projected'], 'the cycle metric reports one projected job');
+        self::assertArrayHasKey('counters', $decoded, 'the runtime counters snapshot rides the cycle metric');
+        self::assertSame(1, $decoded['counters']['processed'], 'processed counter reflects the successful job');
+        self::assertSame(0, $decoded['counters']['failure']);
     }
 
     // =========================================================================

@@ -7,57 +7,83 @@ namespace HSP\Core\Workers;
 use HSP\Core\Contracts\WorkerInterface;
 use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Observability\WorkerCounters;
+use HSP\Core\Workers\Strategies\RelayWorkerStrategy;
 
 /**
- * Shared worker engine with pluggable strategies.
+ * WP-Cron Processing Engine (ADR-054 / Doc 8 v2.0 §9).
+ *
+ * Runs ONE bounded, stateless cycle per invocation and exits cleanly — there is no daemon
+ * loop, no sleep, no shutdown signal. A cycle is a single PHP execution that composes the
+ * four consumer-side stages into bounded batches and returns:
+ *
+ *   bootstrap (fresh per-cycle UUIDv7 — DECISION X ruling (1))
+ *        → relay batch      (RelayWorkerStrategy::tick(), ≤ relay_batch_size)
+ *        → dispatch batch   (DispatcherWorkerStrategy::execute(), ≤ dispatch_batch_size)
+ *        → projection batch (EventWorkerStrategy::execute() in a bounded loop,
+ *                            ≤ projection_batch_size)
+ *        → maintenance      (MaintenanceWorkerStrategy sweep — DECISION R)
+ *        → persist per-cycle heartbeat + metrics (DECISION P/Q)
+ *        → clean exit
+ *
+ * Execution-time budget (Doc 8 v2.0 §12): the cycle carries a config-driven
+ * `cycle_time_budget_seconds` set well inside the environment's PHP max_execution_time. The
+ * budget is checked before each stage AND before each projection claim. When the budget is
+ * reached the engine STOPS claiming new work, lets the in-flight event's single DECISION 3
+ * transaction finish (EventWorkerStrategy::execute() commits atomically per call — it is
+ * never interrupted mid-transaction here), records metrics, and exits cleanly. The visibility
+ * timeout (§14) is the hard-kill backstop if the OS terminates the process anyway.
+ *
+ * Statelessness (Doc 8 v2.0 §9): the cycle carries nothing forward in memory. All
+ * continuation state is the residual durable state in wp_hsp_outbox / system.events /
+ * system.queue_jobs; a backlog larger than one cycle is continued by the next cron cycle.
+ *
+ * Concurrency (Doc 8 v2.0 §11 / ADR-054 §3): overlapping cycles are safe using EXISTING
+ * guarantees only — SKIP LOCKED claiming, aggregate-version ordering (DECISION J), visibility
+ * timeout (DECISION R), and the DECISION 3 atomic commit. This engine adds NO new locking
+ * mechanism (no cron mutex, no single-flight guard).
+ *
+ * Identity + heartbeat (DECISION X, v1.24): each cycle mints a FRESH UUIDv7 at bootstrap; the
+ * per-cycle heartbeat status is 'running' (the cycle advanced work) or 'idle' (the pipeline
+ * was empty) — the daemon-only 'processing'/'shutdown' states are gone. The
+ * DatabaseHeartbeatPublisher SQL and DECISION P schema are reused verbatim.
  *
  * Authority:
- *   Doc 8 §7  — standard pipeline executed per tick:
- *               Claim → Load Event → Create WorkerExecutionContext
- *               → Validate → Resolve Subscriber → Execute Handler
- *               → Commit State → Acknowledge Job
- *               (individual pipeline steps are the strategy's responsibility;
- *               the engine owns the outer loop, context creation, and heartbeat)
- *   ADR-044   — stateless; reload current WP state per event (state sync, not
- *               event sourcing). Engine carries no mutable domain state.
- *   ADR-022   — retry limit is enforced by the strategy via QueueProviderInterface.
- *   OPEN-3 v1.1 — worker identity is UUIDv7, self-assigned at startup.
- *   DECISION E — no new raw pg_* wrapper introduced here. PostgreSQL access goes
- *               through the strategy → QueueProviderInterface path.
+ *   ADR-054 / Doc 8 v2.0 §9/§12/§15/§16/§24/§25 — the bounded cycle model.
+ *   DECISION X (v1.24) — per-cycle fresh UUIDv7 (1); status set running/idle (2);
+ *                        WorkerInterface bounded-cycle contract (3).
+ *   DECISION 3 — three-op single-PG-transaction commit is preserved (owned by the
+ *                projection strategy; the engine never interrupts it mid-transaction).
+ *   DECISION P/Q — heartbeat current-state (schema verbatim) + derived metrics (structured logs).
  *   CLAUDE.md Rule 7 — constructor injection only; no Container::get / global $container.
- *
- * Graceful shutdown:
- *   shutdown() sets a flag. The run() loop checks it *between* ticks — never
- *   mid-tick — so the in-flight job always completes before the engine exits.
- *
- * Heartbeat:
- *   After every tick the engine publishes a HeartbeatRecord carrying worker_id,
- *   status ('idle' when queue was empty, 'processing' when a job ran), and
- *   last_heartbeat_at. Doc 8 §15.
- *
- * Idle back-off:
- *   When the strategy returns false (queue empty), the engine sleeps
- *   $idleWaitMs milliseconds before the next tick to avoid busy-spinning.
  */
 final class WorkerEngine implements WorkerInterface
 {
-    private bool   $running  = false;
+    /** Default projection batch size if none is configured. */
+    private const DEFAULT_PROJECTION_BATCH_SIZE = 100;
+
+    /** Default execution-time budget (seconds) if none is configured. */
+    private const DEFAULT_CYCLE_TIME_BUDGET_SECONDS = 20;
+
     private string $workerId;
-    private readonly \DateTimeImmutable $startedAt;
 
     public function __construct(
-        private readonly WorkerStrategyInterface   $strategy,
+        private readonly RelayWorkerStrategy         $relayStrategy,
+        private readonly WorkerStrategyInterface     $dispatchStrategy,
+        private readonly WorkerStrategyInterface     $projectionStrategy,
+        private readonly WorkerStrategyInterface     $maintenanceStrategy,
         private readonly HeartbeatPublisherInterface $heartbeatPublisher,
-        private readonly int                        $idleWaitMs = 200,
-        /** Worker-type tag stamped on every heartbeat (DECISION P). */
-        private readonly string                     $workerType = 'worker',
+        /** Max system.queue_jobs claimed + projected per cycle (Doc 8 v2.0 §9). */
+        private readonly int                         $projectionBatchSize = self::DEFAULT_PROJECTION_BATCH_SIZE,
+        /** Execution-time budget in seconds (Doc 8 v2.0 §12). */
+        private readonly float                       $cycleTimeBudgetSeconds = self::DEFAULT_CYCLE_TIME_BUDGET_SECONDS,
+        /** worker_type tag stamped on the per-cycle heartbeat (DECISION P). */
+        private readonly string                      $workerType = 'processing',
         /** Optional runtime counters emitted as structured logs (DECISION Q). */
-        private readonly ?WorkerCounters            $counters = null,
-        /** Optional structured-log sink for runtime counters (DECISION Q). */
-        private readonly ?StructuredLogger          $logger = null,
+        private readonly ?WorkerCounters             $counters = null,
+        /** Optional structured-log sink for the per-cycle metric (DECISION Q). */
+        private readonly ?StructuredLogger           $logger = null,
     ) {
-        $this->workerId  = $this->uuidv7();
-        $this->startedAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $this->workerId = $this->uuidv7();
     }
 
     // -------------------------------------------------------------------------
@@ -65,76 +91,106 @@ final class WorkerEngine implements WorkerInterface
     // -------------------------------------------------------------------------
 
     /**
-     * Execute one tick: build context → delegate to strategy → publish heartbeat.
-     *
-     * Returns true if the strategy processed a job, false if the queue was empty.
+     * Run exactly one bounded Processing Engine cycle and exit.
      */
-    public function tick(): bool
+    public function runCycle(): ProcessingCycleResult
     {
+        // Bootstrap: mint a FRESH per-cycle identity (DECISION X ruling (1)).
+        $this->workerId = $this->uuidv7();
+        $startedAt      = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $start          = microtime(true);
+
         $context = new WorkerExecutionContext(
             workerId:      $this->workerId,
-            tickStartedAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+            tickStartedAt: $startedAt,
         );
 
-        $didWork = $this->strategy->execute($context);
+        $relayed          = 0;
+        $dispatched       = 0;
+        $projected        = 0;
+        $maintenanceSwept = false;
+        $budgetExhausted  = false;
 
-        $this->heartbeatPublisher->publish(new HeartbeatRecord(
-            workerId:        $this->workerId,
-            status:          $didWork ? 'processing' : 'idle',
-            lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
-            workerType:      $this->workerType,
-            startedAt:       $this->startedAt,
-        ));
-
-        // Structured emission of runtime counters (DECISION Q clause 2). Only on ticks
-        // that did work, to avoid flooding the log while the queue is idle.
-        if ($didWork && $this->counters !== null && $this->logger !== null) {
-            $this->logger->metric('worker.counters', array_merge(
-                [
-                    'worker_id'   => $this->workerId,
-                    'worker_type' => $this->workerType,
-                ],
-                $this->counters->snapshot(),
-            ));
-        }
-
-        return $didWork;
-    }
-
-    /**
-     * Run the worker loop until shutdown() is called.
-     *
-     * Graceful shutdown: the loop checks the flag only between ticks, so an
-     * in-flight job is always completed before the engine exits.
-     */
-    public function run(): void
-    {
-        $this->running = true;
-
-        while ($this->running) {
-            $didWork = $this->tick();
-
-            if (! $didWork) {
-                usleep($this->idleWaitMs * 1000);
+        // ---- Relay stage (one bounded batch) ----
+        if ($this->withinBudget($start)) {
+            if ($this->relayStrategy->tick()) {
+                $relayed = $this->relayStrategy->lastRelayedCount();
             }
+        } else {
+            $budgetExhausted = true;
         }
 
-        // Publish a final heartbeat so monitors see the clean shutdown.
+        // ---- Dispatch stage (one bounded batch) ----
+        if (! $budgetExhausted && $this->withinBudget($start)) {
+            if ($this->dispatchStrategy->execute($context)) {
+                // The dispatch strategy reports how many events it enqueued this batch via
+                // lastDispatchedCount() (DispatcherWorkerStrategy). Fall back to 1 for any
+                // dispatch strategy that does not expose a count (batch had work).
+                $dispatched = method_exists($this->dispatchStrategy, 'lastDispatchedCount')
+                    ? $this->dispatchStrategy->lastDispatchedCount()
+                    : 1;
+            }
+        } elseif (! $budgetExhausted) {
+            $budgetExhausted = true;
+        }
+
+        // ---- Projection stage (bounded loop — one job per EventWorkerStrategy::execute()) ----
+        // Budget is checked BEFORE each claim; on budget the in-flight event's single
+        // transaction has already committed (execute() is atomic per call), so we simply
+        // stop claiming and exit cleanly mid-backlog (Doc 8 v2.0 §12/§25).
+        for ($i = 0; $i < $this->projectionBatchSize; $i++) {
+            if (! $this->withinBudget($start)) {
+                $budgetExhausted = true;
+                break;
+            }
+
+            if (! $this->projectionStrategy->execute($context)) {
+                break; // queue empty — nothing left to project this cycle
+            }
+
+            $projected++;
+        }
+
+        // ---- Maintenance stage (visibility-timeout requeue sweep — DECISION R) ----
+        if (! $budgetExhausted && $this->withinBudget($start)) {
+            $this->maintenanceStrategy->execute($context);
+            $maintenanceSwept = true;
+        } elseif (! $budgetExhausted) {
+            $budgetExhausted = true;
+        }
+
+        $elapsed = microtime(true) - $start;
+
+        $result = new ProcessingCycleResult(
+            workerId:         $this->workerId,
+            relayed:          $relayed,
+            dispatched:       $dispatched,
+            projected:        $projected,
+            maintenanceSwept: $maintenanceSwept,
+            budgetExhausted:  $budgetExhausted,
+            elapsedSeconds:   $elapsed,
+        );
+
+        // ---- Persist the per-cycle heartbeat (DECISION P schema; status set per DECISION X). ----
         $this->heartbeatPublisher->publish(new HeartbeatRecord(
             workerId:        $this->workerId,
-            status:          'shutdown',
+            status:          $result->didWork() ? 'running' : 'idle',
             lastHeartbeatAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
             workerType:      $this->workerType,
-            startedAt:       $this->startedAt,
+            startedAt:       $startedAt,
         ));
-    }
 
-    /**
-     * Signal graceful shutdown. The current tick (if any) completes first.
-     */
-    public function shutdown(): void
-    {
-        $this->running = false;
+        // ---- Structured emission of the cycle metric (DECISION Q clause 2). ----
+        if ($this->logger !== null) {
+            $payload = $result->toArray();
+            if ($this->counters !== null) {
+                $payload['counters'] = $this->counters->snapshot();
+            }
+            $payload['worker_type'] = $this->workerType;
+            $this->logger->metric('processing.cycle', $payload);
+        }
+
+        return $result;
     }
 
     public function getWorkerId(): string
@@ -142,21 +198,19 @@ final class WorkerEngine implements WorkerInterface
         return $this->workerId;
     }
 
-    /**
-     * @return string[]
-     */
-    public function getQueueNames(): array
-    {
-        return $this->strategy->getQueueNames();
-    }
-
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
 
+    /** True while the cycle is still inside its execution-time budget (Doc 8 v2.0 §12). */
+    private function withinBudget(float $start): bool
+    {
+        return (microtime(true) - $start) < $this->cycleTimeBudgetSeconds;
+    }
+
     /**
-     * Generate a UUIDv7 for worker identity (ADR-015, OPEN-3 v1.1 canon).
-     * Self-assigned once at construction; never changes during the worker lifetime.
+     * Generate a UUIDv7 for the per-cycle processing-component identity
+     * (ADR-015, OPEN-3 v1.1 canon; DECISION X ruling (1) — fresh per cycle).
      */
     private function uuidv7(): string
     {

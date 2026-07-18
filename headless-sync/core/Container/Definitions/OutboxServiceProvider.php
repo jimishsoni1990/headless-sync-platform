@@ -83,7 +83,13 @@ final class OutboxServiceProvider extends ServiceProvider
 
         $container->singleton('relay.worker', function (Container $c) {
             global $wpdb;
-            $batchSize = (int) ($this->config['relay']['batch_size'] ?? 100);
+            // ADR-054: the relay stage's per-cycle max batch size is the config-driven
+            // processing.relay_batch_size (Doc 8 v2.0 §9). Falls back to the legacy
+            // relay.batch_size, then a sensible default.
+            $processing = $this->config['worker']['processing'] ?? [];
+            $batchSize  = (int) ($processing['relay_batch_size']
+                ?? $this->config['relay']['batch_size']
+                ?? 100);
 
             return new RelayWorkerStrategy(
                 $c->get('outbox.connection.mysql'),

@@ -6,10 +6,25 @@ declare(strict_types=1);
  * Worker runtime configuration skeleton.
  * No business logic permitted (Doc 2 §5).
  *
- * maintenance.recovery_interval_seconds — DECISION R (v1.16): cadence for the
- *   MaintenanceWorkerStrategy visibility-timeout recovery sweep. Config-driven with
- *   a sensible default; the strategy hardcodes no timing. This mirrors the OPEN-4
- *   config-driven-timeout precedent (queue.visibility_timeout).
+ * processing — ADR-054 / Doc 8 v2.0 §9/§12 (DECISION X v1.24): the WP-Cron Processing
+ *   Engine cycle. All values config-driven, no hardcoded batch/budget in the engine
+ *   (DECISION R config-driven precedent). NO schema change — these are runtime knobs only.
+ *   relay_batch_size          — max wp_hsp_outbox rows relayed per cycle.
+ *   dispatch_batch_size       — max system.events rows enqueued per cycle.
+ *   projection_batch_size     — max system.queue_jobs claimed + projected per cycle.
+ *   cycle_time_budget_seconds — soft execution-time budget; the cycle stops claiming new
+ *                               work once elapsed time reaches this, finishes the in-flight
+ *                               event's single DECISION 3 transaction, and exits cleanly.
+ *                               Set WELL INSIDE the environment's PHP max_execution_time.
+ *   schedule                  — WP-Cron schedule name for the recurring processing-cycle
+ *                               event (defaults to WP core 'hsp_processing' custom interval;
+ *                               the cron registrar registers the interval).
+ *   interval_seconds          — interval (seconds) for the custom 'hsp_processing' schedule.
+ *
+ * maintenance.recovery_interval_seconds — DECISION R (v1.16): retained config key. Under
+ *   ADR-054 the MaintenanceWorkerStrategy sweep runs once per WP-Cron cycle (the cron
+ *   cadence IS the maintenance cadence); the strategy no longer self-throttles, so this
+ *   value is no longer read by the strategy but is kept for operators/back-compat.
  *
  * reconciliation — DECISION U (v1.19): reconciliation cadence + paging, config-driven.
  *   schedules  — WP-Cron schedule name per mode (hourly / hsp_nightly / hsp_weekly are
@@ -26,6 +41,14 @@ declare(strict_types=1);
  *   offline_after_seconds — a worker whose last heartbeat is older than this is "offline".
  */
 return [
+    'processing' => [
+        'relay_batch_size'          => 200,
+        'dispatch_batch_size'       => 200,
+        'projection_batch_size'     => 200,
+        'cycle_time_budget_seconds' => 20,
+        'schedule'                  => 'hsp_processing',
+        'interval_seconds'          => 60,
+    ],
     'maintenance' => [
         'recovery_interval_seconds' => 30,
         'partitions'                => ['content', 'commerce', 'system'],

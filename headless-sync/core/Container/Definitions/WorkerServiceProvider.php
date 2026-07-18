@@ -7,6 +7,7 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Contracts\WorkerInterface;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Delivery\AdapterRegistry;
@@ -21,6 +22,7 @@ use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\DatabaseHeartbeatPublisher;
 use HSP\Core\Workers\HeartbeatPublisherInterface;
+use HSP\Core\Workers\ProcessingCronRegistrar;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
 use HSP\Core\Workers\Strategies\MaintenanceWorkerStrategy;
 use HSP\Core\Workers\Strategies\ReconciliationWorkerStrategy;
@@ -28,29 +30,39 @@ use HSP\Core\Workers\Strategies\ReplayWorkerStrategy;
 use HSP\Core\Workers\WorkerEngine;
 
 /**
- * Registers the shared worker engine, registries, strategies, and heartbeat publisher.
+ * Registers the WP-Cron Processing Engine cycle, registries, strategies, and heartbeat publisher.
  *
  * Bindings:
  *   EventRegistry                   — singleton; explicit registration only (no discovery)
  *   AdapterRegistry                 — singleton; explicit registration only
  *   HeartbeatPublisherInterface     — DatabaseHeartbeatPublisher (DECISION P) on the
  *                                     worker-runtime handle (DECISION L Ruling 0)
- *   'worker.strategy.event'         — EventWorkerStrategy (wired to 'content' queue)
- *   'worker.strategy.replay'        — ReplayWorkerStrategy stub
- *   'worker.strategy.reconciliation'— ReconciliationWorkerStrategy stub
+ *   'worker.strategy.event'         — EventWorkerStrategy (projection stage, 'content' queue)
+ *   'worker.strategy.replay'        — ReplayWorkerStrategy (producer-side, CLI/cron-triggered)
+ *   'worker.strategy.reconciliation'— ReconciliationWorkerStrategy (producer-side)
  *   'worker.strategy.maintenance'   — MaintenanceWorkerStrategy (drives requeueTimedOut)
- *   'worker.engine.event'           — WorkerEngine driven by EventWorkerStrategy
- *   'worker.engine.maintenance'     — WorkerEngine driven by MaintenanceWorkerStrategy
+ *   WorkerInterface / 'processing.engine' — the ONE bounded Processing Engine cycle
+ *                                     composing relay → dispatch → projection → maintenance
+ *                                     (ADR-054 / Doc 8 v2.0 §9). Reads processing.* batch
+ *                                     sizes + cycle_time_budget_seconds from config/worker.php.
+ *
+ * ADR-054 (DECISION X, v1.24): there is NO daemon engine. The per-strategy daemon-engine
+ * bindings ('worker.engine.event' / 'worker.engine.maintenance') and the standalone
+ * 'dispatcher.engine' are RETIRED from the execution path — replaced by the single bounded
+ * cycle engine bound here, which composes the retained stage strategies. The strategy
+ * bindings themselves are kept.
  *
  * Authority:
+ *   ADR-054 / Doc 8 v2.0 §9/§12 — one bounded cron cycle composing the four stages;
+ *                        config-driven per-stage batch sizes + execution-time budget.
+ *   DECISION X (v1.24) — per-cycle fresh UUID / running-idle status / bounded-cycle contract.
  *   DECISION E (v1.6)  — EventWorkerStrategy receives DatabaseConnectionInterface for
  *                        Resolve-stage stale guard (DECISION J); no new raw pg_* wrapper.
  *   DECISION P (v1.16) — DatabaseHeartbeatPublisher replaces NullHeartbeatPublisher on
- *                        the runtime path; upserts system.worker_heartbeats per tick.
+ *                        the runtime path; upserts system.worker_heartbeats per cycle.
  *   DECISION L Ruling 0 (v1.16) — heartbeat rides the EXISTING worker-runtime connection
  *                        ('queue.connection.pgsql'); no new handle/class/pg_* wrapper.
- *   DECISION R (v1.16) — MaintenanceWorkerStrategy drives requeueTimedOut() on a
- *                        config-driven cadence (no hardcoded timing).
+ *   DECISION R (v1.16) — MaintenanceWorkerStrategy drives requeueTimedOut() (per-cycle sweep).
  *   CLAUDE.md Rule 7   — constructor injection only; no Container::get() inside business logic.
  */
 final class WorkerServiceProvider extends ServiceProvider
@@ -165,22 +177,45 @@ final class WorkerServiceProvider extends ServiceProvider
             );
         });
 
-        $container->singleton('worker.engine.event', function (Container $c) {
+        // ADR-054 / Doc 8 v2.0 §9: the ONE bounded Processing Engine cycle. Composes the four
+        // consumer-side stage strategies (relay → dispatch → projection → maintenance) into a
+        // single bounded, time-budgeted cycle. Resolves 'relay.worker' (OutboxServiceProvider)
+        // and 'dispatcher.strategy' (DispatcherServiceProvider) lazily — both are registered
+        // before this provider, and closures defer resolution, so order is safe. Batch sizes +
+        // budget are config-driven (processing.* keys; no hardcoded values — DECISION R precedent).
+        $container->singleton(WorkerInterface::class, function (Container $c) {
+            /** @var array<string,mixed> $processing */
+            $processing         = $this->config['worker']['processing'] ?? [];
+            $projectionBatchSize = (int) ($processing['projection_batch_size'] ?? 100);
+            $budgetSeconds       = (float) ($processing['cycle_time_budget_seconds'] ?? 20);
+
             return new WorkerEngine(
+                $c->get('relay.worker'),
+                $c->get('dispatcher.strategy'),
                 $c->get('worker.strategy.event'),
+                $c->get('worker.strategy.maintenance'),
                 $c->get(HeartbeatPublisherInterface::class),
-                idleWaitMs: 200,
-                workerType: 'event',
-                counters:   $c->get(WorkerCounters::class),
-                logger:     $c->get(StructuredLogger::class),
+                projectionBatchSize:    $projectionBatchSize > 0 ? $projectionBatchSize : 100,
+                cycleTimeBudgetSeconds:  $budgetSeconds > 0 ? $budgetSeconds : 20,
+                workerType:              'processing',
+                counters:                $c->get(WorkerCounters::class),
+                logger:                  $c->get(StructuredLogger::class),
             );
         });
 
-        $container->singleton('worker.engine.maintenance', function (Container $c) {
-            return new WorkerEngine(
-                $c->get('worker.strategy.maintenance'),
-                $c->get(HeartbeatPublisherInterface::class),
-                workerType: 'maintenance',
+        // Alias so cron/CLI callers can resolve the engine by an explicit key too.
+        $container->singleton('processing.engine', fn (Container $c) => $c->get(WorkerInterface::class));
+
+        // ADR-054 / Doc 8 v2.0 §23: the WP-Cron trigger that fires ONE bounded cycle per tick.
+        // Custom-interval cadence config-driven (processing.schedule / interval_seconds);
+        // ReconciliationCronRegistrar precedent. No daemon CLI (superseded ADR-024 surface).
+        $container->singleton(ProcessingCronRegistrar::class, function (Container $c) {
+            /** @var array<string,mixed> $processing */
+            $processing = $this->config['worker']['processing'] ?? [];
+
+            return new ProcessingCronRegistrar(
+                $c->get(WorkerInterface::class),
+                $processing,
             );
         });
     }
