@@ -6,8 +6,10 @@ $vendorDir = dirname(__DIR__);
 $baseDir = dirname($vendorDir);
 
 return array(
+    'SzepeViktor\\PHPStan\\WordPress\\' => array($vendorDir . '/szepeviktor/phpstan-wordpress/src'),
     'Psr\\Container\\' => array($baseDir . '/core/Psr/Container'),
     'PhpParser\\' => array($vendorDir . '/nikic/php-parser/lib/PhpParser'),
+    'PHPCSStandards\\Composer\\Plugin\\Installers\\PHPCodeSniffer\\' => array($vendorDir . '/dealerdirect/phpcodesniffer-composer-installer/src'),
     'HSP\\Tests\\' => array($baseDir . '/tests'),
     'HSP\\Modules\\' => array($baseDir . '/modules'),
     'HSP\\Database\\' => array($baseDir . '/database'),

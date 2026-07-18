@@ -1,0 +1,484 @@
+<?xml version="1.0"?>
+<!--
+  ============================================================================
+  HSP PHPCS BASELINE  (generated 2026-07-18, lint-tooling housekeeping session)
+  ============================================================================
+
+  This file records the PHPCS findings that existed on the tree when the lint
+  toolchain was introduced, so `composer lint` exits 0 on the UNMODIFIED tree.
+  It is <include>d by phpcs.xml.dist. Each entry is a PER-FILE / PER-SNIFF
+  exclusion: the named sniff is not evaluated in the named file.
+
+  Two categories are baselined here, and they must be retired DIFFERENTLY:
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ A. WPCS SECURITY sniffs (28 findings, 12 file/sniff entries below)       │
+  │    — ALL VERIFIED FALSE POSITIVES (2026-07-18 review).                   │
+  │                                                                          │
+  │    ⚠ A per-file exclusion SILENTLY MASKS ANY FUTURE REAL violation of    │
+  │      that sniff in that file. These entries are a stop-gap ONLY.         │
+  │      In the lint-fix session they MUST be converted to per-LINE inline   │
+  │      `phpcs:ignore <Sniff>` suppressions (with a reason) at the exact    │
+  │      flagged lines, and REMOVED from this file, so the sniff stays live  │
+  │      for the rest of each file.                                          │
+  │                                                                          │
+  │    The 28 verified false positives (file · sniff · reason category):     │
+  │                                                                          │
+  │    NONCE — nonce IS verified (check_ajax_referer / authorize()) before   │
+  │    $_POST is read, but in a SEPARATE method WPCS data-flow can't trace:  │
+  │      core/Operations/Admin/ConsoleActionController.php                   │
+  │        · WordPress.Security.NonceVerification.Missing            (x4)     │
+  │      core/Operations/Admin/ConsoleAjaxController.php                     │
+  │        · WordPress.Security.NonceVerification.Missing            (x6)     │
+  │                                                                          │
+  │    SANITIZE — input IS unslashed + passed through a custom sanitizer     │
+  │    (isTruthy() / sanitizeQuery() / strtoupper()+strict compare) WPCS     │
+  │    does not recognise:                                                    │
+  │      core/Operations/Admin/ConsoleActionController.php                   │
+  │        · WordPress.Security.ValidatedSanitizedInput.InputNotSanitized (x3)│
+  │        · WordPress.Security.ValidatedSanitizedInput.MissingUnslash    (x1)│
+  │      core/Operations/Admin/ConsoleAjaxController.php                     │
+  │        · WordPress.Security.ValidatedSanitizedInput.InputNotSanitized (x1)│
+  │                                                                          │
+  │    SQL — the interpolated variable is a TABLE NAME ($wpdb->prefix.'…',   │
+  │    $wpdb->posts, $wpdb->terms) which CANNOT be a prepare() placeholder;   │
+  │    all VALUES are correctly bound via %s / %d:                            │
+  │      core/Events/Outbox/AggregateVersionCounter.php                      │
+  │        · WordPress.DB.PreparedSQL.InterpolatedNotPrepared        (x1)     │
+  │        · WordPress.DB.PreparedSQL.NotPrepared                    (x1)     │
+  │      core/Migrations/Connection/WpdbMysqlConnection.php                  │
+  │        · WordPress.DB.PreparedSQL.NotPrepared                    (x4)     │
+  │      modules/Content/Reconciliation/WpReconciliationSource.php           │
+  │        · WordPress.DB.PreparedSQL.InterpolatedNotPrepared        (x1)     │
+  │        · WordPress.DB.PreparedSQL.NotPrepared                    (x3)     │
+  │                                                                          │
+  │    ESCAPE — the "output" is an exception message in `throw new …(…)`,    │
+  │    never emitted as HTML (the well-known ExceptionNotEscaped FP):         │
+  │      core/Onboarding/Backfill/BackfillService.php                        │
+  │        · WordPress.Security.EscapeOutput.ExceptionNotEscaped     (x1)     │
+  │      core/Onboarding/OnboardingState.php                                 │
+  │        · WordPress.Security.EscapeOutput.ExceptionNotEscaped     (x2)     │
+  └────────────────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ B. PSR-12 formatting findings (481 findings, 17 sniffs below).           │
+  │    These are auto-fixable; do NOT retire them by sniff exclusion.        │
+  │                                                                          │
+  │    ROOT CAUSE of the dominant cascade (Generic.Files.LineEndings and     │
+  │    most of the whitespace/brace sniffs) is CRLF line endings on a        │
+  │    Windows checkout. The future lint-fix session must fix the ROOT       │
+  │    CAUSE, not add sniff exclusions:                                       │
+  │       1. add .gitattributes:  `* text=auto`  and  `*.php eol=lf`          │
+  │       2. `git add` with the renormalize flag (normalise files to LF)      │
+  │       3. `composer lint:fix`  (phpcbf, PSR-12 formatting only)            │
+  │       4. delete section B of this file once the tree is phpcbf-clean.     │
+  └────────────────────────────────────────────────────────────────────────┘
+-->
+<ruleset name="HSP-PHPCS-Baseline">
+
+    <!-- ==================================================================== -->
+    <!-- SECTION A — WPCS security sniffs: VERIFIED FALSE POSITIVES.           -->
+    <!-- Per-file exclusion is a stop-gap; convert to per-line phpcs:ignore    -->
+    <!-- in the lint-fix session (see header). Masks future real violations.  -->
+    <!-- ==================================================================== -->
+
+    <rule ref="WordPress.Security.NonceVerification.Missing">
+        <exclude-pattern>core/Operations/Admin/ConsoleActionController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleAjaxController.php</exclude-pattern>
+    </rule>
+
+    <rule ref="WordPress.Security.ValidatedSanitizedInput.InputNotSanitized">
+        <exclude-pattern>core/Operations/Admin/ConsoleActionController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleAjaxController.php</exclude-pattern>
+    </rule>
+
+    <rule ref="WordPress.Security.ValidatedSanitizedInput.MissingUnslash">
+        <exclude-pattern>core/Operations/Admin/ConsoleActionController.php</exclude-pattern>
+    </rule>
+
+    <rule ref="WordPress.Security.EscapeOutput.ExceptionNotEscaped">
+        <exclude-pattern>core/Onboarding/Backfill/BackfillService.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingState.php</exclude-pattern>
+    </rule>
+
+    <rule ref="WordPress.DB.PreparedSQL.InterpolatedNotPrepared">
+        <exclude-pattern>core/Events/Outbox/AggregateVersionCounter.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Reconciliation/WpReconciliationSource.php</exclude-pattern>
+    </rule>
+
+    <rule ref="WordPress.DB.PreparedSQL.NotPrepared">
+        <exclude-pattern>core/Events/Outbox/AggregateVersionCounter.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/Connection/WpdbMysqlConnection.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Reconciliation/WpReconciliationSource.php</exclude-pattern>
+    </rule>
+
+    <!-- ==================================================================== -->
+    <!-- SECTION B — PSR-12 formatting debt (auto-fixable; root cause = CRLF). -->
+    <!-- Retire via .gitattributes + renormalize + phpcbf, NOT by keeping      -->
+    <!-- these exclusions (see header).                                        -->
+    <!-- ==================================================================== -->
+
+    <rule ref="Generic.Files.LineEndings.InvalidEOLChar">
+        <exclude-pattern>bootstrap/Application.php</exclude-pattern>
+        <exclude-pattern>bootstrap/CredentialResolver.php</exclude-pattern>
+        <exclude-pattern>config/worker.php</exclude-pattern>
+        <exclude-pattern>core/Cli/ReconcileCommand.php</exclude-pattern>
+        <exclude-pattern>core/Cli/WpCliReconcileRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Container/ContainerBuilder.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/MigrationServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/OnboardingServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/OperationsServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/OutboxServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/WorkerServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/CanonicalModelInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Onboarding/OnboardingStateInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Onboarding/PreflightCheckInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Onboarding/PreflightResult.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ActionRegistryInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/AssetRegistryInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsoleAction.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsoleAsset.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsolePage.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsoleWidget.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/EndpointDescriptor.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/EndpointProviderInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/HealthProviderInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/HealthReport.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/MetricSample.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/MetricsProviderInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/NavigationItem.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/NavigationRegistryInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/OperationsProviderInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/PageRegistryInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/QueueStatus.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/QueueStatusProviderInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/Severity.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/WidgetRegistryInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/WorkerStatus.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/WorkerStatusProviderInterface.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/SourceState.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/WpReconciliationSourceInterface.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/Connection/MysqliOutboxConnection.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/MigrationApplier.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/MigrationApplyResult.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingConnectionProbe.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingRestController.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingRestRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingState.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/MigrationsAppliedCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PgConstantsCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PgReachableCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PgsqlExtensionCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PhpVersionCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/PreflightRunner.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/WorkerCronSpawnResult.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/WorkerCronSpawner.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/AdminPageController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleAdminRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Registries/ActionRegistry.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Registries/AssetRegistry.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Registries/NavigationRegistry.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Registries/PageRegistry.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Registries/WidgetRegistry.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/ConsoleStateStore.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/OperationsService.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/RefreshCoordinator.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationCronRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationResult.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationService.php</exclude-pattern>
+        <exclude-pattern>core/Workers/ProcessingCronRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/ReconciliationWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>headless-sync.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentModule.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentServiceProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/HookWiring.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Reconciliation/WpReconciliationSource.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Generic.Files.LineLength.TooLong">
+        <exclude-pattern>core/Cli/WpCliDlqRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/MigrationRunner.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Backfill/BackfillBlockedException.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PgsqlExtensionCheck.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/AdminPageController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/OperationsActionService.php</exclude-pattern>
+        <exclude-pattern>core/Queue/Providers/Database/DatabaseQueueProvider.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/EventWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentServiceProvider.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Generic.Functions.FunctionCallArgumentSpacing.TooMuchSpaceAfterComma">
+        <exclude-pattern>core/Container/Definitions/CoreServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationCronRegistrar.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentServiceProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/HookWiring.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR12.Files.FileHeader.IncorrectOrder">
+        <exclude-pattern>config/app.php</exclude-pattern>
+        <exclude-pattern>config/database.php</exclude-pattern>
+        <exclude-pattern>config/logging.php</exclude-pattern>
+        <exclude-pattern>config/modules.php</exclude-pattern>
+        <exclude-pattern>config/observability.php</exclude-pattern>
+        <exclude-pattern>config/queue.php</exclude-pattern>
+        <exclude-pattern>config/security.php</exclude-pattern>
+        <exclude-pattern>config/worker.php</exclude-pattern>
+        <exclude-pattern>headless-sync.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR12.Files.FileHeader.SpacingAfterBlock">
+        <exclude-pattern>config/app.php</exclude-pattern>
+        <exclude-pattern>config/database.php</exclude-pattern>
+        <exclude-pattern>config/logging.php</exclude-pattern>
+        <exclude-pattern>config/modules.php</exclude-pattern>
+        <exclude-pattern>config/observability.php</exclude-pattern>
+        <exclude-pattern>config/queue.php</exclude-pattern>
+        <exclude-pattern>config/security.php</exclude-pattern>
+        <exclude-pattern>config/worker.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR12.Files.FileHeader.SpacingInsideBlock">
+        <exclude-pattern>core/Container/Definitions/MigrationServiceProvider.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR2.Classes.ClassDeclaration.CloseBraceAfterBody">
+        <exclude-pattern>core/Events/Dispatcher/EventDispatcher.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR2.Classes.ClassDeclaration.OpenBraceNewLine">
+        <exclude-pattern>core/Container/ContainerException.php</exclude-pattern>
+        <exclude-pattern>core/Container/NotFoundException.php</exclude-pattern>
+        <exclude-pattern>core/Database/Exception/DatabaseException.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/Exception/OutboxWriteException.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/Exception/MigrationException.php</exclude-pattern>
+        <exclude-pattern>core/Module/Exception/InvalidManifestException.php</exclude-pattern>
+        <exclude-pattern>core/Psr/Container/ContainerExceptionInterface.php</exclude-pattern>
+        <exclude-pattern>core/Psr/Container/NotFoundExceptionInterface.php</exclude-pattern>
+        <exclude-pattern>core/Queue/Exception/QueueException.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR2.Files.EndFileNewline.TooMany">
+        <exclude-pattern>core/Migrations/MigrationRunner.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR2.Methods.FunctionCallSignature.MultipleArguments">
+        <exclude-pattern>modules/Content/EventProvider.php</exclude-pattern>
+    </rule>
+
+    <rule ref="PSR2.Methods.FunctionCallSignature.SpaceBeforeCloseBracket">
+        <exclude-pattern>core/Container/Definitions/ModuleServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/WorkerServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/MigrationRunner.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentServiceProvider.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Squiz.Functions.FunctionDeclarationArgumentSpacing.SpaceBeforeEquals">
+        <exclude-pattern>core/Contracts/FilterSet.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterHint">
+        <exclude-pattern>core/Cli/ReconcileCommand.php</exclude-pattern>
+        <exclude-pattern>core/Cli/ReplayCommand.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/CursorPage.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/FilterSet.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ActionResult.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/OutboxWriterInterface.php</exclude-pattern>
+        <exclude-pattern>core/Events/Dispatcher/EventDispatcher.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/OutboxEvent.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/OutboxWriter.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleActionController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/OperationsActionService.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationResult.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationService.php</exclude-pattern>
+        <exclude-pattern>core/Replay/ReplayResult.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/EventWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/RelayWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/WorkerEngine.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentModule.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/CategoryUpsertHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/PageUpsertHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/PostUpsertHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/HookWiring.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Reconciliation/WpReconciliationSource.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Replay/ContentReplayEmitter.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Rest/ContentRestRegistrar.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Squiz.Functions.MultiLineFunctionDeclaration.BraceOnSameLine">
+        <exclude-pattern>bootstrap/Application.php</exclude-pattern>
+        <exclude-pattern>core/Configuration/ConfigLoader.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/CoreServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/ModuleServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Events/Dispatcher/DispatchBatch.php</exclude-pattern>
+        <exclude-pattern>core/Events/Dispatcher/DispatcherWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/AggregateVersionCounter.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/Connection/MysqliOutboxConnection.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/OutboxEvent.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/Connection/WpdbMysqlConnection.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleDiscovery.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleLoader.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Observability/WorkerCounters.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentModule.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Events/ContentEventTypes.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentEntityTaxonomiesMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentPagesMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentPostsMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentSchemaMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentTaxonomiesMigration.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Squiz.Functions.MultiLineFunctionDeclaration.ContentAfterBrace">
+        <exclude-pattern>core/Events/Outbox/OutboxEvent.php</exclude-pattern>
+        <exclude-pattern>core/Observability/WorkerCounters.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Squiz.WhiteSpace.ControlStructureSpacing.SpacingBeforeClose">
+        <exclude-pattern>core/Events/Dispatcher/EventDispatcher.php</exclude-pattern>
+        <exclude-pattern>core/Queue/DeadLetterRepository.php</exclude-pattern>
+        <exclude-pattern>core/Queue/Providers/Database/DatabaseQueueProvider.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/EventWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/RelayWorkerStrategy.php</exclude-pattern>
+    </rule>
+
+    <rule ref="Squiz.WhiteSpace.ScopeClosingBrace.ContentBefore">
+        <exclude-pattern>bootstrap/Application.php</exclude-pattern>
+        <exclude-pattern>bootstrap/Bootstrapper.php</exclude-pattern>
+        <exclude-pattern>core/Cli/DlqCommand.php</exclude-pattern>
+        <exclude-pattern>core/Cli/ReconcileCommand.php</exclude-pattern>
+        <exclude-pattern>core/Cli/ReplayCommand.php</exclude-pattern>
+        <exclude-pattern>core/Cli/WpCliDlqRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Cli/WpCliReconcileRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Cli/WpCliReplayRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Configuration/ConfigLoader.php</exclude-pattern>
+        <exclude-pattern>core/Container/ContainerException.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/CoreServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/DeliveryServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/DispatcherServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/MigrationServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/ModuleServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/OnboardingServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/OperationsServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/OutboxServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/QueueServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/Definitions/WorkerServiceProvider.php</exclude-pattern>
+        <exclude-pattern>core/Container/NotFoundException.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/CursorPage.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/FilterSet.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Onboarding/PreflightResult.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ActionResult.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsoleAction.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsoleAsset.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsolePage.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ConsoleWidget.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/EndpointDescriptor.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/HealthReport.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/MetricSample.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/ModuleInspection.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/NavigationItem.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/QueueStatus.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/Operations/WorkerStatus.php</exclude-pattern>
+        <exclude-pattern>core/Contracts/SourceState.php</exclude-pattern>
+        <exclude-pattern>core/Database/Exception/DatabaseException.php</exclude-pattern>
+        <exclude-pattern>core/Events/Dispatcher/DispatchBatch.php</exclude-pattern>
+        <exclude-pattern>core/Events/Dispatcher/DispatcherWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Events/Dispatcher/EventDispatcher.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/AggregateVersionCounter.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/Connection/MysqliOutboxConnection.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/Exception/OutboxWriteException.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/OutboxEvent.php</exclude-pattern>
+        <exclude-pattern>core/Events/Outbox/OutboxWriter.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/Connection/WpdbMysqlConnection.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/Exception/MigrationException.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/MigrationRecord.php</exclude-pattern>
+        <exclude-pattern>core/Migrations/MigrationRunner.php</exclude-pattern>
+        <exclude-pattern>core/Module/Exception/InvalidManifestException.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleDiscovery.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleLoader.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleManifest.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Module/ModuleRegistry.php</exclude-pattern>
+        <exclude-pattern>core/Observability/OperationalMetricsQuery.php</exclude-pattern>
+        <exclude-pattern>core/Observability/WorkerCounters.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Backfill/BackfillGate.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Backfill/BackfillProgress.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Backfill/BackfillService.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/MigrationApplyResult.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingAdminRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingPageController.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingRestController.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/OnboardingRestRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/MigrationsAppliedCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PgReachableCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/Preflight/PhpVersionCheck.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/WorkerCronSpawnResult.php</exclude-pattern>
+        <exclude-pattern>core/Onboarding/WorkerCronSpawner.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/AdminPageController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleActionController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleAdminRegistrar.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Admin/ConsoleAjaxController.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Diagnostics/OperationsQueryReader.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Diagnostics/SystemInformation.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Diagnostics/SystemInformationProvider.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Providers/HealthProvider.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Providers/MetricsProvider.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Providers/QueueStatusProvider.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Providers/WorkerStatusProvider.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/OperationsActionService.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/OperationsService.php</exclude-pattern>
+        <exclude-pattern>core/Operations/Services/RefreshCoordinator.php</exclude-pattern>
+        <exclude-pattern>core/Psr/Container/ContainerExceptionInterface.php</exclude-pattern>
+        <exclude-pattern>core/Psr/Container/NotFoundExceptionInterface.php</exclude-pattern>
+        <exclude-pattern>core/Queue/DeadLetterRepository.php</exclude-pattern>
+        <exclude-pattern>core/Queue/Exception/QueueException.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationResult.php</exclude-pattern>
+        <exclude-pattern>core/Reconciliation/ReconciliationService.php</exclude-pattern>
+        <exclude-pattern>core/Replay/ReplayResult.php</exclude-pattern>
+        <exclude-pattern>core/Workers/DatabaseHeartbeatPublisher.php</exclude-pattern>
+        <exclude-pattern>core/Workers/HeartbeatRecord.php</exclude-pattern>
+        <exclude-pattern>core/Workers/ProcessingCycleResult.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/EventWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/ReconciliationWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/RelayWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/Strategies/ReplayWorkerStrategy.php</exclude-pattern>
+        <exclude-pattern>core/Workers/WorkerExecutionContext.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Adapters/CategoryAdapter.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Adapters/PageAdapter.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Adapters/PostAdapter.php</exclude-pattern>
+        <exclude-pattern>modules/Content/CanonicalModels/CanonicalCategory.php</exclude-pattern>
+        <exclude-pattern>modules/Content/CanonicalModels/CanonicalPage.php</exclude-pattern>
+        <exclude-pattern>modules/Content/CanonicalModels/CanonicalPost.php</exclude-pattern>
+        <exclude-pattern>modules/Content/ContentModule.php</exclude-pattern>
+        <exclude-pattern>modules/Content/EventProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Events/ContentEventTypes.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Extractors/CategoryExtractor.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Extractors/PageExtractor.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Extractors/PostExtractor.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/CategoryTombstoneHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/CategoryUpsertHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/PageTombstoneHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/PageUpsertHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/PostTombstoneHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Handlers/PostUpsertHandler.php</exclude-pattern>
+        <exclude-pattern>modules/Content/HookWiring.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentEntityTaxonomiesMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentPagesMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentPostsMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentSchemaMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Migrations/CreateContentTaxonomiesMigration.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Operations/ContentMetricsProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Operations/ContentModuleInspection.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Queries/CategoryQueryProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Queries/PageQueryProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Queries/PostQueryProvider.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Reconciliation/WpReconciliationSource.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Replay/ContentReplayEmitter.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Rest/ContentRestRegistrar.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Rest/ContentRestRegistrarFactory.php</exclude-pattern>
+        <exclude-pattern>modules/Content/SourceModels/CategorySourceModel.php</exclude-pattern>
+        <exclude-pattern>modules/Content/SourceModels/PageSourceModel.php</exclude-pattern>
+        <exclude-pattern>modules/Content/SourceModels/PostSourceModel.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Subscribers/ContentSubscriber.php</exclude-pattern>
+        <exclude-pattern>modules/Content/Subscribers/ContentSubscriberRegistrar.php</exclude-pattern>
+    </rule>
+</ruleset>

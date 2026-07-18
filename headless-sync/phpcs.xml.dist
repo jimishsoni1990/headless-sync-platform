@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<ruleset name="HSP">
+    <description>
+        Headless Sync Platform coding standard (DECISION V / DECISION W (a)):
+        PSR-12 for ALL platform code; WPCS SECURITY sniffs only (escaping,
+        sanitization, nonces, SQL-injection at $wpdb) at the WordPress entry
+        points and the REST/ajax controllers the React admin UI calls. WPCS
+        FORMATTING sniffs are deliberately excluded so PSR-12 and WPCS never
+        fight over layout.
+    </description>
+
+    <!-- Scan the platform PHP; the plugin bootstrap is a WP entry point too. -->
+    <file>bootstrap</file>
+    <file>config</file>
+    <file>core</file>
+    <file>database</file>
+    <file>modules</file>
+    <file>headless-sync.php</file>
+
+    <!-- Never lint third-party, build output, generated assets, tests, or tooling stubs. -->
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/tests/*</exclude-pattern>
+    <exclude-pattern>*/resources/admin-ui/node_modules/*</exclude-pattern>
+    <exclude-pattern>*/resources/admin-ui/dist/*</exclude-pattern>
+    <exclude-pattern>*/tools/phpstan/*</exclude-pattern>
+    <exclude-pattern>*/database/*.sql</exclude-pattern>
+
+    <!-- Analyse PHP only. -->
+    <arg name="extensions" value="php"/>
+    <arg name="basepath" value="."/>
+    <arg name="colors"/>
+    <arg name="parallel" value="8"/>
+    <arg value="sp"/><!-- show sniff codes + progress -->
+
+    <!-- ============================================================= -->
+    <!-- (1) PSR-12 for ALL platform code.                              -->
+    <!-- ============================================================= -->
+    <rule ref="PSR12"/>
+
+    <!-- Baseline: per-file/per-sniff exclusions recorded when the lint    -->
+    <!-- toolchain was introduced, so `composer lint` is green on the      -->
+    <!-- unmodified tree. See phpcs-baseline.xml for the retirement plan   -->
+    <!-- (28 verified-FP security items → inline phpcs:ignore; 481 PSR-12  -->
+    <!-- formatting → .gitattributes + renormalize + phpcbf).             -->
+    <rule ref="phpcs-baseline.xml"/>
+
+    <!-- ============================================================= -->
+    <!-- (2) WPCS SECURITY sniffs ONLY, restricted to WordPress entry  -->
+    <!--     points and the untrusted-client JSON boundary. Each sniff  -->
+    <!--     is included on its own so no WPCS formatting rule loads.   -->
+    <!-- ============================================================= -->
+
+    <!-- Output escaping at WP entry points (admin pages / REST / ajax render). -->
+    <rule ref="WordPress.Security.EscapeOutput">
+        <include-pattern>*/core/Operations/Admin/*</include-pattern>
+        <include-pattern>*/core/Onboarding/*</include-pattern>
+        <include-pattern>*/modules/Content/Rest/*</include-pattern>
+        <include-pattern>*/headless-sync.php</include-pattern>
+    </rule>
+
+    <!-- Input sanitization at the request/JSON boundary. -->
+    <rule ref="WordPress.Security.ValidatedSanitizedInput">
+        <include-pattern>*/core/Operations/Admin/*</include-pattern>
+        <include-pattern>*/core/Onboarding/*</include-pattern>
+        <include-pattern>*/modules/Content/Rest/*</include-pattern>
+        <include-pattern>*/headless-sync.php</include-pattern>
+    </rule>
+
+    <!-- Nonce verification at form/action/ajax handlers. -->
+    <rule ref="WordPress.Security.NonceVerification">
+        <include-pattern>*/core/Operations/Admin/*</include-pattern>
+        <include-pattern>*/core/Onboarding/*</include-pattern>
+        <include-pattern>*/modules/Content/Rest/*</include-pattern>
+        <include-pattern>*/headless-sync.php</include-pattern>
+    </rule>
+
+    <!-- SQL-injection safety at every production $wpdb call site. -->
+    <rule ref="WordPress.DB.PreparedSQL">
+        <include-pattern>*/bootstrap/*</include-pattern>
+        <include-pattern>*/core/Events/Outbox/*</include-pattern>
+        <include-pattern>*/core/Migrations/Connection/*</include-pattern>
+        <include-pattern>*/core/Container/Definitions/*</include-pattern>
+        <include-pattern>*/modules/Content/Reconciliation/*</include-pattern>
+    </rule>
+    <rule ref="WordPress.DB.PreparedSQLPlaceholders">
+        <include-pattern>*/bootstrap/*</include-pattern>
+        <include-pattern>*/core/Events/Outbox/*</include-pattern>
+        <include-pattern>*/core/Migrations/Connection/*</include-pattern>
+        <include-pattern>*/core/Container/Definitions/*</include-pattern>
+        <include-pattern>*/modules/Content/Reconciliation/*</include-pattern>
+    </rule>
+</ruleset>

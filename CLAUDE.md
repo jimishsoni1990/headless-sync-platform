@@ -74,7 +74,9 @@ file copy (no host build step — DECISION W (a)).
 | Run unit tests              | `vendor/bin/phpunit --testsuite Unit`                             |
 | Run integration tests       | `vendor/bin/phpunit --testsuite Integration`                      |
 | Run a single test           | `vendor/bin/phpunit --filter <TestName>` (or a path)              |
-| Lint / static analysis      | TBD — no phpcs/phpstan tooling in the repo yet (flag before use)   |
+| Static analysis (PHPStan)   | `composer analyse` (PHPStan level 8, baseline-green; see `phpstan-baseline.neon`) |
+| Lint (PHPCS)                | `composer lint` (PSR-12 all code + WPCS security sniffs at WP entry points; baseline-green, see `phpcs-baseline.xml`) |
+| Auto-fix lint (PHPCBF)      | `composer lint:fix` (PSR-12 formatting **only** — never auto-fixes WPCS security sniffs) |
 | Install admin-UI deps       | `cd resources/admin-ui && npm install` (DECISION W (a))           |
 | Build admin UI → `dist/`    | `cd resources/admin-ui && npm run build` (DECISION W (a))         |
 | Watch-build admin UI (dev)  | `cd resources/admin-ui && npm run dev` (DECISION W (a))           |

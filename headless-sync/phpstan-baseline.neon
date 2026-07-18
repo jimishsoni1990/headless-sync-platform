@@ -1,0 +1,463 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Offset 1 might not exist on list\{0\: string, 1\?\: string, 2\?\: string, 3\?\: ''''\|numeric\-string, 4\?\: non\-falsy\-string\}\.$#'
+			identifier: offsetAccess.notFound
+			count: 1
+			path: bootstrap/CredentialResolver.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between non\-falsy\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: bootstrap/CredentialResolver.php
+
+		-
+			message: '#^Method HSP\\Bootstrap\\Environment\:\:overrides\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: bootstrap/Environment.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:addModuleConfig\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:applyEnvironmentOverrides\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:applyEnvironmentOverrides\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:load\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:loadGlobalConfig\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:mergeModuleConfigs\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:mergeModuleConfigs\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:setDotKey\(\) has parameter \$array with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Configuration\\ConfigLoader\:\:setDotKey\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Property HSP\\Core\\Configuration\\ConfigLoader\:\:\$moduleConfigs type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Configuration/ConfigLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\ContainerBuilder\:\:build\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/ContainerBuilder.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\Definitions\\CoreServiceProvider\:\:__construct\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/Definitions/CoreServiceProvider.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\Definitions\\DeliveryServiceProvider\:\:__construct\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/Definitions/DeliveryServiceProvider.php
+
+		-
+			message: '#^Property HSP\\Core\\Container\\Definitions\\DeliveryServiceProvider\:\:\$config is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: core/Container/Definitions/DeliveryServiceProvider.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\Definitions\\DispatcherServiceProvider\:\:__construct\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/Definitions/DispatcherServiceProvider.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\Definitions\\MigrationServiceProvider\:\:__construct\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/Definitions/MigrationServiceProvider.php
+
+		-
+			message: '#^Property HSP\\Core\\Container\\Definitions\\MigrationServiceProvider\:\:\$config is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: core/Container/Definitions/MigrationServiceProvider.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\Definitions\\OutboxServiceProvider\:\:__construct\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/Definitions/OutboxServiceProvider.php
+
+		-
+			message: '#^Method HSP\\Core\\Container\\Definitions\\QueueServiceProvider\:\:__construct\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Container/Definitions/QueueServiceProvider.php
+
+		-
+			message: '#^Method HSP\\Core\\Contracts\\QueryProviderInterface\:\:list\(\) return type with generic class HSP\\Core\\Contracts\\CursorPage does not specify its types\: TRow$#'
+			identifier: missingType.generics
+			count: 1
+			path: core/Contracts/QueryProviderInterface.php
+
+		-
+			message: '#^Parameter \#1 \$connection of function pg_last_error expects PgSql\\Connection\|null, PgSql\\Connection\|resource given\.$#'
+			identifier: argument.type
+			count: 4
+			path: core/Database/PostgresDatabaseConnection.php
+
+		-
+			message: '#^Parameter \#1 \$connection of function pg_query expects PgSql\\Connection\|string, PgSql\\Connection\|resource given\.$#'
+			identifier: argument.type
+			count: 5
+			path: core/Database/PostgresDatabaseConnection.php
+
+		-
+			message: '#^Parameter \#1 \$connection of function pg_query_params expects PgSql\\Connection\|string, PgSql\\Connection\|resource given\.$#'
+			identifier: argument.type
+			count: 2
+			path: core/Database/PostgresDatabaseConnection.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$last_error\.$#'
+			identifier: property.notFound
+			count: 1
+			path: core/Events/Outbox/AggregateVersionCounter.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 1
+			path: core/Events/Outbox/AggregateVersionCounter.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: core/Events/Outbox/AggregateVersionCounter.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: core/Events/Outbox/AggregateVersionCounter.php
+
+		-
+			message: '#^Call to an undefined method object\:\:query\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: core/Events/Outbox/AggregateVersionCounter.php
+
+		-
+			message: '#^Method HSP\\Core\\Events\\Outbox\\Connection\\MysqliOutboxConnection\:\:execute\(\) should return int but returns int\<\-1, max\>\|string\.$#'
+			identifier: return.type
+			count: 1
+			path: core/Events/Outbox/Connection/MysqliOutboxConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Events\\Outbox\\Connection\\MysqliOutboxConnection\:\:prepare\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Events/Outbox/Connection/MysqliOutboxConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Events\\Outbox\\OutboxEvent\:\:__construct\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Events/Outbox/OutboxEvent.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$last_error\.$#'
+			identifier: property.notFound
+			count: 1
+			path: core/Events/Outbox/OutboxWriter.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 1
+			path: core/Events/Outbox/OutboxWriter.php
+
+		-
+			message: '#^Call to an undefined method object\:\:insert\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: core/Events/Outbox/OutboxWriter.php
+
+		-
+			message: '#^Property HSP\\Core\\Migrations\\AbstractSqlMigration\:\:\$cachedSql \(string\|null\) does not accept string\|false\.$#'
+			identifier: assign.propertyType
+			count: 1
+			path: core/Migrations/AbstractSqlMigration.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between string and false will always evaluate to false\.$#'
+			identifier: identical.alwaysFalse
+			count: 1
+			path: core/Migrations/AbstractSqlMigration.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\ConnectionFactory\:\:pgsql\(\) has parameter \$config with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/ConnectionFactory.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\ConnectionInterface\:\:insert\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/ConnectionInterface.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\ConnectionInterface\:\:query\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/ConnectionInterface.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\PgsqlConnection\:\:insert\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/PgsqlConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\PgsqlConnection\:\:query\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/PgsqlConnection.php
+
+		-
+			message: '#^Property HSP\\Core\\Migrations\\Connection\\PgsqlConnection\:\:\$conn \(PgSql\\Connection\) does not accept PgSql\\Connection\|resource\.$#'
+			identifier: assign.propertyType
+			count: 1
+			path: core/Migrations/Connection/PgsqlConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\WpdbMysqlConnection\:\:insert\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/WpdbMysqlConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\WpdbMysqlConnection\:\:prepare\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/WpdbMysqlConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\WpdbMysqlConnection\:\:prepare\(\) should return string but returns string\|null\.$#'
+			identifier: return.type
+			count: 1
+			path: core/Migrations/Connection/WpdbMysqlConnection.php
+
+		-
+			message: '#^Method HSP\\Core\\Migrations\\Connection\\WpdbMysqlConnection\:\:query\(\) has parameter \$params with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Migrations/Connection/WpdbMysqlConnection.php
+
+		-
+			message: '#^Parameter \#1 \$query of method wpdb\:\:prepare\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: core/Migrations/Connection/WpdbMysqlConnection.php
+
+		-
+			message: '#^Parameter \#1 \$objectOrClass of class ReflectionClass constructor expects class\-string\<T of object\>\|T of object, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: core/Module/ModuleLoader.php
+
+		-
+			message: '#^Method HSP\\Core\\Onboarding\\Backfill\\BackfillProgress\:\:onlyInScope\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Onboarding/Backfill/BackfillProgress.php
+
+		-
+			message: '#^Unreachable statement \- code above always terminates\.$#'
+			identifier: deadCode.unreachable
+			count: 5
+			path: core/Operations/Admin/ConsoleActionController.php
+
+		-
+			message: '#^Unreachable statement \- code above always terminates\.$#'
+			identifier: deadCode.unreachable
+			count: 1
+			path: core/Operations/Admin/ConsoleAjaxController.php
+
+		-
+			message: '#^Property DateInterval\:\:\$days \(int\|false\) on left side of \?\? is not nullable\.$#'
+			identifier: nullCoalesce.property
+			count: 1
+			path: core/Operations/UI/DashboardView.php
+
+		-
+			message: '#^Method HSP\\Core\\Workers\\Strategies\\RelayWorkerStrategy\:\:getQueueNames\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: core/Workers/Strategies/RelayWorkerStrategy.php
+
+		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 2
+			path: core/Workers/WorkerEngine.php
+
+		-
+			message: '#^Property HSP\\Modules\\Content\\ContentModule\:\:\$eventProvider is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: modules/Content/ContentModule.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$ID\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/HookWiring.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$post_status\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/HookWiring.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$post_type\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/HookWiring.php
+
+		-
+			message: '#^Parameter \#1 \$array \(array\{''content\.page\.created'', ''content\.page\.updated'', ''content\.page\.deleted'', ''content\.post\.created'', ''content\.post\.updated'', ''content\.post\.deleted'', ''content\.category…'', ''content\.category…'', \.\.\.\}\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: modules/Content/Operations/ContentModuleInspection.php
+
+		-
+			message: '#^Method HSP\\Modules\\Content\\Queries\\CategoryQueryProvider\:\:list\(\) return type with generic class HSP\\Core\\Contracts\\CursorPage does not specify its types\: TRow$#'
+			identifier: missingType.generics
+			count: 1
+			path: modules/Content/Queries/CategoryQueryProvider.php
+
+		-
+			message: '#^Parameter \#1 \$string of function base64_encode expects string, string\|false given\.$#'
+			identifier: argument.type
+			count: 1
+			path: modules/Content/Queries/CategoryQueryProvider.php
+
+		-
+			message: '#^Method HSP\\Modules\\Content\\Queries\\PageQueryProvider\:\:list\(\) return type with generic class HSP\\Core\\Contracts\\CursorPage does not specify its types\: TRow$#'
+			identifier: missingType.generics
+			count: 1
+			path: modules/Content/Queries/PageQueryProvider.php
+
+		-
+			message: '#^Parameter \#1 \$string of function base64_encode expects string, string\|false given\.$#'
+			identifier: argument.type
+			count: 1
+			path: modules/Content/Queries/PageQueryProvider.php
+
+		-
+			message: '#^Method HSP\\Modules\\Content\\Queries\\PostQueryProvider\:\:list\(\) return type with generic class HSP\\Core\\Contracts\\CursorPage does not specify its types\: TRow$#'
+			identifier: missingType.generics
+			count: 1
+			path: modules/Content/Queries/PostQueryProvider.php
+
+		-
+			message: '#^Parameter \#1 \$string of function base64_encode expects string, string\|false given\.$#'
+			identifier: argument.type
+			count: 1
+			path: modules/Content/Queries/PostQueryProvider.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$posts\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$prefix\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$term_taxonomy\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$terms\.$#'
+			identifier: property.notFound
+			count: 1
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_col\(\)\.$#'
+			identifier: method.notFound
+			count: 2
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Call to an undefined method object\:\:get_var\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
+			identifier: method.notFound
+			count: 3
+			path: modules/Content/Reconciliation/WpReconciliationSource.php
+
+		-
+			message: '#^Parameter \#1 \$str of function strtr expects string, string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: modules/Content/Rest/ContentRestRegistrar.php
+
+		-
+			message: '#^Call to function is_wp_error\(\) with WP_Term will always evaluate to false\.$#'
+			identifier: function.impossibleType
+			count: 1
+			path: modules/Content/WpContentLoaderImpl.php

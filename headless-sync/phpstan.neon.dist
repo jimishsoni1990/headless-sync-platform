@@ -1,0 +1,25 @@
+includes:
+    - vendor/szepeviktor/phpstan-wordpress/extension.neon
+    - phpstan-baseline.neon
+
+parameters:
+    level: 8
+    phpVersion: 80100          # platform minimum — plugin header "Requires PHP: 8.1"
+    paths:
+        - bootstrap
+        - config
+        - core
+        - database
+        - modules
+        - headless-sync.php
+    excludePaths:
+        - vendor/*
+        - tests/*
+        - resources/admin-ui/node_modules/*
+        - resources/admin-ui/dist/*
+    # WP-CLI symbols ship in the separate wp-cli runtime (not in wordpress-stubs);
+    # the HSP CLI registrars call them behind a WP_CLI guard. Stub them for analysis
+    # so genuine type debt isn't drowned out by class.notFound noise.
+    scanFiles:
+        - tools/phpstan/wp-cli-stubs.php
+    treatPhpDocTypesAsCertain: false
