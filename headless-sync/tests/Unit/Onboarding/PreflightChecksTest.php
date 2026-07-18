@@ -93,6 +93,7 @@ final class PreflightChecksTest extends TestCase
             [
                 '0002_create_system_events',
                 '0003_create_system_queue_jobs',
+                '0011_add_unique_event_id_to_queue_jobs',
                 '0005_create_system_aggregate_versions',
                 '0006_create_system_processed_events',
                 '0008_create_system_schema_versions',

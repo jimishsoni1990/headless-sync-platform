@@ -18,6 +18,7 @@ use HSP\Database\Core\Mysql\CreateHspAggregateCountersMigration;
 use HSP\Database\Core\Pgsql\CreateSystemSchemaMigration;
 use HSP\Database\Core\Pgsql\CreateSystemEventsMigration;
 use HSP\Database\Core\Pgsql\CreateSystemQueueJobsMigration;
+use HSP\Database\Core\Pgsql\AddUniqueEventIdToQueueJobsMigration;
 use HSP\Database\Core\Pgsql\CreateSystemDeadLetterJobsMigration;
 use HSP\Database\Core\Pgsql\CreateSystemAggregateVersionsMigration;
 use HSP\Database\Core\Pgsql\CreateSystemProcessedEventsMigration;
@@ -89,6 +90,11 @@ final class MigrationServiceProvider extends ServiceProvider
                 new CreateSystemSchemaMigration($pgsql),
                 new CreateSystemEventsMigration($pgsql),
                 new CreateSystemQueueJobsMigration($pgsql),
+                // 0011: UNIQUE(event_id) on system.queue_jobs — required by the dispatcher's
+                // ON CONFLICT(event_id) idempotent enqueue (DECISION L v1.12). Shipped as a raw SQL
+                // file in P1A-S6d but never wired into the engine; surfaced by the ONB-S2 fresh-install
+                // E2E. Engine sorts by getName(), so 0011 applies after 0003_create_system_queue_jobs.
+                new AddUniqueEventIdToQueueJobsMigration($pgsql),
                 new CreateSystemDeadLetterJobsMigration($pgsql),
                 new CreateSystemAggregateVersionsMigration($pgsql),
                 new CreateSystemProcessedEventsMigration($pgsql),

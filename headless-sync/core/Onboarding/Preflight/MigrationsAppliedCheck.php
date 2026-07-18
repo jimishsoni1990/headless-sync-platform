@@ -45,6 +45,9 @@ final class MigrationsAppliedCheck implements PreflightCheckInterface
         // Core system pipeline tables.
         '0002_create_system_events',
         '0003_create_system_queue_jobs',
+        // 0011 adds UNIQUE(event_id) on system.queue_jobs — the dispatcher's ON CONFLICT idempotent
+        // enqueue REQUIRES it (DECISION L v1.12); without it the first dispatch fails. Pipeline-critical.
+        '0011_add_unique_event_id_to_queue_jobs',
         '0005_create_system_aggregate_versions',
         '0006_create_system_processed_events',
         '0008_create_system_schema_versions',

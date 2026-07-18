@@ -23,6 +23,7 @@ final class BackfillGateTest extends TestCase
     /** All required migrations, so the migration gate always passes in these cycle-focused tests. */
     private const ALL_MIGRATIONS = [
         '0002_create_system_events', '0003_create_system_queue_jobs',
+        '0011_add_unique_event_id_to_queue_jobs',
         '0005_create_system_aggregate_versions', '0006_create_system_processed_events',
         '0008_create_system_schema_versions',
         '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
