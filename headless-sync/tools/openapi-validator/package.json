@@ -1,0 +1,17 @@
+{
+  "name": "hsp-openapi-validator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OAPI-S1 / ADR-055 (f)(2) meta-schema gate — validates a generated OpenAPI 3.1 document against the pinned official meta-schema using ajv-2020. Dev/CI only (DECISION W (a)).",
+  "bin": {
+    "hsp-validate-openapi": "./validate-openapi.mjs"
+  },
+  "scripts": {
+    "validate": "node validate-openapi.mjs"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}

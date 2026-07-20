@@ -69,12 +69,15 @@ final class OperationsProvidersWiringTest extends TestCase
         self::assertTrue($coordinator->has('queue'));
         self::assertTrue($coordinator->has('workers'));
         self::assertTrue($coordinator->has('metrics'));
+        // OAPI-S1: the core-owned openapi.json endpoint provider self-registers (ADR-055 (4)) so
+        // the generator's aggregated registry includes the openapi.json route itself.
+        self::assertTrue($coordinator->has('core.openapi.endpoint'));
 
-        // Exactly the four core keys (module providers are registered by ContentServiceProvider,
-        // which is not exercised here).
+        // Exactly the five core keys (module providers — e.g. Content's endpoint/metrics providers —
+        // are registered by ContentServiceProvider, which is not exercised here).
         $keys = $coordinator->keys();
         sort($keys);
-        self::assertSame(['health', 'metrics', 'queue', 'workers'], $keys);
+        self::assertSame(['core.openapi.endpoint', 'health', 'metrics', 'queue', 'workers'], $keys);
     }
 
     public function test_module_inspector_starts_empty(): void

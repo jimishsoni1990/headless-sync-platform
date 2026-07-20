@@ -94,10 +94,9 @@ add_action('plugins_loaded', static function () use ($application): void {
 }, 20);
 
 // Onboarding / First-Run (ONB-S1a/S1b): bind the wp-admin onboarding page (enqueuing the committed
-// React dist/ bundle) and the WPCS-guarded REST endpoints the React app calls (DECISION W (a)/(e);
-// DECISION V (b)). Renders from committed dist/ with no host build step. Runs after boot
-// (priority 20) so the container exists. Both registrars no-op outside a WordPress runtime; the
-// REST registrar attaches on rest_api_init.
+// React dist/ bundle). Runs after boot (priority 20) so the container exists. The admin registrar
+// no-ops outside a WordPress runtime. (The onboarding REST routes attach via the core REST-registrar
+// funnel below, alongside the OpenAPI endpoint.)
 add_action('plugins_loaded', static function () use ($application): void {
     $container = $application->getContainer();
     if ($container === null) {
@@ -105,11 +104,26 @@ add_action('plugins_loaded', static function () use ($application): void {
     }
 
     $container->get(HSP\Core\Onboarding\OnboardingAdminRegistrar::class)->register();
+}, 20);
 
-    // ONB-S1b: preflight + completion-flag REST endpoints under hsp/v1 (nonce + capability +
-    // sanitize at the JSON boundary — DECISION W (a)). Bound on rest_api_init.
+// Core REST registrars — booted through the SINGLE authoritative RestRegistrarRegistry list so the
+// OpenAPI drift guard (ADR-055 (f)) enumerates the same set production registers (omission is
+// structurally impossible — a new core registrar is added to that ONE list and both production and
+// the guard pick it up). Covers GET /hsp/v1/openapi.json (public + stateless — ADR-055 (d)/(e))
+// and the onboarding hsp/v1/onboarding/* endpoints (WPCS-guarded — DECISION W (a); exempted from
+// the completeness assertion by the frozen onboarding prefix). Each registrar attaches on
+// rest_api_init and no-ops outside a WordPress runtime. Module REST routes (Content) attach via the
+// module lifecycle (ContentModule::boot()), not here.
+add_action('plugins_loaded', static function () use ($application): void {
+    $container = $application->getContainer();
+    if ($container === null) {
+        return;
+    }
+
     add_action('rest_api_init', static function () use ($container): void {
-        $container->get(HSP\Core\Onboarding\OnboardingRestRegistrar::class)->register();
+        foreach (HSP\Core\Rest\RestRegistrarRegistry::coreRegistrarKeys() as $registrarKey) {
+            $container->get($registrarKey)->register();
+        }
     });
 }, 20);
 

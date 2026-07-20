@@ -28,6 +28,10 @@ use HSP\Core\Operations\Admin\PlaygroundRequestExecutor;
 use HSP\Core\Operations\Diagnostics\ModuleInspector;
 use HSP\Core\Operations\Diagnostics\OperationsQueryReader;
 use HSP\Core\Operations\Diagnostics\SystemInformationProvider;
+use HSP\Core\Operations\OpenApi\OpenApiEndpointProvider;
+use HSP\Core\Operations\OpenApi\OpenApiGenerator;
+use HSP\Core\Operations\OpenApi\OpenApiRestController;
+use HSP\Core\Operations\OpenApi\OpenApiRestRegistrar;
 use HSP\Core\Operations\Providers\HealthProvider;
 use HSP\Core\Operations\Providers\MetricsProvider;
 use HSP\Core\Operations\Providers\QueueStatusProvider;
@@ -250,6 +254,33 @@ final class OperationsServiceProvider extends ServiceProvider
                 $c->get(OnboardingStateInterface::class),
             ),
         );
+
+        // --- OAPI-S1 OpenAPI 3.1 registry-generated document (ADR-055) -------------------
+        // The generator is a PURE array transformer over the endpoint registry: NO persistence,
+        // NO PG read, NO new handle (DECISION L Ruling 0), NO pg_* wrapper (DECISION E), and NOT
+        // part of the ADR-054 cron cycle. The endpoint provider self-describes the openapi.json
+        // route (public → in its own document; ADR-055 (4)) and is registered with the
+        // RefreshCoordinator in boot() so OperationsService::endpointDescriptors() aggregates it.
+        // The REST controller reads that aggregated registry and runs the generator; the route is
+        // PUBLIC + stateless (no capability check inside generation — ADR-055 (d)/(e)).
+        $container->singleton(OpenApiGenerator::class, fn () => new OpenApiGenerator());
+
+        $container->singleton(OpenApiEndpointProvider::class, fn () => new OpenApiEndpointProvider());
+
+        $container->singleton(
+            OpenApiRestController::class,
+            fn (Container $c) => new OpenApiRestController(
+                $c->get(OperationsService::class),
+                $c->get(OpenApiGenerator::class),
+            ),
+        );
+
+        $container->singleton(
+            OpenApiRestRegistrar::class,
+            fn (Container $c) => new OpenApiRestRegistrar(
+                $c->get(OpenApiRestController::class),
+            ),
+        );
     }
 
     /**
@@ -268,6 +299,12 @@ final class OperationsServiceProvider extends ServiceProvider
         $coordinator->addProvider($container->get(QueueStatusProvider::class));
         $coordinator->addProvider($container->get(WorkerStatusProvider::class));
         $coordinator->addProvider($container->get(MetricsProvider::class));
+
+        // OAPI-S1: the core-owned openapi.json endpoint provider self-registers so the generator's
+        // aggregated registry (OperationsService::endpointDescriptors()) includes the openapi.json
+        // route itself (ADR-055 (4)). Module endpoint providers (Content) register in their own
+        // boot(); the drift guard asserts completeness over the aggregate.
+        $coordinator->addProvider($container->get(OpenApiEndpointProvider::class));
 
         $this->registerConsoleUi($container);
     }

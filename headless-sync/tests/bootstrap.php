@@ -45,6 +45,28 @@ if (! function_exists('add_action')) {
         if (isset($GLOBALS['_hsp_stub_actions']) && is_array($GLOBALS['_hsp_stub_actions'])) {
             $GLOBALS['_hsp_stub_actions'][] = $hook;
         }
+
+        // When a test opts in by initialising $GLOBALS['_hsp_stub_action_callbacks'] = [], the
+        // callbacks themselves are recorded per hook so a test can FIRE a hook via do_action() —
+        // used by the OpenAPI drift guard to run the real rest_api_init registrars the same way
+        // production does (module boot + core RestRegistrarRegistry both add_action onto it).
+        if (isset($GLOBALS['_hsp_stub_action_callbacks']) && is_array($GLOBALS['_hsp_stub_action_callbacks'])) {
+            $GLOBALS['_hsp_stub_action_callbacks'][$hook][] = $callback;
+        }
+    }
+}
+
+if (! function_exists('do_action')) {
+    function do_action(string $hook, mixed ...$args): void
+    {
+        // Fires callbacks recorded by the add_action stub above (opt-in capture only). A no-op
+        // when nothing was captured for the hook.
+        if (! isset($GLOBALS['_hsp_stub_action_callbacks'][$hook]) || ! is_array($GLOBALS['_hsp_stub_action_callbacks'][$hook])) {
+            return;
+        }
+        foreach ($GLOBALS['_hsp_stub_action_callbacks'][$hook] as $callback) {
+            $callback(...$args);
+        }
     }
 }
 
@@ -236,7 +258,18 @@ if (! function_exists('rest_ensure_response')) {
 if (! function_exists('register_rest_route')) {
     function register_rest_route(string $namespace, string $route, array $args): void
     {
-        // No-op in unit tests.
+        // No-op in unit tests, EXCEPT when a test opts in to route capture by initialising
+        // $GLOBALS['_hsp_stub_rest_routes'] = []. Then each registration is recorded as
+        // ['namespace' => …, 'route' => …, 'args' => …] so the OpenAPI drift guard (OAPI-S1 /
+        // ADR-055 (f)) can enumerate the live hsp/v1 route surface by driving the real
+        // registrars against this stub — the external ground truth, never the registry.
+        if (isset($GLOBALS['_hsp_stub_rest_routes']) && is_array($GLOBALS['_hsp_stub_rest_routes'])) {
+            $GLOBALS['_hsp_stub_rest_routes'][] = [
+                'namespace' => $namespace,
+                'route'     => $route,
+                'args'      => $args,
+            ];
+        }
     }
 }
 
