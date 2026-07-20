@@ -299,6 +299,19 @@ Display Categories include:
 -   Operations
 -   Search
 
+In scope (per ADR-055, 2026-07-20 — see ARCHITECTURE_DECISIONS.md):
+
+-   **OpenAPI Generation** — an **OpenAPI 3.1** document **generated from this
+    endpoint metadata registry** (never hand-authored, never reflection/scan-derived
+    from WP REST routes), served at `GET /hsp/v1/openapi.json` (versioned per Doc 9 §7).
+    The endpoint metadata above is additively enriched (parameters, request/response
+    schema, auth requirement, cursor-pagination envelope, deprecation status, version,
+    module owner) to supply the generator. Request-time and stateless: no persistence,
+    no PG read, no new connection handle, and not part of the ADR-054 processing cycle.
+    A CI drift guard fails the build if any registered `hsp/v1` route lacks a complete
+    metadata entry or the generated document fails OpenAPI 3.1 meta-schema validation.
+    Built in session **OAPI-S1**.
+
 Future capabilities:
 
 -   Authentication
@@ -307,7 +320,11 @@ Future capabilities:
 -   Saved Requests
 -   Import / Export
 -   GraphQL Explorer
--   OpenAPI Generation
+
+> **§15 amendment log — 2026-07-20 (ADR-055, session OAPI-S1):** OpenAPI Generation
+> moved from *Future capabilities* to *in scope*, generated from this endpoint metadata
+> registry (single source of truth; auto-updating). Authority: ADR-055; Doc 9
+> §6/§7/§13/§22/§26; Rule 5. No other §15 content changed.
 
 ------------------------------------------------------------------------
 
