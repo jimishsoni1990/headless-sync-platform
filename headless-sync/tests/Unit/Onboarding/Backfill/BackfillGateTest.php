@@ -10,6 +10,7 @@ use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
 use HSP\Core\Workers\ProcessingCronRegistrar;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\FakeModuleMigration;
 
 /**
  * Unit tests for the ONB-S2 backfill gate, realigned to the ADR-054 cycle model
@@ -26,7 +27,10 @@ final class BackfillGateTest extends TestCase
         '0011_add_unique_event_id_to_queue_jobs',
         '0005_create_system_aggregate_versions', '0006_create_system_processed_events',
         '0008_create_system_schema_versions',
-        '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
+        // Every migration the Content module declares — the required set is DERIVED from the
+        // module registry now (FLAG-P1BS1-1), so a partial list here would not match a real install.
+        '0001_create_content_schema', '0002_create_content_pages', '0003_create_content_posts',
+        '0004_create_content_taxonomies', '0005_create_content_entity_taxonomies',
         '0006_create_content_media',
     ];
 
@@ -140,7 +144,7 @@ final class BackfillGateTest extends TestCase
             fn (): ScriptedConnection => (new ScriptedConnection())->on('system.schema_versions', $rows),
         );
 
-        return new MigrationsAppliedCheck($probe);
+        return new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule());
     }
 
     /**

@@ -52,6 +52,7 @@ use HSP\Tests\Integration\Replay\FakeWpdb;
 use HSP\Tests\Integration\Replay\FakeWpStore;
 use HSP\Tests\Integration\Replay\ReplayReadingLoader;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\FakeModuleMigration;
 
 /**
  * ONB-S2 — First-run backfill on LIVE MySQL + LIVE PostgreSQL (DECISION W (b)/(c)/(d)).
@@ -88,7 +89,10 @@ final class BackfillIntegrationTest extends TestCase
         '0011_add_unique_event_id_to_queue_jobs',
         '0005_create_system_aggregate_versions', '0006_create_system_processed_events',
         '0008_create_system_schema_versions',
-        '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
+        // Every migration the Content module declares — the required set is DERIVED from the
+        // module registry now (FLAG-P1BS1-1), so a partial list here would not match a real install.
+        '0001_create_content_schema', '0002_create_content_pages', '0003_create_content_posts',
+        '0004_create_content_taxonomies', '0005_create_content_entity_taxonomies',
         '0006_create_content_media',
     ];
 
@@ -234,7 +238,7 @@ final class BackfillIntegrationTest extends TestCase
         $reader = new BackfillReader(fn (): PostgresDatabaseConnection => $this->db);
         $probe  = new OnboardingConnectionProbe(fn (): PostgresDatabaseConnection => $this->db);
 
-        return new BackfillGate($reader, new MigrationsAppliedCheck($probe), 60);
+        return new BackfillGate($reader, new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()), 60);
     }
 
     private function progress(): BackfillProgress

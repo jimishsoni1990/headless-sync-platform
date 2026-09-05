@@ -127,9 +127,19 @@ final class OnboardingServiceProvider extends ServiceProvider
         // MigrationsAppliedCheck is bound here (constructed over the same probe) so ONB-S2 can
         // reuse it as its backfill migration-state gate — it is deliberately NOT added to the
         // ONB-S1b PreflightRunner below (DECISION W (f) amendment v1.22).
+        //
+        // The module half of its required set is DERIVED from the module registry (FLAG-P1BS1-1
+        // resolution) using the SAME lazy collection MigrationApplier applies below, so a module
+        // that adds a projection table is covered without editing the core check. Resolved lazily:
+        // building module migrations opens the libpq DDL link eagerly and throws on an
+        // unconfigured site (the check catches that and degrades to core-only).
         $container->singleton(
             MigrationsAppliedCheck::class,
-            fn (Container $c) => new MigrationsAppliedCheck($c->get(OnboardingConnectionProbe::class)),
+            fn (Container $c) => new MigrationsAppliedCheck(
+                $c->get(OnboardingConnectionProbe::class),
+                /** @return list<MigrationInterface> */
+                static fn (): array => self::collectModuleMigrations($c),
+            ),
         );
 
         // Runner in display order: extension → constants → reachable → PHP version.
@@ -205,17 +215,7 @@ final class OnboardingServiceProvider extends ServiceProvider
                 /** @return list<MigrationInterface> */
                 static fn (): array => array_values($c->get('migrations.core')),
                 /** @return list<MigrationInterface> */
-                static function () use ($c): array {
-                    $migrations = [];
-                    /** @var ModuleInterface $module */
-                    foreach ($c->get('module.registry')->all() as $module) {
-                        foreach ($module->getMigrations() as $migration) {
-                            $migrations[] = $migration;
-                        }
-                    }
-
-                    return $migrations;
-                },
+                static fn (): array => self::collectModuleMigrations($c),
             ),
         );
 
@@ -274,5 +274,30 @@ final class OnboardingServiceProvider extends ServiceProvider
         $value = (int) $value;
 
         return $value > 0 ? $value : 500;
+    }
+
+    /**
+     * Collect every installed module's declared migrations via the module registry's declarative
+     * discovery (OPEN-9 / DECISION W (e)).
+     *
+     * Shared by MigrationApplier (which APPLIES them) and MigrationsAppliedCheck (which VERIFIES
+     * them), so the gate can never check a different set from the one that runs — the drift that
+     * FLAG-P1BS1-1 called out. Rule 5 holds: core imports no module migration class; each module
+     * constructs its own MigrationInterface instances.
+     *
+     * @return list<MigrationInterface>
+     */
+    private static function collectModuleMigrations(Container $c): array
+    {
+        $migrations = [];
+
+        /** @var ModuleInterface $module */
+        foreach ($c->get('module.registry')->all() as $module) {
+            foreach ($module->getMigrations() as $migration) {
+                $migrations[] = $migration;
+            }
+        }
+
+        return $migrations;
     }
 }

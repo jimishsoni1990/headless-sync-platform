@@ -12,6 +12,7 @@ use HSP\Core\Onboarding\Preflight\PgReachableCheck;
 use HSP\Core\Onboarding\Preflight\PgsqlExtensionCheck;
 use HSP\Core\Onboarding\Preflight\PhpVersionCheck;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\FakeModuleMigration;
 
 /**
  * Unit tests for the five hard-blocking preflight checks (ONB-S1b; DECISION W (f)).
@@ -97,17 +98,61 @@ final class PreflightChecksTest extends TestCase
                 '0005_create_system_aggregate_versions',
                 '0006_create_system_processed_events',
                 '0008_create_system_schema_versions',
+                // Every migration the Content module declares: the required set is DERIVED from
+                // the module registry (FLAG-P1BS1-1), so a partial list would not pass.
+                '0001_create_content_schema',
                 '0002_create_content_pages',
                 '0003_create_content_posts',
                 '0004_create_content_taxonomies',
+                '0005_create_content_entity_taxonomies',
                 '0006_create_content_media',
             ],
         );
 
         $probe  = new OnboardingConnectionProbe($this->resolver($this->connection(queryReturns: $rows)));
-        $result = (new MigrationsAppliedCheck($probe))->run();
+        $result = (new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()))->run();
 
         self::assertTrue($result->passed);
+    }
+
+    public function test_a_module_migration_missing_from_the_database_blocks_the_check(): void
+    {
+        // The whole point of deriving the required set from the module registry: a module that
+        // adds a projection table is covered automatically. Here every CORE migration is applied
+        // and the module declares one the database has never seen.
+        $rows = array_map(
+            static fn (string $name) => ['migration_name' => $name],
+            [
+                '0002_create_system_events',
+                '0003_create_system_queue_jobs',
+                '0011_add_unique_event_id_to_queue_jobs',
+                '0005_create_system_aggregate_versions',
+                '0006_create_system_processed_events',
+                '0008_create_system_schema_versions',
+            ],
+        );
+
+        $probe  = new OnboardingConnectionProbe($this->resolver($this->connection(queryReturns: $rows)));
+        $result = (new MigrationsAppliedCheck($probe, FakeModuleMigration::listOf('0099_a_future_module_table')))->run();
+
+        self::assertFalse($result->passed, 'a declared-but-unapplied module migration must hard-block');
+        self::assertStringContainsString('0099_a_future_module_table', $result->detail);
+    }
+
+    public function test_the_check_degrades_to_core_only_when_module_migrations_cannot_be_built(): void
+    {
+        // Building module migrations opens the libpq DDL link eagerly and throws on an
+        // unconfigured site. That must read as "core requirements unmet", never as a fatal —
+        // activation and the onboarding screen must not 500 (ADR-054 Principle 8).
+        $probe = new OnboardingConnectionProbe($this->resolver($this->connection(queryReturns: [])));
+
+        $result = (new MigrationsAppliedCheck(
+            $probe,
+            static fn (): array => throw new \RuntimeException('PostgreSQL unreachable'),
+        ))->run();
+
+        self::assertFalse($result->passed);
+        self::assertStringContainsString('0002_create_system_events', $result->detail);
     }
 
     public function test_migrations_check_fails_and_names_the_missing_migrations(): void
@@ -119,7 +164,7 @@ final class PreflightChecksTest extends TestCase
         ];
 
         $probe  = new OnboardingConnectionProbe($this->resolver($this->connection(queryReturns: $rows)));
-        $result = (new MigrationsAppliedCheck($probe))->run();
+        $result = (new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()))->run();
 
         self::assertFalse($result->passed);
         self::assertStringContainsString('0002_create_content_pages', $result->detail);
@@ -129,7 +174,7 @@ final class PreflightChecksTest extends TestCase
     public function test_migrations_check_fails_when_the_schema_table_is_unreadable(): void
     {
         $probe  = new OnboardingConnectionProbe($this->resolver($this->connection(throwOnQuery: true)));
-        $result = (new MigrationsAppliedCheck($probe))->run();
+        $result = (new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()))->run();
 
         self::assertFalse($result->passed);
     }
@@ -138,7 +183,7 @@ final class PreflightChecksTest extends TestCase
     {
         // Delivery-handle resolver throws (unreachable PG) — the check must fail-close, not throw.
         $probe  = new OnboardingConnectionProbe($this->throwingResolver());
-        $result = (new MigrationsAppliedCheck($probe))->run();
+        $result = (new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()))->run();
 
         self::assertFalse($result->passed);
         self::assertNotSame('', $result->remediation);

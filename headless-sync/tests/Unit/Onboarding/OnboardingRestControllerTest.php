@@ -27,6 +27,7 @@ use HSP\Tests\Unit\Reconciliation\FakeReconConnection;
 use HSP\Tests\Unit\Reconciliation\FakeReconciliationSource;
 use HSP\Tests\Unit\Replay\FakeReplayEmitter;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\FakeModuleMigration;
 
 /**
  * Unit tests for OnboardingRestController — the WPCS-guarded JSON boundary the React app calls
@@ -298,7 +299,10 @@ final class OnboardingRestControllerTest extends TestCase
         '0011_add_unique_event_id_to_queue_jobs',
         '0005_create_system_aggregate_versions', '0006_create_system_processed_events',
         '0008_create_system_schema_versions',
-        '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
+        // Every migration the Content module declares — the required set is DERIVED from the
+        // module registry now (FLAG-P1BS1-1), so a partial list here would not match a real install.
+        '0001_create_content_schema', '0002_create_content_pages', '0003_create_content_posts',
+        '0004_create_content_taxonomies', '0005_create_content_entity_taxonomies',
         '0006_create_content_media',
     ];
 
@@ -327,7 +331,7 @@ final class OnboardingRestControllerTest extends TestCase
             $this->backfillService(),
             $this->backfillProgress(),
             $applier,
-            new MigrationsAppliedCheck($probe),
+            new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()),
             $this->spawner(),
         );
     }
@@ -348,7 +352,7 @@ final class OnboardingRestControllerTest extends TestCase
                 array_map(static fn (string $n) => ['migration_name' => $n], self::ALL),
             ),
         );
-        $gate = new BackfillGate($reader, new MigrationsAppliedCheck($probe), 60);
+        $gate = new BackfillGate($reader, new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()), 60);
         $reconciliation = new ReconciliationService(
             new FakeReconConnection(),
             new FakeReconciliationSource(),
@@ -361,7 +365,7 @@ final class OnboardingRestControllerTest extends TestCase
             new BackfillService($gate, $reconciliation),
             $this->backfillProgress(),
             $this->noopApplier(),
-            new MigrationsAppliedCheck($probe),
+            new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()),
             $this->spawner(),
         );
     }
@@ -387,7 +391,7 @@ final class OnboardingRestControllerTest extends TestCase
         $probe   = new OnboardingConnectionProbe(
             fn (): ScriptedConnection => (new ScriptedConnection())->on('system.schema_versions', $migRows),
         );
-        $gate = new BackfillGate($reader, new MigrationsAppliedCheck($probe), 60);
+        $gate = new BackfillGate($reader, new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()), 60);
 
         $reconciliation = new ReconciliationService(
             new FakeReconConnection(),
@@ -404,7 +408,7 @@ final class OnboardingRestControllerTest extends TestCase
             new BackfillService($gate, $reconciliation),
             $progress,
             $this->noopApplier(),
-            new MigrationsAppliedCheck($probe),
+            new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()),
             $this->spawner(),
         );
     }
@@ -424,6 +428,7 @@ final class OnboardingRestControllerTest extends TestCase
             $this->noopApplier(),
             new MigrationsAppliedCheck(
                 new OnboardingConnectionProbe(fn (): ScriptedConnection => new ScriptedConnection()),
+                FakeModuleMigration::contentModule(),
             ),
             $this->spawner(),
         );
@@ -455,7 +460,7 @@ final class OnboardingRestControllerTest extends TestCase
     {
         $reader = new BackfillReader(fn (): ScriptedConnection => new ScriptedConnection());
         $probe  = new OnboardingConnectionProbe(fn (): ScriptedConnection => new ScriptedConnection());
-        $gate   = new BackfillGate($reader, new MigrationsAppliedCheck($probe), 60);
+        $gate   = new BackfillGate($reader, new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()), 60);
 
         $reconciliation = new ReconciliationService(
             new FakeReconConnection(),
