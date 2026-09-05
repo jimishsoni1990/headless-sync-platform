@@ -32,8 +32,14 @@ final class CategoryQueryProvider implements QueryProviderInterface
     private const DEFAULT_LIMIT = 50;
     private const MAX_LIMIT     = 200;
 
+    /**
+     * @param string $taxonomyType Which taxonomy this instance serves (P1B-S3).
+     *        Categories and tags share content.taxonomies and differ only by this column, so the
+     *        provider is parameterised rather than duplicated: two container bindings, one class.
+     */
     public function __construct(
         private readonly DatabaseConnectionInterface $db,
+        private readonly string $taxonomyType = 'category',
     ) {}
 
     public function list(FilterSet $filters): CursorPage
@@ -51,7 +57,10 @@ final class CategoryQueryProvider implements QueryProviderInterface
         }
 
         $params = [];
-        $where  = ['deleted_at IS NULL', "taxonomy_type = 'category'"];
+        $where  = ['deleted_at IS NULL'];
+
+        $params[] = $this->taxonomyType;
+        $where[]  = 'taxonomy_type = $' . count($params);
 
         if ($cursorName !== null && $cursorId !== null) {
             $params[] = $cursorName;
@@ -99,12 +108,15 @@ final class CategoryQueryProvider implements QueryProviderInterface
 
     public function findBySlug(string $slug): ?array
     {
+        // The taxonomy_type predicate is load-bearing, not decoration: WordPress only guarantees
+        // slug uniqueness WITHIN a taxonomy, so a tag and a category can share a slug and
+        // /categories/news must never resolve to the tag (P1B-S3).
         $rows = $this->db->query(
             "SELECT id, slug, name, description, parent_id, post_count
              FROM content.taxonomies
-             WHERE slug = \$1 AND deleted_at IS NULL AND taxonomy_type = 'category'
+             WHERE slug = \$1 AND deleted_at IS NULL AND taxonomy_type = \$2
              LIMIT 1",
-            [$slug]
+            [$slug, $this->taxonomyType]
         );
         return $rows[0] ?? null;
     }

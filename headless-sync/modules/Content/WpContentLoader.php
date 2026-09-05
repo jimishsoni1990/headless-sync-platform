@@ -44,10 +44,11 @@ interface WpContentLoader
     public function loadPostMeta(int $postId): array;
 
     /**
-     * Load raw WordPress term data for a category.
+     * Load raw WordPress term data for a supported taxonomy term (category or tag).
      *
-     * Returns an array matching the WP_Term cast-to-array shape expected by CategoryExtractor,
-     * or null if the term does not exist.
+     * Returns an array matching the WP_Term cast-to-array shape expected by CategoryExtractor —
+     * including its `taxonomy` field, which the extractor threads through to taxonomy_type
+     * (P1B-S3) — or null if the term does not exist.
      *
      * @param int $termId  The WordPress term ID (source_term_id).
      * @return array<string,mixed>|null
@@ -81,4 +82,17 @@ interface WpContentLoader
      * @return list<int>
      */
     public function loadPostCategoryIds(int $postId): array;
+
+    /**
+     * Load the term IDs of a supported taxonomy assigned to a post (P1B-S3).
+     *
+     * Generalises loadPostCategoryIds() to any supported taxonomy so reconciliation and the
+     * handlers can treat tags the same way. Returns [] when none assigned, the post does not
+     * exist, or the taxonomy is unknown to WordPress.
+     *
+     * @param int    $postId
+     * @param string $taxonomy 'category' | 'post_tag'
+     * @return list<int>
+     */
+    public function loadPostTermIds(int $postId, string $taxonomy): array;
 }

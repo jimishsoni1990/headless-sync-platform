@@ -176,7 +176,7 @@ final class CategoryAdapter implements AdapterInterface
             [
                 $id,
                 $model->termId,
-                'category',
+                $model->taxonomyType,
                 $model->slug,
                 $model->name,
                 $model->description,

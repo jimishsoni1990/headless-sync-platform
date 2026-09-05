@@ -28,6 +28,11 @@ final class ContentEventTypes
     public const CATEGORY_UPDATED = 'content.category.updated';
     public const CATEGORY_DELETED = 'content.category.deleted';
 
+    // Tags (post_tag taxonomy — P1B-S3; same projection as categories, taxonomy_type='post_tag')
+    public const TAG_CREATED = 'content.tag.created';
+    public const TAG_UPDATED = 'content.tag.updated';
+    public const TAG_DELETED = 'content.tag.deleted';
+
     // Media (attachments — P1B-S1)
     public const MEDIA_CREATED = 'content.media.created';
     public const MEDIA_UPDATED = 'content.media.updated';
@@ -47,6 +52,9 @@ final class ContentEventTypes
         self::MEDIA_CREATED,
         self::MEDIA_UPDATED,
         self::MEDIA_DELETED,
+        self::TAG_CREATED,
+        self::TAG_UPDATED,
+        self::TAG_DELETED,
     ];
 
     private function __construct() {}

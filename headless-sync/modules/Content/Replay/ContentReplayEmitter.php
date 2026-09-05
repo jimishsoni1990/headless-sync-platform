@@ -37,7 +37,7 @@ use HSP\Modules\Content\WpContentLoader;
  */
 final class ContentReplayEmitter implements ReplayEmitterInterface
 {
-    private const AGGREGATE_TYPES = ['page', 'post', 'category', 'media'];
+    private const AGGREGATE_TYPES = ['page', 'post', 'category', 'media', 'tag'];
 
     public function __construct(
         private readonly EventProviderInterface $eventProvider,
@@ -98,7 +98,9 @@ final class ContentReplayEmitter implements ReplayEmitterInterface
                 return $status === 'publish';
 
             case 'category':
-                // Categories have no post_status; existence is the membership signal.
+            case 'tag':
+                // Terms have no post_status; existence is the membership signal. Categories and
+                // tags share this path — the loader looks a term up by id across taxonomies.
                 return $this->wpContentLoader->loadTerm((int) $aggregateId) !== null;
 
             case 'media':

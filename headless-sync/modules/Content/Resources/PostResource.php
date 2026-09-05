@@ -34,7 +34,30 @@ final class PostResource implements ResourceInterface
             'updated_at'  => $this->normaliseTimestamp($row['updated_at'] ?? null),
             'meta'        => $this->decodeMeta($row['meta_jsonb'] ?? null),
             'featured_media' => $this->featuredMedia($row),
+            'tags'        => $this->tags($row),
         ];
+    }
+
+    /**
+     * The post's tags, decoded from the aggregate the query provider built (P1B-S3).
+     *
+     * Always an array — never null — so consumers can iterate without a null check; an untagged
+     * post is an empty list, which is the honest answer.
+     *
+     * @param array<string,mixed> $row
+     * @return list<array<string,mixed>>
+     */
+    private function tags(array $row): array
+    {
+        $json = $row['tags_json'] ?? null;
+
+        if (! is_string($json) || $json === '') {
+            return [];
+        }
+
+        $decoded = json_decode($json, associative: true);
+
+        return is_array($decoded) ? array_values($decoded) : [];
     }
 
     /**

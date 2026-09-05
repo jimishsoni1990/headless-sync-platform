@@ -32,7 +32,7 @@ use HSP\Modules\Content\WpContentLoader;
  */
 final class WpReconciliationSource implements WpReconciliationSourceInterface
 {
-    private const AGGREGATE_TYPES = ['page', 'post', 'category', 'media'];
+    private const AGGREGATE_TYPES = ['page', 'post', 'category', 'media', 'tag'];
 
     /** post_status values in the public set (OPEN-10). */
     private const PUBLIC_POST_STATUS = 'publish';
@@ -66,7 +66,10 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
                 return $this->listPostIdsAfter($aggregateType, $afterId, $limit);
 
             case 'category':
-                return $this->listTermIdsAfter($afterId, $limit);
+                return $this->listTermIdsAfter('category', $afterId, $limit);
+
+            case 'tag':
+                return $this->listTermIdsAfter('post_tag', $afterId, $limit);
 
             case 'media':
                 return $this->listAttachmentIdsAfter($afterId, $limit);
@@ -92,6 +95,7 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
                 return new SourceState(true, $public, $modified);
 
             case 'category':
+            case 'tag':
                 $term = $this->loader->loadTerm((int) $aggregateId);
                 if ($term === null) {
                     return SourceState::absent();
@@ -141,10 +145,13 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
                 return $this->postTransformer->transform($source)->getChecksum();
 
             case 'category':
+            case 'tag':
                 $term = $this->loader->loadTerm((int) $aggregateId);
                 if ($term === null) {
                     return null;
                 }
+                // The extractor reads the term's own taxonomy, so the recomputed checksum
+                // matches what a fresh projection would store for either taxonomy.
                 $source = $this->categoryExtractor->extract($term);
                 return $this->categoryTransformer->transform($source)->getChecksum();
 
@@ -243,7 +250,7 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
     }
 
     /** @return string[] */
-    private function listTermIdsAfter(int $afterId, int $limit): array
+    private function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
     {
         global $wpdb;
 
@@ -255,9 +262,10 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
             "SELECT t.term_id
              FROM {$wpdb->terms} t
              INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = t.term_id
-             WHERE tt.taxonomy = 'category' AND t.term_id > %d
+             WHERE tt.taxonomy = %s AND t.term_id > %d
              ORDER BY t.term_id ASC
              LIMIT %d",
+            $taxonomy,
             $afterId,
             $limit,
         );

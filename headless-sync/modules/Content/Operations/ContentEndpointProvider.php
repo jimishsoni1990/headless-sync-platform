@@ -15,10 +15,10 @@ use HSP\Core\Contracts\Operations\SchemaObject;
  * ADR-055).
  *
  * Implements the core-owned EndpointProviderInterface (Rule 5) and populates the ADR-055 (c)
- * enriched descriptors for the eight published content endpoints (DECISION N: 'hsp/v1'): parameters
+ * enriched descriptors for the ten published content endpoints (DECISION N: 'hsp/v1'): parameters
  * (DECISION F filters + cursor pagination — Doc 9 §13), published request/response shapes (Rule 6
  * — the fields the Resources expose, NOT internal content.* / canonical columns), auth requirement
- * (all eight are PUBLIC — Doc 9 §22), deprecation (none at MVP — Doc 9 §26), version (v1 — Doc 9 §7),
+ * (all ten are PUBLIC — Doc 9 §22), deprecation (none at MVP — Doc 9 §26), version (v1 — Doc 9 §7),
  * and module owner ('content' — Doc 9 §6). The generator (ADR-055) and the API Playground (OPSC-S3)
  * both read these descriptors — one source of truth (ADR-055 (b)). ADR-038: plain metadata only;
  * no HTTP/framework types cross this contract.
@@ -51,6 +51,8 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             $this->categorySingle(),
             $this->mediaList(),
             $this->mediaSingle(),
+            $this->tagsList(),
+            $this->tagSingle(),
         ];
     }
 
@@ -89,6 +91,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             filters: [
                 EndpointParameter::query('status', 'string', 'Filter by post status (public set: publish).'),
                 EndpointParameter::query('category', 'string', 'Filter by category slug.'),
+                EndpointParameter::query('tag', 'string', 'Filter by tag slug.'),
                 EndpointParameter::query('published_after', 'string', 'ISO-8601 UTC lower bound on published_at.'),
             ],
         );
@@ -139,6 +142,25 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     private function mediaSingle(): EndpointDescriptor
     {
         return $this->single('/media/{slug}', 'Fetch a single media item by slug.', $this->mediaSchema());
+    }
+
+    // -------------------------------------------------------------------------
+    // Tags (P1B-S3 — same projection as categories, taxonomy_type='post_tag')
+    // -------------------------------------------------------------------------
+
+    private function tagsList(): EndpointDescriptor
+    {
+        return $this->listing(
+            route: '/tags',
+            description: 'List tags (cursor-paginated).',
+            itemSchema: $this->categorySchema(),
+            filters: [],
+        );
+    }
+
+    private function tagSingle(): EndpointDescriptor
+    {
+        return $this->single('/tags/{slug}', 'Fetch a single tag by slug.', $this->categorySchema());
     }
 
     // -------------------------------------------------------------------------
@@ -238,6 +260,8 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             // Resolved featured image, or null (P1B-S2). Nullable because the reference is soft
             // (ADR-013): no image set, never projected, or soft-deleted all read as null.
             'featured_media' => 'object',
+            // The post's tags (P1B-S3): always an array — empty when untagged, never null.
+            'tags'         => 'array',
         ]);
     }
 

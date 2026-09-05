@@ -46,6 +46,34 @@ final class ContentSchema
     }
 
     /**
+     * Ensure the taxonomy tables exist.
+     *
+     * Needed by any test that exercises the post query provider: since P1B-S3 its SELECT list
+     * always aggregates the post's tags from content.entity_taxonomies + content.taxonomies, so
+     * those tables must exist even for a test that cares only about posts.
+     *
+     * @param \PgSql\Connection|resource $conn
+     */
+    public static function ensureTaxonomySupport(mixed $conn): void
+    {
+        pg_query($conn, 'CREATE SCHEMA IF NOT EXISTS content');
+
+        self::apply($conn, '0004_create_content_taxonomies.sql');
+        self::apply($conn, '0005_create_content_entity_taxonomies.sql');
+    }
+
+    /**
+     * Everything the content query providers need beyond the entity tables themselves.
+     *
+     * @param \PgSql\Connection|resource $conn
+     */
+    public static function ensureQueryProviderSupport(mixed $conn): void
+    {
+        self::ensureFeaturedMediaSupport($conn);
+        self::ensureTaxonomySupport($conn);
+    }
+
+    /**
      * @param \PgSql\Connection|resource $conn
      */
     private static function apply(mixed $conn, string $file): void

@@ -34,9 +34,9 @@ final class ContentReplayEmitterTest extends TestCase
         );
     }
 
-    public function testSupportsFourContentAggregateTypes(): void
+    public function testSupportsFiveContentAggregateTypes(): void
     {
-        self::assertSame(['page', 'post', 'category', 'media'], $this->emitter->getSupportedAggregateTypes());
+        self::assertSame(['page', 'post', 'category', 'media', 'tag'], $this->emitter->getSupportedAggregateTypes());
     }
 
     public function testPublishedPostEmitsUpdated(): void

@@ -21,11 +21,11 @@ final class ContentEndpointProviderTest extends TestCase
         self::assertSame('content.endpoints', $provider->key());
     }
 
-    public function test_describes_the_eight_hsp_v1_content_endpoints(): void
+    public function test_describes_the_ten_hsp_v1_content_endpoints(): void
     {
         $endpoints = (new ContentEndpointProvider())->endpoints();
 
-        self::assertCount(8, $endpoints);
+        self::assertCount(10, $endpoints);
         self::assertContainsOnlyInstancesOf(EndpointDescriptor::class, $endpoints);
 
         foreach ($endpoints as $ep) {
@@ -42,6 +42,7 @@ final class ContentEndpointProviderTest extends TestCase
                 '/posts', '/posts/{slug}',
                 '/categories', '/categories/{slug}',
                 '/media', '/media/{slug}',
+                '/tags', '/tags/{slug}',
             ],
             $routes,
         );

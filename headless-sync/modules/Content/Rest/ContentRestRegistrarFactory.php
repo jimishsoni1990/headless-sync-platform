@@ -36,20 +36,24 @@ final class ContentRestRegistrarFactory
      * @param \Closure(): PostQueryProvider     $postQueryProviderFactory
      * @param \Closure(): CategoryQueryProvider $categoryQueryProviderFactory
      * @param \Closure(): MediaQueryProvider    $mediaQueryProviderFactory
+     * @param \Closure(): CategoryQueryProvider $tagQueryProviderFactory  (taxonomy_type=post_tag)
      * @param \Closure(): PageResource          $pageResourceFactory
      * @param \Closure(): PostResource          $postResourceFactory
      * @param \Closure(): CategoryResource      $categoryResourceFactory
      * @param \Closure(): MediaResource         $mediaResourceFactory
+     * @param \Closure(): CategoryResource      $tagResourceFactory
      */
     public function __construct(
         private readonly \Closure $pageQueryProviderFactory,
         private readonly \Closure $postQueryProviderFactory,
         private readonly \Closure $categoryQueryProviderFactory,
         private readonly \Closure $mediaQueryProviderFactory,
+        private readonly \Closure $tagQueryProviderFactory,
         private readonly \Closure $pageResourceFactory,
         private readonly \Closure $postResourceFactory,
         private readonly \Closure $categoryResourceFactory,
         private readonly \Closure $mediaResourceFactory,
+        private readonly \Closure $tagResourceFactory,
     ) {}
 
     /**
@@ -65,10 +69,12 @@ final class ContentRestRegistrarFactory
             ($this->postQueryProviderFactory)(),
             ($this->categoryQueryProviderFactory)(),
             ($this->mediaQueryProviderFactory)(),
+            ($this->tagQueryProviderFactory)(),
             ($this->pageResourceFactory)(),
             ($this->postResourceFactory)(),
             ($this->categoryResourceFactory)(),
             ($this->mediaResourceFactory)(),
+            ($this->tagResourceFactory)(),
         );
     }
 }

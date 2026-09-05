@@ -8,6 +8,7 @@ use HSP\Core\Contracts\FilterSet;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\PostResource;
+use HSP\Tests\Support\ContentSchema;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -231,6 +232,10 @@ final class FeaturedImageIntegrationTest extends TestCase
             $result = pg_query($this->pgConn, $sql);
             self::assertNotFalse($result, "migration {$file} must apply: " . pg_last_error($this->pgConn));
         }
+
+        // P1B-S3: the post query provider now always aggregates the post's tags, so the taxonomy
+        // tables must exist even though this test is only about featured images.
+        ContentSchema::ensureTaxonomySupport($this->pgConn);
     }
 
     private function connectPgsql(): mixed

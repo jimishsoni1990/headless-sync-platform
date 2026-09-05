@@ -34,7 +34,7 @@ final class ContentEventProviderTest extends TestCase
     public function test_supported_event_types_returns_all_open1_types(): void
     {
         $types = $this->provider->getSupportedEventTypes();
-        self::assertCount(12, $types);
+        self::assertCount(15, $types);
         foreach (ContentEventTypes::ALL as $expected) {
             self::assertContains($expected, $types);
         }

@@ -19,6 +19,7 @@ final class CategorySourceModel
      * @param string $description term description (may be empty string)
      * @param int    $parentId    parent term_id (0 = top-level category)
      * @param int    $count       post count from wp_term_taxonomy.count
+     * @param string $taxonomyType WordPress taxonomy name ('category' | 'post_tag') — P1B-S3
      */
     public function __construct(
         public readonly int $termId,
@@ -27,5 +28,6 @@ final class CategorySourceModel
         public readonly string $description,
         public readonly int $parentId,
         public readonly int $count,
+        public readonly string $taxonomyType = 'category',
     ) {}
 }

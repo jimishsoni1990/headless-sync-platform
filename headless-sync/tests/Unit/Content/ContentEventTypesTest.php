@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Verifies that all twelve Content event type constants match the OPEN-1 canon:
+ * Verifies that all fifteen Content event type constants match the OPEN-1 canon:
  * fully-qualified <domain>.<aggregate>.<action> names.
  *
  * Authority: ARCHITECTURE_DECISIONS.md OPEN-1.
@@ -17,12 +17,12 @@ use PHPUnit\Framework\TestCase;
 final class ContentEventTypesTest extends TestCase
 {
     // -------------------------------------------------------------------------
-    // OPEN-1 canon: all twelve event types must be present
+    // OPEN-1 canon: all fifteen event types must be present
     // -------------------------------------------------------------------------
 
-    public function test_all_constant_contains_exactly_twelve_types(): void
+    public function test_all_constant_contains_exactly_fifteen_types(): void
     {
-        self::assertCount(12, ContentEventTypes::ALL);
+        self::assertCount(15, ContentEventTypes::ALL);
     }
 
     #[DataProvider('provideExpectedEventTypes')]
@@ -48,6 +48,9 @@ final class ContentEventTypesTest extends TestCase
             'category created' => ['content.category.created'],
             'category updated' => ['content.category.updated'],
             'category deleted' => ['content.category.deleted'],
+            'tag created'      => ['content.tag.created'],
+            'tag updated'      => ['content.tag.updated'],
+            'tag deleted'      => ['content.tag.deleted'],
             'media created'    => ['content.media.created'],
             'media updated'    => ['content.media.updated'],
             'media deleted'    => ['content.media.deleted'],
@@ -83,7 +86,7 @@ final class ContentEventTypesTest extends TestCase
         $aggregate = $parts[1];
         self::assertContains(
             $aggregate,
-            ['page', 'post', 'category', 'media'],
+            ['page', 'post', 'category', 'media', 'tag'],
             "Aggregate '{$aggregate}' in '{$eventType}' is not in MVP scope.",
         );
     }

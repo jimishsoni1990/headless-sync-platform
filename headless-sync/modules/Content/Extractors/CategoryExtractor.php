@@ -45,6 +45,9 @@ final class CategoryExtractor
             description: $description,
             parentId:    $parentId,
             count:       $count,
+            // P1B-S3: categories and tags share this spine and the content.taxonomies
+            // projection; taxonomy_type is what tells them apart on the delivery side.
+            taxonomyType: (string) ($rawTerm['taxonomy'] ?? 'category'),
         );
     }
 }

@@ -9,7 +9,7 @@ use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
 
 /**
- * Registers all eight Content REST endpoints with WordPress.
+ * Registers all ten Content REST endpoints with WordPress.
  *
  * This class is the ONLY place where WP_REST_Request / WP_REST_Response / WP_Error
  * or any WordPress REST types appear. Query Providers and Resources are kept
@@ -40,10 +40,12 @@ final class ContentRestRegistrar
         private readonly QueryProviderInterface $postQueryProvider,
         private readonly QueryProviderInterface $categoryQueryProvider,
         private readonly QueryProviderInterface $mediaQueryProvider,
+        private readonly QueryProviderInterface $tagQueryProvider,
         private readonly ResourceInterface      $pageResource,
         private readonly ResourceInterface      $postResource,
         private readonly ResourceInterface      $categoryResource,
         private readonly ResourceInterface      $mediaResource,
+        private readonly ResourceInterface      $tagResource,
     ) {}
 
     /** Called from ContentModule::register() via add_action('rest_api_init'). */
@@ -75,7 +77,7 @@ final class ContentRestRegistrar
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => $this->handlePostListing(...),
             'permission_callback' => '__return_true',
-            'args'                => $this->listingArgs(['category', 'published_after']),
+            'args'                => $this->listingArgs(['category', 'tag', 'published_after']),
         ]);
 
         register_rest_route(self::NAMESPACE, '/posts/(?P<slug>[a-z0-9_-]+)', [
@@ -123,6 +125,27 @@ final class ContentRestRegistrar
         register_rest_route(self::NAMESPACE, '/media/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => $this->handleMediaSingle(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'slug' => [
+                    'required'          => true,
+                    'type'              => 'string',
+                    'sanitize_callback' => 'sanitize_title',
+                ],
+            ],
+        ]);
+
+        // Tags
+        register_rest_route(self::NAMESPACE, '/tags', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleTagListing(...),
+            'permission_callback' => '__return_true',
+            'args'                => $this->listingArgs([]),
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/tags/(?P<slug>[a-z0-9_-]+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleTagSingle(...),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -194,6 +217,7 @@ final class ContentRestRegistrar
         $filters = new FilterSet(
             status:         $this->sanitizeStatus($request->get_param('status')),
             categorySlug:   $this->sanitizeCategorySlug($request->get_param('category')),
+            tagSlug:        $this->sanitizeCategorySlug($request->get_param('tag')),
             publishedAfter: $this->sanitizeDate($request->get_param('published_after')),
             cursor:         $this->sanitizeCursor($request->get_param('cursor')),
             limit:          $this->sanitizeLimit($request->get_param('per_page')),
@@ -290,6 +314,40 @@ final class ContentRestRegistrar
         }
 
         return rest_ensure_response($this->mediaResource->toArray($row));
+    }
+
+    public function handleTagListing(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
+        $filters = new FilterSet(
+            cursor: $this->sanitizeCursor($request->get_param('cursor')),
+            limit:  $this->sanitizeLimit($request->get_param('per_page')),
+        );
+
+        $page = $this->tagQueryProvider->list($filters);
+        return rest_ensure_response(
+            $this->tagResource->toCollection($page->rows, $page->nextCursor)
+        );
+    }
+
+    public function handleTagSingle(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $slug = sanitize_title((string) ($request->get_param('slug') ?? ''));
+        $row  = $this->tagQueryProvider->findBySlug($slug);
+
+        if ($row === null) {
+            return new \WP_Error(
+                'hsp_not_found',
+                __('Tag not found.', 'headless-sync'),
+                ['status' => 404]
+            );
+        }
+
+        return rest_ensure_response($this->tagResource->toArray($row));
     }
 
     // -------------------------------------------------------------------------

@@ -62,7 +62,9 @@ final class CanonicalCategoryTest extends TestCase
     public function test_checksum_pinned_known_input(): void
     {
         // Pinned digest for the exact input below — computed once and locked.
-        // Field order: termId|name|slug|description|parentId|count
+        // Field order: termId|name|slug|description|parentId|count|taxonomyType
+        // taxonomyType appended by P1B-S3 (tags share this projection); re-pinned by recomputing
+        // the algorithm independently, not by copying the new output.
         // Separator: chr(0). All fields are scalars; no array encoding needed.
         $m = new CanonicalCategory(
             termId:      3,
@@ -73,7 +75,7 @@ final class CanonicalCategoryTest extends TestCase
             count:       5,
         );
         $this->assertSame(
-            'b5845d198f701098ea1bf28d2b1c02013d6f30f328cc73f63f28e76b07249811',
+            'f2a32398f512148d55093e76024ca016947b48b98e2c3fe01f4920fe7653f0b1',
             $m->getChecksum(),
         );
     }

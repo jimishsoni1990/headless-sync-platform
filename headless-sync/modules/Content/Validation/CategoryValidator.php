@@ -12,6 +12,9 @@ namespace HSP\Modules\Content\Validation;
  */
 final class CategoryValidator
 {
+    /** Taxonomies that project into content.taxonomies (P1B-S3). */
+    public const SUPPORTED_TAXONOMIES = ['category', 'post_tag'];
+
     private const REQUIRED_NUMERIC = ['term_id'];
     private const REQUIRED_STRING  = ['name', 'slug'];
 
@@ -35,8 +38,15 @@ final class CategoryValidator
             }
         }
 
-        if (isset($rawTerm['taxonomy']) && $rawTerm['taxonomy'] !== 'category') {
-            $violations[] = "Field 'taxonomy' must be 'category'; got '{$rawTerm['taxonomy']}'.";
+        // P1B-S3: tags ride the same projection, so the validator accepts the supported
+        // taxonomy set rather than 'category' alone. An unsupported taxonomy is still rejected —
+        // HookWiring never emits one, and a stray event must not project.
+        if (isset($rawTerm['taxonomy']) && ! in_array($rawTerm['taxonomy'], self::SUPPORTED_TAXONOMIES, true)) {
+            $violations[] = sprintf(
+                "Field 'taxonomy' must be one of %s; got '%s'.",
+                implode(', ', self::SUPPORTED_TAXONOMIES),
+                (string) $rawTerm['taxonomy'],
+            );
         }
 
         if (! empty($violations)) {

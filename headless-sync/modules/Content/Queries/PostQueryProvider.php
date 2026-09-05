@@ -52,13 +52,35 @@ final class PostQueryProvider implements QueryProviderInterface
                 ON fm.source_post_id = p.featured_media_id
                AND fm.deleted_at IS NULL';
 
-    /** Entity columns plus the resolved featured-image columns, all `fm_`-prefixed. */
+    /**
+     * A post's tags, aggregated in SQL (P1B-S3).
+     *
+     * A correlated subquery rather than a second fetch: it keeps a listing at ONE round-trip
+     * whatever the page size (no N+1), and each row's lookup rides
+     * idx_content_entity_taxonomies_taxonomy_id / the taxonomies PK. Stitching the tags client
+     * side would mean a second query and reassembly in PHP for no gain.
+     *
+     * Ordered by slug so the published array is deterministic — an unstable order would make
+     * consumer diffs and response caching noisy for no reason.
+     */
+    private const TAGS_SUBQUERY =
+        "COALESCE((
+                        SELECT json_agg(json_build_object('slug', t.slug, 'name', t.name) ORDER BY t.slug)
+                        FROM content.entity_taxonomies et
+                        JOIN content.taxonomies t ON t.id = et.taxonomy_id
+                        WHERE et.entity_id = p.id
+                          AND t.taxonomy_type = 'post_tag'
+                          AND t.deleted_at IS NULL
+                    ), '[]') AS tags_json";
+
+    /** Entity columns, the resolved featured-image columns (`fm_`-prefixed), and the tags array. */
     private const COLUMNS =
         'p.id, p.slug, p.title, p.content, p.excerpt, p.status, p.author,
                     p.published_at, p.updated_at, p.meta_jsonb, p.featured_media_id,
                     fm.slug AS fm_slug, fm.url AS fm_url, fm.alt_text AS fm_alt_text,
                     fm.mime_type AS fm_mime_type, fm.width AS fm_width, fm.height AS fm_height,
-                    fm.sizes_jsonb AS fm_sizes_jsonb';
+                    fm.sizes_jsonb AS fm_sizes_jsonb,
+                    ' . self::TAGS_SUBQUERY;
 
     public function __construct(
         private readonly DatabaseConnectionInterface $db,
@@ -93,18 +115,12 @@ final class PostQueryProvider implements QueryProviderInterface
 
         if ($filters->categorySlug !== null) {
             $params[] = $filters->categorySlug;
-            // Projection-side join: posts → entity_taxonomies → taxonomies.slug
-            $where[]  = sprintf(
-                'EXISTS (
-                    SELECT 1
-                    FROM content.entity_taxonomies et
-                    JOIN content.taxonomies t ON t.id = et.taxonomy_id
-                    WHERE et.entity_id = p.id
-                      AND t.slug = $%d
-                      AND t.deleted_at IS NULL
-                )',
-                count($params)
-            );
+            $where[]  = $this->taxonomyFilter('category', count($params));
+        }
+
+        if ($filters->tagSlug !== null) {
+            $params[] = $filters->tagSlug;
+            $where[]  = $this->taxonomyFilter('post_tag', count($params));
         }
 
         if ($cursorPublishedAt !== null && $cursorId !== null) {
@@ -166,6 +182,31 @@ final class PostQueryProvider implements QueryProviderInterface
             [$slug]
         );
         return $rows[0] ?? null;
+    }
+
+    /**
+     * "This post carries a term with the given slug, in the given taxonomy."
+     *
+     * The taxonomy_type predicate is NOT optional since P1B-S3: categories and tags share
+     * content.taxonomies, and WordPress only guarantees slug uniqueness WITHIN a taxonomy — so a
+     * tag named "news" and a category named "news" coexist, and a filter without the type
+     * predicate would match both.
+     */
+    private function taxonomyFilter(string $taxonomyType, int $slugParamIndex): string
+    {
+        return sprintf(
+            "EXISTS (
+                    SELECT 1
+                    FROM content.entity_taxonomies et
+                    JOIN content.taxonomies t ON t.id = et.taxonomy_id
+                    WHERE et.entity_id = p.id
+                      AND t.slug = $%d
+                      AND t.taxonomy_type = '%s'
+                      AND t.deleted_at IS NULL
+                )",
+            $slugParamIndex,
+            $taxonomyType,
+        );
     }
 
     private function encodeCursor(string $publishedAt, string $id): string

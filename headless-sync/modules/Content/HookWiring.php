@@ -25,9 +25,9 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  *                     transition_post_status already handled the post_id)
  *   wp_trash_post   → post/page deleted (suppressed when transition already fired)
  *   after_delete_post → post/page deleted (permanent hard-delete)
- *   created_term    → category created
- *   edited_term     → category updated
- *   delete_term     → category deleted
+ *   created_term    → category/tag created
+ *   edited_term     → category/tag updated
+ *   delete_term     → category/tag deleted
  *   add_attachment     → media created
  *   attachment_updated → media updated
  *   edit_attachment    → media updated
@@ -36,8 +36,9 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  * All outbox writes are post-commit (DECISION 1) — hooks fire after WordPress
  * completes its own DB transaction. No cross-DB transaction is attempted.
  *
- * Category hooks are scoped to taxonomy='category' only (MVP scope).
- * Tags and other taxonomies are ignored.
+ * Term hooks are scoped to the taxonomies this module projects — 'category' and, since P1B-S3,
+ * 'post_tag'. Any other taxonomy is ignored silently: other plugins register taxonomies freely
+ * and their terms firing these hooks is normal traffic, not an error.
  *
  * Double-write prevention: transition_post_status sets a per-request flag for each
  * post_id it handles. Both save_post and wp_trash_post skip any post_id already
@@ -49,6 +50,17 @@ use HSP\Modules\Content\Events\ContentEventTypes;
 final class HookWiring
 {
     private const SUPPORTED_POST_TYPES = ['post', 'page'];
+
+    /**
+     * WordPress taxonomy → OPEN-1 aggregate segment (P1B-S3).
+     *
+     * Both project into content.taxonomies, told apart by taxonomy_type. Note the names differ:
+     * WordPress's taxonomy is `post_tag`, the event aggregate is `tag`.
+     */
+    private const TAXONOMY_AGGREGATES = [
+        'category' => 'category',
+        'post_tag' => 'tag',
+    ];
 
     /** @var array<int,true> post_ids handled by transition_post_status this request */
     private array $handledByTransition = [];
@@ -288,12 +300,13 @@ final class HookWiring
      */
     public function onCreatedTerm(int $termId, int $ttId, string $taxonomy): void
     {
-        if ($taxonomy !== 'category') {
+        $eventType = $this->resolveTermEventType($taxonomy, 'created');
+        if ($eventType === null) {
             return;
         }
 
         $this->capture(
-            ContentEventTypes::CATEGORY_CREATED,
+            $eventType,
             (string) $termId,
             $this->categoryContext($termId),
         );
@@ -308,12 +321,13 @@ final class HookWiring
      */
     public function onEditedTerm(int $termId, int $ttId, string $taxonomy): void
     {
-        if ($taxonomy !== 'category') {
+        $eventType = $this->resolveTermEventType($taxonomy, 'updated');
+        if ($eventType === null) {
             return;
         }
 
         $this->capture(
-            ContentEventTypes::CATEGORY_UPDATED,
+            $eventType,
             (string) $termId,
             $this->categoryContext($termId),
         );
@@ -329,12 +343,13 @@ final class HookWiring
      */
     public function onDeleteTerm(int $termId, int $ttId, string $taxonomy, mixed $deletedTerm): void
     {
-        if ($taxonomy !== 'category') {
+        $eventType = $this->resolveTermEventType($taxonomy, 'deleted');
+        if ($eventType === null) {
             return;
         }
 
         $this->capture(
-            ContentEventTypes::CATEGORY_DELETED,
+            $eventType,
             (string) $termId,
             $this->categoryContext($termId),
         );
@@ -467,6 +482,24 @@ final class HookWiring
     private function resolveDeleteEventType(string $postType): string
     {
         return "content.{$postType}.deleted";
+    }
+
+    /**
+     * Map a WordPress taxonomy + action to a fully-qualified event type, or null when the
+     * taxonomy is not one this module projects (P1B-S3).
+     *
+     * Returning null rather than throwing is deliberate: other plugins register taxonomies
+     * freely, and their terms firing created_term/edited_term/delete_term is normal traffic that
+     * must be ignored silently — not an error, and never projected.
+     *
+     * The aggregate segment is NOT the taxonomy name: WordPress calls the taxonomy `post_tag`,
+     * while the event contract (OPEN-1) uses the aggregate `tag`, giving `content.tag.*`.
+     */
+    private function resolveTermEventType(string $taxonomy, string $action): ?string
+    {
+        $aggregate = self::TAXONOMY_AGGREGATES[$taxonomy] ?? null;
+
+        return $aggregate === null ? null : "content.{$aggregate}.{$action}";
     }
 
     /** @return array<string, mixed> */

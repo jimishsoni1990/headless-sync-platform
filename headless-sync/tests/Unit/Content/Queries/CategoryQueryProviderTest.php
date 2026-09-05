@@ -47,7 +47,10 @@ final class CategoryQueryProviderTest extends TestCase
 
         $sql = $this->db->sqlAt(0);
         self::assertStringContainsString('deleted_at IS NULL', $sql);
-        self::assertStringContainsString("taxonomy_type = 'category'", $sql);
+        // The type is now a BOUND parameter, not a literal: the same provider class serves
+        // tags with taxonomy_type='post_tag' (P1B-S3).
+        self::assertStringContainsString('taxonomy_type = $', $sql);
+        self::assertContains('category', $this->db->paramsAt(0));
     }
 
     public function test_list_sort_order_is_name_asc_id_asc(): void
@@ -185,9 +188,13 @@ final class CategoryQueryProviderTest extends TestCase
 
         $sql = $this->db->sqlAt(0);
         self::assertStringContainsString('deleted_at IS NULL', $sql);
-        self::assertStringContainsString("taxonomy_type = 'category'", $sql);
+        // The type is now a BOUND parameter, not a literal: the same provider class serves
+        // tags with taxonomy_type='post_tag' (P1B-S3).
+        self::assertStringContainsString('taxonomy_type = $', $sql);
+        self::assertContains('category', $this->db->paramsAt(0));
         self::assertStringContainsString('slug = $1', $sql);
-        self::assertSame(['news'], $this->db->paramsAt(0));
+        // Both values are bound — the slug AND the taxonomy type (P1B-S3).
+        self::assertSame(['news', 'category'], $this->db->paramsAt(0));
     }
 
     // -------------------------------------------------------------------------

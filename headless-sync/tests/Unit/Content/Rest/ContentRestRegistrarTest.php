@@ -303,16 +303,20 @@ final class ContentRestRegistrarTest extends TestCase
         ?FakeQueryProvider $postProvider     = null,
         ?FakeQueryProvider $categoryProvider = null,
         ?FakeQueryProvider $mediaProvider    = null,
+        ?FakeQueryProvider $tagProvider      = null,
     ): ContentRestRegistrar {
         return new ContentRestRegistrar(
             pageQueryProvider:     $pageProvider     ?? new FakeQueryProvider(new CursorPage([], null)),
             postQueryProvider:     $postProvider     ?? new FakeQueryProvider(new CursorPage([], null)),
             categoryQueryProvider: $categoryProvider ?? new FakeQueryProvider(new CursorPage([], null)),
             mediaQueryProvider:    $mediaProvider    ?? new FakeQueryProvider(new CursorPage([], null)),
+            tagQueryProvider:      $tagProvider      ?? new FakeQueryProvider(new CursorPage([], null)),
             pageResource:          new \HSP\Modules\Content\Resources\PageResource(),
             postResource:          new \HSP\Modules\Content\Resources\PostResource(),
             categoryResource:      new \HSP\Modules\Content\Resources\CategoryResource(),
             mediaResource:         new \HSP\Modules\Content\Resources\MediaResource(),
+            // Tags publish the same shape as categories — same Resource, different taxonomy.
+            tagResource:           new \HSP\Modules\Content\Resources\CategoryResource(),
         );
     }
 

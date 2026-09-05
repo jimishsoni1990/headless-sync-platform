@@ -21,6 +21,7 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  *   content.post.*     → aggregate_type = 'post'
  *   content.category.* → aggregate_type = 'category'
  *   content.media.*    → aggregate_type = 'media'
+ *   content.tag.*      → aggregate_type = 'tag'
  *
  * Event version: all Content module events ship at version 1 (Doc 5 §26 — replay
  * must use the original version; bumping is a future contract change, not done here).
@@ -35,6 +36,7 @@ final class EventProvider implements EventProviderInterface
         'post'     => 'post',
         'category' => 'category',
         'media'    => 'media',
+        'tag'      => 'tag',
     ];
 
     public function __construct(

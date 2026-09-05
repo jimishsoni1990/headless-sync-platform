@@ -301,9 +301,9 @@ final class HookWiringTest extends TestCase
         self::assertSame('100', $this->writer->lastWrite()['aggregateId']);
     }
 
-    public function test_created_term_ignores_non_category_taxonomy(): void
+    public function test_created_term_ignores_an_unsupported_taxonomy(): void
     {
-        $this->wiring->onCreatedTerm(101, 201, 'post_tag');
+        $this->wiring->onCreatedTerm(101, 201, 'product_cat');
 
         self::assertSame(0, $this->writer->writeCount());
     }
@@ -328,9 +328,9 @@ final class HookWiringTest extends TestCase
         self::assertSame('110', $this->writer->lastWrite()['aggregateId']);
     }
 
-    public function test_edited_term_ignores_non_category_taxonomy(): void
+    public function test_edited_term_ignores_an_unsupported_taxonomy(): void
     {
-        $this->wiring->onEditedTerm(111, 211, 'post_tag');
+        $this->wiring->onEditedTerm(111, 211, 'product_cat');
 
         self::assertSame(0, $this->writer->writeCount());
     }
@@ -348,9 +348,9 @@ final class HookWiringTest extends TestCase
         self::assertSame('120', $this->writer->lastWrite()['aggregateId']);
     }
 
-    public function test_delete_term_ignores_non_category_taxonomy(): void
+    public function test_delete_term_ignores_an_unsupported_taxonomy(): void
     {
-        $this->wiring->onDeleteTerm(121, 221, 'post_tag', new \stdClass());
+        $this->wiring->onDeleteTerm(121, 221, 'product_cat', new \stdClass());
 
         self::assertSame(0, $this->writer->writeCount());
     }
@@ -687,6 +687,44 @@ final class HookWiringTest extends TestCase
         $wiring->onEditedTerm(3, 0, 'category');
 
         self::assertSame(3, $writer->attempts);
+    }
+
+    // =========================================================================
+    // Tag hooks (post_tag taxonomy — P1B-S3)
+    // =========================================================================
+
+    public function test_created_term_for_a_tag_emits_tag_created(): void
+    {
+        $this->wiring->onCreatedTerm(77, 201, 'post_tag');
+
+        self::assertSame(1, $this->writer->writeCount());
+        // WordPress calls the taxonomy post_tag; the OPEN-1 aggregate is `tag`.
+        self::assertSame(ContentEventTypes::TAG_CREATED, $this->writer->lastWrite()['eventType']);
+        self::assertSame('tag', $this->writer->lastWrite()['aggregateType']);
+        self::assertSame('77', $this->writer->lastWrite()['aggregateId']);
+    }
+
+    public function test_edited_term_for_a_tag_emits_tag_updated(): void
+    {
+        $this->wiring->onEditedTerm(77, 201, 'post_tag');
+
+        self::assertSame(ContentEventTypes::TAG_UPDATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_delete_term_for_a_tag_emits_tag_deleted(): void
+    {
+        $this->wiring->onDeleteTerm(77, 201, 'post_tag', null);
+
+        self::assertSame(ContentEventTypes::TAG_DELETED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_categories_still_emit_category_events(): void
+    {
+        // The taxonomy set widened; it did not shift. Categories must be untouched.
+        $this->wiring->onCreatedTerm(5, 201, 'category');
+
+        self::assertSame(ContentEventTypes::CATEGORY_CREATED, $this->writer->lastWrite()['eventType']);
+        self::assertSame('category', $this->writer->lastWrite()['aggregateType']);
     }
 
     // =========================================================================

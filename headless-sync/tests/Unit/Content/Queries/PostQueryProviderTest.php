@@ -83,14 +83,18 @@ final class PostQueryProviderTest extends TestCase
         self::assertStringNotContainsString('wp_', $sql);
     }
 
-    public function test_null_category_filter_omits_join(): void
+    public function test_null_category_filter_omits_the_filter_predicate(): void
     {
         $this->db->queueResults([]);
 
         $this->provider->list(new FilterSet());
 
         $sql = $this->db->sqlAt(0);
-        self::assertStringNotContainsString('entity_taxonomies', $sql);
+
+        // Since P1B-S3 the SELECT list ALWAYS aggregates the post's tags, so entity_taxonomies
+        // appears unconditionally. What must be absent when unfiltered is the EXISTS filter.
+        self::assertStringNotContainsString('EXISTS (', $sql);
+        self::assertStringNotContainsString('t.slug =', $sql);
     }
 
     // -------------------------------------------------------------------------

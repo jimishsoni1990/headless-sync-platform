@@ -32,6 +32,7 @@ final class CategoryTransformer implements TransformerInterface
             description: $source->description,
             parentId:    $source->parentId,
             count:       $source->count,
+            taxonomyType: $source->taxonomyType,
         );
     }
 

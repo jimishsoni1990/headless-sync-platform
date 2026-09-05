@@ -107,6 +107,14 @@ final class ContentServiceProvider extends ServiceProvider
             new MediaQueryProvider($c->get(DatabaseConnectionInterface::class))
         );
 
+        // Tags reuse the taxonomy query provider with taxonomy_type='post_tag' (P1B-S3) — the
+        // rows live in the same content.taxonomies projection and differ only by that column,
+        // so a second binding beats a duplicated class. Keyed by string since the class name is
+        // already bound to the category instance.
+        $container->singleton('content.tag_query_provider', fn (Container $c) =>
+            new CategoryQueryProvider($c->get(DatabaseConnectionInterface::class), 'post_tag')
+        );
+
         // Resources — no dependencies; singletons for efficiency.
         $container->singleton(PageResource::class, fn () => new PageResource());
         $container->singleton(PostResource::class, fn () => new PostResource());
@@ -120,10 +128,12 @@ final class ContentServiceProvider extends ServiceProvider
                 $c->get(PostQueryProvider::class),
                 $c->get(CategoryQueryProvider::class),
                 $c->get(MediaQueryProvider::class),
+                $c->get('content.tag_query_provider'),
                 $c->get(PageResource::class),
                 $c->get(PostResource::class),
                 $c->get(CategoryResource::class),
                 $c->get(MediaResource::class),
+                $c->get(CategoryResource::class),
             )
         );
 
@@ -156,10 +166,12 @@ final class ContentServiceProvider extends ServiceProvider
                     fn () => $c->get(PostQueryProvider::class),
                     fn () => $c->get(CategoryQueryProvider::class),
                     fn () => $c->get(MediaQueryProvider::class),
+                    fn () => $c->get('content.tag_query_provider'),
                     fn () => $c->get(PageResource::class),
                     fn () => $c->get(PostResource::class),
                     fn () => $c->get(CategoryResource::class),
                     fn () => $c->get(MediaResource::class),
+                    fn () => $c->get(CategoryResource::class),
                 ),
                 new ContentSubscriberRegistrar(
                     fn () => $c->get(EventRegistry::class),
@@ -350,6 +362,11 @@ final class ContentServiceProvider extends ServiceProvider
                 ContentEventTypes::CATEGORY_CREATED => $c->get(CategoryUpsertHandler::class),
                 ContentEventTypes::CATEGORY_UPDATED => $c->get(CategoryUpsertHandler::class),
                 ContentEventTypes::CATEGORY_DELETED => $c->get(CategoryTombstoneHandler::class),
+                // Tags reuse the category handlers: loader → extractor → transformer → adapter
+                // are taxonomy-generic since P1B-S3, and taxonomy_type carries the difference.
+                ContentEventTypes::TAG_CREATED      => $c->get(CategoryUpsertHandler::class),
+                ContentEventTypes::TAG_UPDATED      => $c->get(CategoryUpsertHandler::class),
+                ContentEventTypes::TAG_DELETED      => $c->get(CategoryTombstoneHandler::class),
                 ContentEventTypes::MEDIA_CREATED    => $c->get(MediaUpsertHandler::class),
                 ContentEventTypes::MEDIA_UPDATED    => $c->get(MediaUpsertHandler::class),
                 ContentEventTypes::MEDIA_DELETED    => $c->get(MediaTombstoneHandler::class),

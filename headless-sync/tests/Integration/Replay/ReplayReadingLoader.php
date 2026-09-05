@@ -51,4 +51,9 @@ final class ReplayReadingLoader implements WpContentLoader
     {
         return [];
     }
+
+    public function loadPostTermIds(int $postId, string $taxonomy): array
+    {
+        return [];
+    }
 }

@@ -137,10 +137,28 @@ final class CategoryExtractorTest extends TestCase
         $this->extractor->extract($this->validRaw(['slug' => '']));
     }
 
-    public function test_wrong_taxonomy_throws(): void
+    public function test_unsupported_taxonomy_throws(): void
     {
+        // post_tag became SUPPORTED in P1B-S3, so the unsupported case needs a taxonomy this
+        // module genuinely does not project — a stray event for one must never reach a projection.
         $this->expectException(ValidationException::class);
-        $this->extractor->extract($this->validRaw(['taxonomy' => 'post_tag']));
+        $this->extractor->extract($this->validRaw(['taxonomy' => 'product_cat']));
+    }
+
+    public function test_a_tag_extracts_with_its_taxonomy_type(): void
+    {
+        $source = $this->extractor->extract($this->validRaw(['taxonomy' => 'post_tag']));
+
+        // taxonomy_type is what tells tags and categories apart in the shared projection.
+        self::assertSame('post_tag', $source->taxonomyType);
+    }
+
+    public function test_a_term_without_an_explicit_taxonomy_defaults_to_category(): void
+    {
+        $raw = $this->validRaw();
+        unset($raw['taxonomy']);
+
+        self::assertSame('category', $this->extractor->extract($raw)->taxonomyType);
     }
 
     public function test_extracted_model_has_no_checksum_property(): void

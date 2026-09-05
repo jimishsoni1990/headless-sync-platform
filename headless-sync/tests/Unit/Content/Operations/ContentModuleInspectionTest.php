@@ -28,7 +28,7 @@ final class ContentModuleInspectionTest extends TestCase
         self::assertSame('content', $inspection->name);
         self::assertSame('1.2.3', $inspection->version);
         self::assertSame(array_values(ContentEventTypes::ALL), $inspection->eventTypes);
-        self::assertCount(12, $inspection->eventTypes);
+        self::assertCount(15, $inspection->eventTypes);
         self::assertContains('/posts/{slug}', $inspection->endpoints);
         self::assertContains('PostTransformer', $inspection->transformers);
         self::assertContains('PostAdapter', $inspection->adapters);

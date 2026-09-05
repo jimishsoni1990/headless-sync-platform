@@ -58,7 +58,10 @@ final class WpContentLoaderImpl implements WpContentLoader
      */
     public function loadTerm(int $termId): ?array
     {
-        $term = get_term($termId, 'category');
+        // P1B-S3: no taxonomy argument — the term is looked up by id across taxonomies so the
+        // same loader serves categories and tags. The returned array carries 'taxonomy', which is
+        // what the extractor threads through to taxonomy_type.
+        $term = get_term($termId);
 
         if (! $term instanceof \WP_Term || is_wp_error($term)) {
             return null;
@@ -98,7 +101,15 @@ final class WpContentLoaderImpl implements WpContentLoader
      */
     public function loadPostCategoryIds(int $postId): array
     {
-        $terms = wp_get_post_terms($postId, 'category', ['fields' => 'ids']);
+        return $this->loadPostTermIds($postId, 'category');
+    }
+
+    /**
+     * @return list<int>
+     */
+    public function loadPostTermIds(int $postId, string $taxonomy): array
+    {
+        $terms = wp_get_post_terms($postId, $taxonomy, ['fields' => 'ids']);
 
         if (is_wp_error($terms) || ! is_array($terms)) {
             return [];

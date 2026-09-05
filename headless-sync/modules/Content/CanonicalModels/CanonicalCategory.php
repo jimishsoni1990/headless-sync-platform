@@ -32,6 +32,7 @@ final class CanonicalCategory implements CanonicalModelInterface
         public readonly string $description,
         public readonly int $parentId,
         public readonly int $count,
+        public readonly string $taxonomyType = 'category',
     ) {}
 
     public function getSourceId(): int
@@ -42,7 +43,9 @@ final class CanonicalCategory implements CanonicalModelInterface
     public function getChecksum(): string
     {
         // Fixed field order (must match the write-side recomputation in P1A-S4 adapters):
-        // termId | name | slug | description | parentId | count
+        // termId | name | slug | description | parentId | count | taxonomyType
+        // taxonomyType appended by P1B-S3: it is a STORED projection column, and every stored
+        // column must be in the digest or a change to it cannot propagate (DECISION 3).
         // Separator: chr(0) — cannot appear in any field value.
         // All fields are scalars; no PHP-internal serialization used.
         return hash('sha256', implode("\0", [
@@ -52,6 +55,7 @@ final class CanonicalCategory implements CanonicalModelInterface
             $this->description,
             (string) $this->parentId,
             (string) $this->count,
+            $this->taxonomyType,
         ]));
     }
 }

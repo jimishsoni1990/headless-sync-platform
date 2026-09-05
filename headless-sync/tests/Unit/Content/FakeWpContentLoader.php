@@ -79,4 +79,16 @@ class FakeWpContentLoader implements WpContentLoader
     {
         return $this->categoryIdsResult;
     }
+
+    /** @var array<string, list<int>> taxonomy → term ids (P1B-S3) */
+    public array $termIdsResult = [];
+
+    public function loadPostTermIds(int $postId, string $taxonomy): array
+    {
+        if ($taxonomy === 'category') {
+            return $this->categoryIdsResult;
+        }
+
+        return $this->termIdsResult[$taxonomy] ?? [];
+    }
 }
