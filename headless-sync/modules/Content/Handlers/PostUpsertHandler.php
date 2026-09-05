@@ -49,7 +49,8 @@ final class PostUpsertHandler implements ContentUpsertHandlerInterface
 
         $rawMeta     = $this->loader->loadPostMeta($postId);
         $categoryIds = $this->loader->loadPostCategoryIds($postId);
-        $source      = $this->extractor->extract($rawPost, $rawMeta, $categoryIds);
+        $tagIds      = $this->loader->loadPostTermIds($postId, 'post_tag');
+        $source      = $this->extractor->extract($rawPost, $rawMeta, $categoryIds, $tagIds);
         $canonical   = $this->transformer->transform($source);
         $this->adapter->persist($canonical, $event);
     }

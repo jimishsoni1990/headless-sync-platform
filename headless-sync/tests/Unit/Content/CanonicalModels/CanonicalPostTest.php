@@ -85,7 +85,7 @@ final class CanonicalPostTest extends TestCase
     {
         // Pinned digest for the exact input below — computed once and locked.
         // Field order: postId|title|content|excerpt|slug|status|author|
-        //              publishedAt(ATOM)|modifiedAt(ATOM)|categoryIds(JSON sorted asc)|meta(JSON ksorted)|featuredMediaId
+        //              publishedAt(ATOM)|modifiedAt(ATOM)|categoryIds(JSON sorted asc)|meta(JSON ksorted)|featuredMediaId|tagIds(JSON sorted asc)
         // featuredMediaId appended by P1B-S2 — a featured-image change must move the digest,
         // or DECISION 3 suppresses the write. Re-pinned by recomputing the algorithm, not by
         // copying the new output.
@@ -106,7 +106,7 @@ final class CanonicalPostTest extends TestCase
             meta:        ['key' => 'val'],
         );
         $this->assertSame(
-            'c7e94d92fcd8c41c8cfa25ba815d15c4ee4e1826f0078eef24991a07b786a795',
+            '975ae9bafc2f3cc53e39de1d714192550c7cb85d733e345139cf2382c55cd926',
             $m->getChecksum(),
         );
     }
@@ -115,7 +115,7 @@ final class CanonicalPostTest extends TestCase
     {
         // Two instances identical in value but with categoryIds and meta keys in different
         // input order must produce the same checksum — order is not semantically meaningful
-        // for sets and associative maps. Pinned digest: c1cd4749... (re-pinned by P1B-S2 — featuredMediaId appended)
+        // for sets and associative maps. Pinned digest: 8fd36a62... (re-pinned again by the P1B-S3 join fix — tagIds appended)
         $pub = new \DateTimeImmutable('2024-03-01 09:00:00', new \DateTimeZone('UTC'));
         $mod = new \DateTimeImmutable('2024-03-02 10:00:00', new \DateTimeZone('UTC'));
         $base = [
@@ -135,7 +135,7 @@ final class CanonicalPostTest extends TestCase
         );
         $this->assertSame($a->getChecksum(), $b->getChecksum());
         $this->assertSame(
-            'c1cd47491a4a568f83445f4a847c2548dc1af7377bb3773a7413fdedecb8ff0d',
+            '8fd36a62a81a89e2308a07cf53afd836cc042ac828aff56dc29d4b717747bb08',
             $a->getChecksum(),
         );
     }

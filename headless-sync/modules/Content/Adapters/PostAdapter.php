@@ -16,7 +16,8 @@ use HSP\Modules\Content\CanonicalModels\CanonicalPost;
  *
  * DECISION 3: all three operations commit in ONE PostgreSQL transaction:
  *   1. content.posts upsert (projection) — may be skipped; see below
- *   2. content.entity_taxonomies rewrite (delete-all + reinsert for this entity)
+ *   2. content.entity_taxonomies rewrite (delete-all + reinsert for this entity — categories
+ *      AND tags; the delete is unconditional, so the full term set must be supplied)
  *   3. system.processed_events INSERT ON CONFLICT DO NOTHING
  *   4. system.aggregate_versions upsert (monotonic GREATEST guard — FLAG-P1AS4-2)
  *
@@ -79,7 +80,9 @@ final class PostAdapter implements AdapterInterface
 
             if (! $suppressProjection) {
                 $this->upsertPost($model, $id, $checksum, $now);
-                $this->rewriteEntityTaxonomies($id, $model->categoryIds);
+                // BOTH taxonomies: the rewrite is a full replace per entity, so passing only
+                // categories here would delete the post's tag links on every post update.
+                $this->rewriteEntityTaxonomies($id, [...$model->categoryIds, ...$model->tagIds]);
             }
             $this->insertProcessedEvent($event, $checksum, $now);
             $this->upsertAggregateVersion($event, $now);
@@ -220,15 +223,19 @@ final class PostAdapter implements AdapterInterface
     /**
      * Full replace of entity_taxonomies for this post entity.
      *
-     * Deletes all existing join rows for $postId, then inserts one row per
-     * category that is already present in content.taxonomies. Categories not yet
-     * synced to content.taxonomies are omitted — they will be linked on category sync.
+     * Deletes all existing join rows for $postId, then inserts one row per TERM — category or
+     * tag — that is already present in content.taxonomies. Terms not yet synced are omitted; they
+     * link when that term syncs.
+     *
+     * The delete is unconditional and covers every taxonomy, so the caller MUST pass the post's
+     * full term set. Passing categories alone silently unlinked every tag on each post update
+     * (the P1B-S3 join bug).
      *
      * Both delete and inserts execute inside the caller's open transaction (DECISION 3).
      *
-     * @param list<int> $categoryIds source wp_terms.term_id values
+     * @param list<int> $termIds source wp_terms.term_id values across ALL supported taxonomies
      */
-    private function rewriteEntityTaxonomies(string $postUuid, array $categoryIds): void
+    private function rewriteEntityTaxonomies(string $postUuid, array $termIds): void
     {
         // Remove all prior join rows for this entity (handles shrinking category set).
         $this->db->execute(
@@ -236,16 +243,19 @@ final class PostAdapter implements AdapterInterface
             [$postUuid]
         );
 
-        if (empty($categoryIds)) {
+        $termIds = array_values(array_unique($termIds));
+
+        if (empty($termIds)) {
             return;
         }
 
         // Resolve source_term_ids to content.taxonomies UUIDs.
         // Build $1,$2,... placeholder list.
-        $placeholders = implode(',', array_map(fn($i) => '$' . ($i + 1), array_keys($categoryIds)));
+        $placeholders = implode(',', array_map(fn($i) => '$' . ($i + 1), array_keys($termIds)));
+        // Already a list: array_unique + array_values above reindexed it.
         $taxonomyRows = $this->db->query(
             "SELECT id FROM content.taxonomies WHERE source_term_id IN ({$placeholders})",
-            array_values($categoryIds)
+            $termIds
         );
 
         foreach ($taxonomyRows as $taxRow) {

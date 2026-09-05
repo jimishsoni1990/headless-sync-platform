@@ -41,6 +41,7 @@ final class TagsIntegrationTest extends TestCase
     {
         if ($this->pgConn !== null) {
             pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS content CASCADE');
+            pg_query($this->pgConn, 'DROP SCHEMA IF EXISTS system CASCADE');
             pg_close($this->pgConn);
             $this->pgConn = null;
         }
@@ -156,6 +157,53 @@ final class TagsIntegrationTest extends TestCase
         // Categories are NOT tags: the aggregate is scoped to post_tag.
         self::assertCount(2, $body['tags']);
         self::assertSame(['news', 'php'], array_column($body['tags'], 'slug'), 'ordered by slug');
+    }
+
+    // =========================================================================
+    // The PIPELINE links posts to tags — not just hand-seeded fixtures
+    // =========================================================================
+
+    public function test_the_real_upsert_handler_links_a_post_to_its_tags(): void
+    {
+        // REGRESSION (P1B-S3 join bug): every other test in this class seeds
+        // content.entity_taxonomies by hand, which is exactly why the missing link-write went
+        // unnoticed — tag terms synced, /tags worked, and yet no post ever had a tag because
+        // PostAdapter rewrote the join table from categoryIds alone. This test drives the REAL
+        // handler so the pipeline itself has to produce the link.
+        $this->seedTerm(2, 'php', 'PHP', 'post_tag');
+        $this->seedTerm(3, 'guides', 'Guides', 'category');
+
+        $loader = new \HSP\Tests\Unit\Content\FakeWpContentLoader();
+        $loader->postResult = [
+            'ID' => 7, 'post_title' => 'Tagged', 'post_content' => '', 'post_excerpt' => '',
+            'post_name' => 'tagged', 'post_status' => 'publish', 'post_type' => 'post',
+            'post_author' => '1', 'post_date_gmt' => '2024-01-01 00:00:00',
+            'post_modified_gmt' => '2024-01-01 00:00:00',
+        ];
+        $loader->categoryIdsResult = [3];
+        $loader->termIdsResult     = ['post_tag' => [2]];
+
+        (new \HSP\Modules\Content\Handlers\PostUpsertHandler(
+            $loader,
+            new \HSP\Modules\Content\Extractors\PostExtractor(new \HSP\Modules\Content\Validation\PostValidator()),
+            new \HSP\Modules\Content\Transformers\PostTransformer(),
+            new \HSP\Modules\Content\Adapters\PostAdapter($this->db),
+        ))->handle(new FakeTagEvent());
+
+        $body = (new PostResource())->toArray(
+            (new PostQueryProvider($this->db))->findBySlug('tagged')
+        );
+
+        self::assertSame(['php'], array_column($body['tags'], 'slug'), 'the pipeline linked the tag');
+
+        // …and the post is still reachable through the tag filter.
+        $page = (new PostQueryProvider($this->db))->list(new FilterSet(tagSlug: 'php', limit: 10));
+        self::assertCount(1, $page->rows);
+
+        // BOTH taxonomies survive the full-replace rewrite — a category-only rewrite would have
+        // deleted the tag link.
+        $links = (int) $this->db->query('SELECT COUNT(*) AS c FROM content.entity_taxonomies')[0]['c'];
+        self::assertSame(2, $links, 'one category link and one tag link');
     }
 
     // =========================================================================
@@ -343,6 +391,27 @@ final class TagsIntegrationTest extends TestCase
 
         // content.posts needs featured_media_id (P1B-S2) since the query provider selects it.
         ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
+
+        // The pipeline-driven regression test runs the REAL adapter, whose DECISION 3
+        // transaction also writes system.processed_events and system.aggregate_versions.
+        pg_query($this->pgConn, 'CREATE SCHEMA IF NOT EXISTS system');
+        pg_query($this->pgConn, '
+            CREATE TABLE IF NOT EXISTS system.processed_events (
+                event_id     UUID        NOT NULL,
+                checksum     VARCHAR(64) NOT NULL,
+                processed_at TIMESTAMPTZ NOT NULL,
+                CONSTRAINT pk_system_processed_events PRIMARY KEY (event_id)
+            )
+        ');
+        pg_query($this->pgConn, '
+            CREATE TABLE IF NOT EXISTS system.aggregate_versions (
+                aggregate_type           VARCHAR(100) NOT NULL,
+                aggregate_id             VARCHAR(255) NOT NULL,
+                latest_processed_version BIGINT       NOT NULL,
+                latest_processed_at      TIMESTAMPTZ  NOT NULL,
+                CONSTRAINT pk_system_aggregate_versions PRIMARY KEY (aggregate_type, aggregate_id)
+            )
+        ');
     }
 
     private function connectPgsql(): mixed
@@ -364,4 +433,23 @@ final class TagsIntegrationTest extends TestCase
 
         return $conn;
     }
+}
+
+/**
+ * Minimal EventInterface double for driving the post upsert handler.
+ */
+final class FakeTagEvent implements \HSP\Core\Contracts\EventInterface
+{
+    public function getId(): string            { return '01900000-0000-7000-8000-000000000777'; }
+    public function getEventType(): string     { return 'content.post.updated'; }
+    public function getEventVersion(): int     { return 1; }
+    public function getAggregateType(): string { return 'post'; }
+    public function getAggregateId(): string   { return '7'; }
+    public function getAggregateVersion(): int { return 1; }
+    public function getPayload(): array        { return []; }
+    public function getChecksum(): string      { return str_repeat('d', 64); }
+    public function getSourceUpdatedAt(): \DateTimeImmutable { return new \DateTimeImmutable('2024-06-01T10:00:00Z'); }
+    public function getCreatedAt(): \DateTimeImmutable       { return new \DateTimeImmutable('2024-06-01T10:00:00Z'); }
+    public function getCorrelationId(): string { return '01900000-0000-7000-8000-000000000002'; }
+    public function getCausationId(): ?string  { return null; }
 }

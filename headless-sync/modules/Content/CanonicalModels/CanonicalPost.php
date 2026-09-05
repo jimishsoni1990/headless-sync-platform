@@ -28,6 +28,7 @@ final class CanonicalPost implements CanonicalModelInterface
      * @param \DateTimeImmutable   $publishedAt UTC publish instant
      * @param \DateTimeImmutable   $modifiedAt  UTC last-modified instant
      * @param list<int>            $categoryIds Term IDs from the 'category' taxonomy
+     * @param list<int>            $tagIds      Term IDs from the 'post_tag' taxonomy (P1B-S3)
      * @param array<string,string> $meta        Post meta key→value
      */
     public function __construct(
@@ -43,6 +44,7 @@ final class CanonicalPost implements CanonicalModelInterface
         public readonly array $categoryIds,
         public readonly array $meta,
         public readonly int $featuredMediaId = 0,
+        public readonly array $tagIds = [],
     ) {}
 
     public function getSourceId(): int
@@ -54,7 +56,10 @@ final class CanonicalPost implements CanonicalModelInterface
     {
         // Fixed field order (must match the write-side recomputation in P1A-S4 adapters):
         // postId | title | content | excerpt | slug | status | author |
-        // publishedAt(ATOM) | modifiedAt(ATOM) | categoryIds(JSON) | meta(JSON) | featuredMediaId
+        // publishedAt(ATOM) | modifiedAt(ATOM) | categoryIds(JSON) | meta(JSON) | featuredMediaId |
+        // tagIds(JSON sorted asc)
+        // tagIds appended by the P1B-S3 join fix: without it, changing ONLY a post's tags leaves
+        // the checksum unmoved, DECISION 3 suppresses the write, and the join rewrite never runs.
         //
         // featuredMediaId is APPENDED (P1B-S2) — order is append-only so the field list stays
         // readable against its history. It MUST be in the digest: a featured-image change touches
@@ -66,6 +71,9 @@ final class CanonicalPost implements CanonicalModelInterface
         // Both encoded with json_encode(JSON_UNESCAPED_UNICODE); no PHP serialize().
         $categoryIds = $this->categoryIds;
         sort($categoryIds);
+        // Sorted for the same reason as categoryIds: a set, not an ordered list.
+        $tagIds = $this->tagIds;
+        sort($tagIds);
         $meta = $this->meta;
         ksort($meta);
         return hash('sha256', implode("\0", [
@@ -81,6 +89,7 @@ final class CanonicalPost implements CanonicalModelInterface
             json_encode($categoryIds, JSON_UNESCAPED_UNICODE),
             json_encode($meta, JSON_UNESCAPED_UNICODE),
             (string) $this->featuredMediaId,
+            json_encode($tagIds, JSON_UNESCAPED_UNICODE),
         ]));
     }
 }

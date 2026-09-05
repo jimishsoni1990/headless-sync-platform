@@ -38,6 +38,7 @@ final class PostTransformer implements TransformerInterface
             categoryIds: $source->categoryIds,
             meta:        $source->meta,
             featuredMediaId: $source->featuredMediaId,
+            tagIds:      $source->tagIds,
         );
     }
 

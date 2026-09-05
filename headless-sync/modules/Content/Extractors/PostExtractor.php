@@ -33,7 +33,8 @@ final class PostExtractor
     /**
      * @param array<string,mixed> $rawPost      WP_Post object cast to array, or equivalent shape
      * @param array<string,mixed> $rawMeta       get_post_meta()-style flat map (meta_key → scalar value)
-     * @param list<int>           $categoryIds   term IDs already resolved to 'category' taxonomy
+     * @param list<int>           $categoryIds
+     * @param list<int>           $tagIds      term IDs from the 'post_tag' taxonomy (P1B-S3)
      *
      * @throws ValidationException when required fields are absent or structurally invalid
      */
@@ -41,6 +42,7 @@ final class PostExtractor
         array $rawPost,
         array $rawMeta = [],
         array $categoryIds = [],
+        array $tagIds = [],
     ): PostSourceModel {
         $this->validator->validate($rawPost);
 
@@ -57,6 +59,7 @@ final class PostExtractor
 
         $normalizedMeta = $this->normalizeMeta($rawMeta);
         $normalizedCats = array_values(array_map('intval', $categoryIds));
+        $normalizedTags = array_values(array_map('intval', $tagIds));
 
         return new PostSourceModel(
             postId:      $postId,
@@ -73,6 +76,7 @@ final class PostExtractor
             // _thumbnail_id is `_`-prefixed, so normalizeMeta() strips it; the featured image is
             // extracted deliberately as a typed field instead of riding in meta (P1B-S2).
             featuredMediaId: ProtectedMeta::featuredMediaId($rawMeta),
+            tagIds:      $normalizedTags,
         );
     }
 

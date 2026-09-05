@@ -141,7 +141,10 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
                 }
                 $meta = $this->loader->loadPostMeta((int) $aggregateId);
                 $cats = $this->loader->loadPostCategoryIds((int) $aggregateId);
-                $source = $this->postExtractor->extract($post, $meta, $cats);
+                // Tags are part of the post's canonical identity too — omitting them here would
+                // make every tagged post read as drifted on every reconcile pass.
+                $tags = $this->loader->loadPostTermIds((int) $aggregateId, 'post_tag');
+                $source = $this->postExtractor->extract($post, $meta, $cats, $tags);
                 return $this->postTransformer->transform($source)->getChecksum();
 
             case 'category':
