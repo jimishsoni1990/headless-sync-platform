@@ -80,14 +80,23 @@ final class OutboxServiceProvider extends ServiceProvider
         });
 
         $container->singleton('outbox.connection.pgsql', function () {
-            $dsn  = $this->resolver->pgDsn();
-            $conn = \pg_connect($dsn);
+            // Lazy connection, matching the MySQL side above: the CONNECTOR closure is
+            // invoked on first real relay use, so container resolution and cron wiring
+            // open no socket, and a connect failure surfaces as OutboxWriteException at
+            // the relay boundary instead of a raw \RuntimeException from the factory.
+            $resolver = $this->resolver;
 
-            if ($conn === false) {
-                throw new \RuntimeException('Outbox PostgreSQL connect failed.');
-            }
+            $connector = static function () use ($resolver) {
+                $conn = \pg_connect($resolver->pgDsn());
 
-            return new PgsqlOutboxConnection($conn);
+                if ($conn === false) {
+                    throw new \RuntimeException('Outbox PostgreSQL connect failed.');
+                }
+
+                return $conn;
+            };
+
+            return new PgsqlOutboxConnection($connector);
         });
 
         $container->singleton(AggregateVersionCounterInterface::class, function () {

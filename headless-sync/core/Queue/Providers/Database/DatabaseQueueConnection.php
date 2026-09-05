@@ -16,7 +16,8 @@ use HSP\Core\Queue\Exception\QueueException;
  * PostgresDatabaseConnection and translates DatabaseException to
  * QueueException at the queue boundary (DECISION E v1.6).
  *
- * Accepts either a raw pg_connect() handle (production) or an
+ * Accepts a raw pg_connect() handle, a `Closure(): handle` CONNECTOR (production —
+ * the socket opens on first real use, not at container resolution time), or an
  * already-constructed PostgresDatabaseConnection (test injection).
  */
 final class DatabaseQueueConnection implements DatabaseConnectionInterface

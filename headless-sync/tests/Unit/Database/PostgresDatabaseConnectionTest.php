@@ -118,6 +118,78 @@ final class PostgresDatabaseConnectionTest extends TestCase
         self::assertFalse($threw,
             'rollback() must swallow pg_query failures silently — DECISION E v1.6 rollback semantics');
     }
+
+    // -------------------------------------------------------------------------
+    // Lazy connection — connector closure (LAZYPG-S1)
+    // -------------------------------------------------------------------------
+
+    public function test_constructing_with_a_connector_does_not_open_the_connection(): void
+    {
+        $calls = 0;
+        new PostgresDatabaseConnection(static function () use (&$calls) {
+            $calls++;
+            return null; // never reached — the connector must not run at construction
+        });
+
+        self::assertSame(0, $calls,
+            'The connector must NOT be invoked at construction — the socket opens on first real use.');
+    }
+
+    public function test_rollback_does_not_open_a_connection_that_was_never_used(): void
+    {
+        $calls = 0;
+        $conn  = new PostgresDatabaseConnection(static function () use (&$calls) {
+            $calls++;
+            return null;
+        });
+
+        $conn->rollback();
+
+        self::assertSame(0, $calls,
+            'rollback() on an unopened connection must not dial the socket — there is no transaction to undo.');
+    }
+
+    public function test_connector_failure_surfaces_as_database_exception_on_first_use(): void
+    {
+        $conn = new PostgresDatabaseConnection(static function (): mixed {
+            throw new \RuntimeException('Delivery PostgreSQL connect failed.');
+        });
+
+        // A raw \RuntimeException escaping a container factory is what this change
+        // removes: subsystems translate DatabaseException, not arbitrary throwables.
+        $this->expectException(DatabaseException::class);
+        $this->expectExceptionMessage('PostgreSQL connect failed');
+        $conn->query('SELECT 1');
+    }
+
+    public function test_connector_returning_a_non_handle_is_rejected_as_database_exception(): void
+    {
+        $conn = new PostgresDatabaseConnection(static fn (): mixed => 'not-a-handle');
+
+        $this->expectException(DatabaseException::class);
+        $conn->execute('SELECT 1');
+    }
+
+    public function test_connector_is_invoked_at_most_once(): void
+    {
+        $calls = 0;
+        $conn  = new PostgresDatabaseConnection(static function () use (&$calls): mixed {
+            $calls++;
+            throw new \RuntimeException('connect failed');
+        });
+
+        foreach (['query', 'execute'] as $method) {
+            try {
+                $conn->{$method}('SELECT 1');
+            } catch (DatabaseException) {
+                // expected — we only care how often the connector ran
+            }
+        }
+
+        // A failed connect is not memoized, so each real use retries: two uses, two
+        // attempts. What must never happen is a connect during construction.
+        self::assertSame(2, $calls);
+    }
 }
 
 // =============================================================================

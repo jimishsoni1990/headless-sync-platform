@@ -60,17 +60,24 @@ final class DispatcherServiceProvider extends ServiceProvider
         assert($container instanceof Container);
 
         $container->singleton('dispatcher.connection.pgsql', function (): PostgresDatabaseConnection {
-            $dsn = $this->resolver->pgDsn();
+            // Lazy connection: the CONNECTOR closure is invoked on first real use, so
+            // container resolution opens no socket and a connect failure surfaces as
+            // DatabaseException rather than a raw \RuntimeException from the factory.
+            $resolver = $this->resolver;
 
             // FORCE_NEW guarantees a distinct physical libpq link from the delivery handle
             // (DatabaseConnectionInterface, DECISION K) and the relay/queue handles.
-            $conn = \pg_connect($dsn, PGSQL_CONNECT_FORCE_NEW);
+            $connector = static function () use ($resolver) {
+                $conn = \pg_connect($resolver->pgDsn(), PGSQL_CONNECT_FORCE_NEW);
 
-            if ($conn === false) {
-                throw new \RuntimeException('Dispatcher PostgreSQL connect failed.');
-            }
+                if ($conn === false) {
+                    throw new \RuntimeException('Dispatcher PostgreSQL connect failed.');
+                }
 
-            return new PostgresDatabaseConnection($conn);
+                return $conn;
+            };
+
+            return new PostgresDatabaseConnection($connector);
         });
 
         $container->singleton('dispatcher.strategy', function (Container $c): DispatcherWorkerStrategy {

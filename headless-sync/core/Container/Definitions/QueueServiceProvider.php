@@ -43,14 +43,24 @@ final class QueueServiceProvider extends ServiceProvider
         assert($container instanceof Container);
 
         $container->singleton('queue.connection.pgsql', function () {
-            $dsn  = $this->resolver->pgDsn();
-            $conn = \pg_connect($dsn, PGSQL_CONNECT_FORCE_NEW);
+            // Lazy connection: the CONNECTOR closure is handed down to
+            // PostgresDatabaseConnection, so container resolution opens no socket and a
+            // connect failure surfaces as QueueException on first real use instead of a
+            // raw \RuntimeException escaping the factory. Same handle, same FORCE_NEW
+            // isolation (DECISION K / DECISION L Ruling 0) — only the timing changed.
+            $resolver = $this->resolver;
 
-            if ($conn === false) {
-                throw new \RuntimeException('Queue PostgreSQL connect failed.');
-            }
+            $connector = static function () use ($resolver) {
+                $conn = \pg_connect($resolver->pgDsn(), PGSQL_CONNECT_FORCE_NEW);
 
-            return new DatabaseQueueConnection($conn);
+                if ($conn === false) {
+                    throw new \RuntimeException('Queue PostgreSQL connect failed.');
+                }
+
+                return $conn;
+            };
+
+            return new DatabaseQueueConnection($connector);
         });
 
         $container->singleton(QueueProviderInterface::class, function (Container $c) {

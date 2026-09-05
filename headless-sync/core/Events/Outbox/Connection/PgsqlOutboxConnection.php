@@ -16,7 +16,8 @@ use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
  * PostgresDatabaseConnection and translates DatabaseException to
  * OutboxWriteException at the relay boundary (DECISION E v1.6).
  *
- * Accepts either a raw pg_connect() handle (production) or an
+ * Accepts a raw pg_connect() handle, a `Closure(): handle` CONNECTOR (production —
+ * the socket opens on first real use, not at container resolution time), or an
  * already-constructed PostgresDatabaseConnection (test injection).
  */
 final class PgsqlOutboxConnection implements DatabaseConnectionInterface

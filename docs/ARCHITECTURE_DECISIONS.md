@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.30  
+Version: 1.31  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.31 | 2026-09-05 | **DECISION Z — lazy PostgreSQL connections at the container boundary (LAZYPG-S1, interstitial before P1B-S0).** Resolves the ONB-S1b "lazy-connection ruling pre-Phase-1B" carry-forward. All four runtime PG handles (delivery, relay, queue-claim, dispatcher) previously called `pg_connect()` **inside their singleton factory**, so merely RESOLVING a binding threw a raw `\RuntimeException` when PostgreSQL was unreachable or unconfigured; because `rest_api_init` fires on **every REST request to the site** (`wp/v2` and the block editor included) and building the content registrar resolves the query providers, an unreachable PostgreSQL fatalled **every REST request**, not just `hsp/v1`. Each factory now hands a **connector `\Closure`** to its wrapper; `PostgresDatabaseConnection` accepts a handle **or** a connector, invokes it at most once on first real use, memoizes it, and translates connect failure to `DatabaseException` at that boundary (onward translation to `OutboxWriteException`/`QueueException` unchanged — DECISION E v1.6); `rollback()` on a never-opened connection is a no-op. Mirrors the existing `MysqliOutboxConnection` connector hotfix on the capture path. **Still four handles with their existing flags** — FORCE_NEW on delivery/queue/dispatcher, none on relay: DECISION K isolation and DECISION L Ruling 0 topology untouched. No fifth handle, no new `pg_*` wrapper, no persistence, no schema change, no contract change. DECISION **Y** is reserved for the P1B-S0 Phase-1B search deferral. |
 | 1.30 | 2026-09-05 | **ADR-054 sibling-document reconciliation applied (DOC-RECON-S1, docs-only) — closes FLAG-DOC8V2-1. No new ruling, no ADR re-opened.** The already-ratified ADR-054 wording was propagated into the sibling frozen docs that still asserted the superseded daemon/CLI-worker execution model: **Doc 4 → v1.1** (§19 heartbeat = cycle freshness; §20 ADR-024 status → **SUPERSEDED by ADR-054**, original text retained verbatim as history; §29 scaling = overlapping cycles; §30 checklist), **Doc 10 → v1.1** (§4/§5 topologies, §7 rewritten WP-Cron-only, §20 `uptime` removed, §23 "Worker Offline" → "Processing Stalled", §24 availability target → processing freshness, §26 runbook rename, §27 systemd/Supervisor/worker-launch assets removed, §28 shared hosting without CLI/process supervision promoted to first-class supported), **Doc 11 → v1.1** (Doc-8 title, Scalability "Multiple Worker Processes" → concurrent claimants, "Restart Workers" note). CLAUDE.md was already clean (2026-07-20 rewrite). Superseded text is retained under explicit banners, never deleted; ADR-054 remains the single authority. See the APPLIED note under the ADR-054 Conflict Report. |
 | 1.29 | 2026-07-20 | **ADR-055 (f)(2) meta-schema gate moved to the Node ajv toolchain — architect ruling "D" 2026-07-20 (OAPI-S1), verified against live reproductions.** `opis/json-schema` **2.6.0 is REMOVED from `require-dev`**: it has two reproduced JSON Schema 2020-12 conformance defects that make it unable to validate real OpenAPI 3.1 documents against the official meta-schema — **(i)** it does not index the `$dynamicAnchor: "meta"`, so `$dynamicRef "#meta"` mis-resolves to the document root (every Schema Object slot is validated as if it were a whole OpenAPI document); **(ii)** `unevaluatedProperties` reports schema-declared property names that are **absent** from the instance. The OAI `schema-base` variant does **not** avoid `$dynamicRef` (it overrides the anchor — defect (i) persists), and **no conformant 2020-12 PHP validator exists**. The **(f)(2) gate therefore runs via ajv in the Node toolchain** (already a sanctioned dev/CI dependency — DECISION W (a)), differential-verified against a conformant reference implementation on valid and invalid documents. **Pinned fixture:** `tests/fixtures/openapi-3.1-meta-schema-pinned.json` — the official OAI 3.1 meta-schema (`$id …/2022-10-07`, source tag 3.1.1) with exactly **four semantics-preserving edits** (`$dynamicRef "#meta"` → `$ref "#/$defs/schema"`; equivalent because the fixture validates as its own root resource, so no outer dynamic scope can retarget the anchor). Pinned, **never fetched at test time**. **Gate mechanics:** `tools/openapi-validator/` (committed `package.json` + `package-lock.json`; `node_modules/` gitignored) runs `validate-openapi.mjs` (Ajv2020 + ajv-formats, `strict:false`) over the pinned fixture; the drift guard calls it via `proc_open`, layered over the PHP structural pre-check which stays the fast-fail. **Environment contract:** node available → gate runs; node missing AND `HSP_REQUIRE_NODE_GATE` unset → the meta-schema assertion is **SKIPPED** with a warning naming the env var; `HSP_REQUIRE_NODE_GATE=1` (CI) AND node missing → **FAIL, never skip**. Completeness / exemption / exclusion / non-circularity stay pure PHP. No schema change; no new PG handle / `pg_*` wrapper. |
 | 1.28 | 2026-07-20 | **ADR-055 (f)(1) drift-guard enumeration scoped — resolves the OAPI-S1 drift-guard route-enumeration flag (architect ruling 2026-07-20, "A-modified", OAPI-S1).** The CI drift guard enumerates the **FULL live `hsp/v1` route index** (external ground truth — not the registry, preserving non-circularity), then applies exactly **ONE structural exemption**: routes under the **`hsp/v1/onboarding/` prefix** (authority: DECISION W (e) — the onboarding first-run **admin** surface is outside the published delivery contract; its registrar is gated pre-completion). **Every non-exempted `hsp/v1` route must carry a complete `EndpointDescriptor`** or CI fails. The exemption is a **single prefix frozen in this ADR** — adding any further exempt prefix requires an architect ruling; the guard **hardcodes this one prefix with an ADR-055 (f) citation comment**. Any **future authenticated `hsp/v1` route OUTSIDE the exempted prefix must carry a descriptor** (`auth = authenticated` → excluded from the served document per v1.27; asserted by the exclusion test). **Net today: 13 live `hsp/v1` routes − 6 onboarding = 7 guarded routes** (six content + `openapi.json`), matching the OAPI-S1 seven-route DoD. Adds a named non-circularity test: a fixture route registered on `hsp/v1` **outside** the exempted prefix **without** a descriptor **fails the guard**. No schema change; no new PG handle / `pg_*` wrapper. |
@@ -1325,6 +1326,49 @@ This decision changes only the credential source. The four FORCE_NEW handles est
 #### Problem statement (retained for context)
 
 `HookWiring::onTransitionPostStatus` previously bailed on every transition whose `$newStatus !== 'publish'`. This dropped four WordPress post-status changes that are not trash operations and are not caught by `wp_trash_post` or `after_delete_post`: `publish → draft`, `publish → pending`, `publish → private`, `publish → future`. The result was a lost sync — a stale published row in the delivery projection with no delete event emitted.
+
+---
+
+### DECISION Z — Lazy PostgreSQL Connections at the Container Boundary
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-09-05 |
+| **Session** | LAZYPG-S1 (interstitial, inserted before P1B-S0) |
+| **Authority** | ONB-S1b OBSERVATION ("lazy-connection ruling pre-Phase-1B", carried forward in STATUS.md); DECISION E (v1.6 — shared runtime PG connection layer, no new `pg_*` wrapper, boundary error translation); DECISION K (v1.11 — delivery connection isolation); DECISION L Ruling 0 (four-handle topology, frozen); ADR-012 (constructor injection); ADR-054 Principle 8 (the platform must not fatal on an unconfigured site) |
+| **Resolves** | The ONB-S1b eager-connection observation; retires the "lazy-connection ruling pre-Phase-1B" carry-forward |
+| **Amends** | Nothing frozen. No contract, schema, migration, event, or handle topology changes — only *when* a libpq link is opened |
+
+**Ruling.** The four runtime PostgreSQL handles are opened **lazily, on first real use**, not at
+container-resolution time. Each service-provider factory hands a **connector `\Closure`** to its
+connection wrapper instead of an already-open handle; `PostgresDatabaseConnection` accepts either
+form, invokes the connector at most once, memoizes the handle, and translates any connect failure
+to `DatabaseException` at that boundary (subsystems keep translating it onward to
+`OutboxWriteException` / `QueueException` per DECISION E v1.6). `rollback()` on a connection that
+was never opened is a no-op — it must not dial the socket to undo a transaction that cannot exist.
+
+**Why.** `PostgresDatabaseConnection` previously required an already-open handle, so all four
+providers called `pg_connect()` inside their singleton factory and let a raw `\RuntimeException`
+escape when PostgreSQL was unreachable or unconfigured. On the delivery handle this was
+user-visible: `ContentModule::boot()` correctly defers registrar construction to `rest_api_init`,
+but that hook fires on **every REST request to the site** — `wp/v2` and the block editor
+included — and building the registrar resolves the query providers, which opened the socket.
+An unreachable PostgreSQL therefore fatalled **every REST request**, not just `hsp/v1`. The
+capture path had already been hotfixed this exact way (`MysqliOutboxConnection` takes a connector
+closure); this ruling applies the same idiom to the PostgreSQL side, where all four callers route
+through one class.
+
+**Explicitly unchanged.** Still **four** handles, each still opened with its existing flags —
+`PGSQL_CONNECT_FORCE_NEW` on delivery, queue-claim and dispatcher; no flag on the relay handle
+(DECISION K isolation and DECISION L Ruling 0 topology are untouched). **No fifth handle, no new
+`pg_*` wrapper class** (DECISION E), no persistence, no schema change, no contract change. The
+migration engine's DDL-only `ConnectionFactory` is out of scope and keeps connecting eagerly —
+it is only reached from explicit migrate actions, which already gate on reachability
+(DECISION W (f)).
+
+**Precedence note.** DECISION **Y** is reserved for the P1B-S0 Phase-1B search deferral; this
+ruling landed first and took the next free letter after it.
 
 ---
 
