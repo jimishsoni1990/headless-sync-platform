@@ -116,9 +116,24 @@ final class PageExtractorTest extends TestCase
 
     public function test_extract_normalizes_meta_values_to_string(): void
     {
-        $model = $this->extractor->extract($this->validRaw(), ['_template' => 'full-width.php', '_order' => 3]);
-        $this->assertSame('full-width.php', $model->meta['_template']);
-        $this->assertSame('3', $model->meta['_order']);
+        $model = $this->extractor->extract($this->validRaw(), ['template' => 'full-width.php', 'order' => 3]);
+        $this->assertSame('full-width.php', $model->meta['template']);
+        $this->assertSame('3', $model->meta['order']);
+    }
+
+    /**
+     * Same public-API reasoning as PostExtractorTest: `_`-prefixed meta is WordPress-internal and
+     * is dropped at extraction, before it can reach the outbox or a delivery projection.
+     */
+    public function test_extract_drops_protected_meta_keys(): void
+    {
+        $model = $this->extractor->extract($this->validRaw(), [
+            '_edit_lock' => '1788597369:1',
+            '_wp_page_template' => 'full-width.php',
+            'template'   => 'full-width.php',
+        ]);
+
+        $this->assertSame(['template' => 'full-width.php'], $model->meta);
     }
 
     public function test_extract_with_empty_meta(): void

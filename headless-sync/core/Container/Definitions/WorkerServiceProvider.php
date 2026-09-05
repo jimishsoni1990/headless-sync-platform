@@ -171,9 +171,13 @@ final class WorkerServiceProvider extends ServiceProvider
             /** @var array<string,mixed> $maintenanceConfig */
             $maintenanceConfig = $this->config['worker']['maintenance'] ?? [];
 
+            // The worker-runtime PG handle the queue provider already holds (DECISION E / L
+            // Ruling 0 — reused, not a fifth handle) so the sweep can also prune the per-cycle
+            // heartbeat history that nothing else removes.
             return new MaintenanceWorkerStrategy(
                 $c->get(QueueProviderInterface::class),
                 $maintenanceConfig,
+                $c->get(DatabaseConnectionInterface::class),
             );
         });
 

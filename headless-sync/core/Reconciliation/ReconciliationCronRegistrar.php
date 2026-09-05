@@ -100,9 +100,38 @@ final class ReconciliationCronRegistrar
             return;
         }
 
-        if (\wp_next_scheduled($hook) === false) {
-            \wp_schedule_event(time(), $schedule, $hook);
+        if (\wp_next_scheduled($hook) !== false) {
+            return;
         }
+
+        // First run is ONE FULL INTERVAL out — never time(). A first run due immediately makes the
+        // very first WP-Cron tick after activation run a FULL reconciliation, which re-emits the
+        // entire corpus before the operator ever reaches the onboarding page: the first-run backfill
+        // then finds everything already projected and degrades to a no-op (DECISION W (b)/(d) — the
+        // backfill is the operator-triggered first-run action, not something activation pre-empts).
+        // Reconciliation is a periodic BACKSTOP (DECISION U); it has no reason to fire at t=0.
+        \wp_schedule_event(time() + $this->intervalFor($schedule), $schedule, $hook);
+    }
+
+    /**
+     * Seconds in one period of the named WP-Cron schedule, for offsetting the first run.
+     *
+     * register() adds the `cron_schedules` filter before ensureScheduled() runs, so the custom
+     * 'hsp_nightly' / 'hsp_weekly' periods resolve here too. Falls back to one hour when the
+     * schedule is unknown (or wp_get_schedules() is unavailable) — any non-zero offset is enough
+     * to keep activation from triggering a reconciliation pass.
+     */
+    private function intervalFor(string $schedule): int
+    {
+        $fallback = defined('HOUR_IN_SECONDS') ? HOUR_IN_SECONDS : 3600;
+
+        if (! function_exists('wp_get_schedules')) {
+            return $fallback;
+        }
+
+        $interval = \wp_get_schedules()[$schedule]['interval'] ?? 0;
+
+        return is_numeric($interval) && (int) $interval > 0 ? (int) $interval : $fallback;
     }
 
     /** Resolve the configured schedule name for a mode, falling back to the WP default. */

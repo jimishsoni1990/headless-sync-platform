@@ -108,7 +108,29 @@ if (! function_exists('wp_schedule_event')) {
         if (isset($GLOBALS['_hsp_stub_scheduled']) && is_array($GLOBALS['_hsp_stub_scheduled'])) {
             $GLOBALS['_hsp_stub_scheduled'][$hook] = $recurrence;
         }
+        // Separately opt-in: records WHEN the first run was scheduled for, so a test can assert
+        // an event is not due immediately (an activation-time reconciliation pass would pre-empt
+        // the onboarding backfill). Kept apart from the map above so existing tests are unaffected.
+        if (isset($GLOBALS['_hsp_stub_scheduled_at']) && is_array($GLOBALS['_hsp_stub_scheduled_at'])) {
+            $GLOBALS['_hsp_stub_scheduled_at'][$hook] = $timestamp;
+        }
         return true;
+    }
+}
+
+// wp_get_schedules() stub — the cadence table WordPress builds from the `cron_schedules` filter.
+// Covers WP core's own recurrences plus the HSP custom ones, so a registrar can resolve one
+// period without a WordPress runtime.
+if (! function_exists('wp_get_schedules')) {
+    function wp_get_schedules(): array
+    {
+        return [
+            'hourly'      => ['interval' => HOUR_IN_SECONDS,      'display' => 'Hourly'],
+            'twicedaily'  => ['interval' => 12 * HOUR_IN_SECONDS, 'display' => 'Twice Daily'],
+            'daily'       => ['interval' => DAY_IN_SECONDS,       'display' => 'Daily'],
+            'hsp_nightly' => ['interval' => DAY_IN_SECONDS,       'display' => 'HSP nightly'],
+            'hsp_weekly'  => ['interval' => 7 * DAY_IN_SECONDS,   'display' => 'HSP weekly'],
+        ];
     }
 }
 

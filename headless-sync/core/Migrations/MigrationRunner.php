@@ -17,6 +17,10 @@ use HSP\Core\Migrations\Exception\MigrationException;
  *   - Each applied migration is recorded with: id (UUIDv7 per ADR-015), migration_name, schema_context, applied_at (UTC), checksum (sha256 of raw SQL file template).
  *   - Re-running the runner on an already-applied migration produces zero new rows
  *     (idempotent guard via UNIQUE(migration_name, schema_context)).
+ *   - A ledger hit alone does not mean "skip": a migration that can verify its own artifact
+ *     (optional isSatisfied(), duck-typed) is re-applied when the artifact has gone missing.
+ *     This is what keeps a MySQL-context migration recoverable after the WordPress database is
+ *     restored or reset independently of PostgreSQL — see isSatisfied() below.
  *   - system.schema_versions lives in PostgreSQL (schema_context = 'core/pgsql' etc.).
  *     MySQL migrations are tracked there too (schema_context = 'core/mysql').
  *   - system.module_versions is written by the module registry (P0-S3), not here.
@@ -78,7 +82,7 @@ final class MigrationRunner
         foreach ($migrations as $migration) {
             $key = $migration->getName() . '|' . $migration->getSchemaContext();
 
-            if (isset($applied[$key])) {
+            if (isset($applied[$key]) && $this->isSatisfied($migration)) {
                 continue;
             }
 
@@ -86,6 +90,35 @@ final class MigrationRunner
 
             $this->recordApplied($migration);
         }
+    }
+
+    /**
+     * Whether the schema object this migration creates is actually present.
+     *
+     * The ledger lives in PostgreSQL for EVERY context, MySQL included (OPEN-8 v1.4 — see the
+     * class docblock). That makes the ledger and the MySQL artifacts independently destructible:
+     * restore/reset the WordPress database while PostgreSQL keeps its schema_versions rows and the
+     * `{prefix}hsp_outbox` / `{prefix}hsp_aggregate_counters` tables are gone for good — the runner
+     * reads "applied" and never recreates them. Capture then fails on every write ("outbox capture
+     * FAILED — lost sync until reconciliation"), reconciliation cannot repair it (it re-emits
+     * THROUGH the outbox), and the onboarding gate still reports "All required core and content
+     * migrations are applied."
+     *
+     * So a ledger hit is necessary but not sufficient: a migration MAY additionally report whether
+     * its artifact still exists, and the runner re-applies when it does not. Duck-typed exactly like
+     * getSql() above — MigrationInterface is unchanged, and a migration that cannot cheaply verify
+     * itself (the common case) simply omits the method and keeps ledger-only semantics.
+     *
+     * Re-application is safe: the SQL is CREATE TABLE IF NOT EXISTS, and recordApplied() is
+     * ON CONFLICT DO NOTHING, so a redundant pass writes nothing.
+     */
+    private function isSatisfied(MigrationInterface $migration): bool
+    {
+        if (! method_exists($migration, 'isSatisfied')) {
+            return true;
+        }
+
+        return (bool) $migration->isSatisfied();
     }
 
     /**

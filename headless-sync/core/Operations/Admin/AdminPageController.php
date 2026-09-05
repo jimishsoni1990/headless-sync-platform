@@ -8,6 +8,7 @@ use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Operations\Diagnostics\ModuleInspector;
 use HSP\Core\Operations\Diagnostics\SystemInformationProvider;
 use HSP\Core\Operations\Services\OperationsService;
+use HSP\Core\Operations\UI\ActionsView;
 use HSP\Core\Operations\UI\DashboardView;
 use HSP\Core\Operations\UI\Html;
 use HSP\Core\Operations\UI\PlaygroundView;
@@ -49,6 +50,7 @@ final class AdminPageController
         private readonly PlaygroundView $playgroundView,
         private readonly ConsoleAjaxController $ajax,
         private readonly OnboardingStateInterface $onboarding,
+        private readonly ActionsView $actionsView,
     ) {}
 
     /**
@@ -79,13 +81,18 @@ final class AdminPageController
             'dashicons-controls-repeat',
         );
 
+        // Same slug as the parent — this only RENAMES the auto-created first submenu entry
+        // ("HSP Operations" → "Operations"). It must NOT pass a callback: add_menu_page() already
+        // bound renderOperations() to the `toplevel_page_hsp-operations` hook, and a second
+        // callback on that same hook makes WordPress invoke the renderer TWICE, emitting the whole
+        // dashboard twice per request (two refreshAll() passes, two system-info snapshots, two
+        // module scans — every console PostgreSQL read doubled).
         add_submenu_page(
             self::MENU_SLUG,
             __('Operations', 'headless-sync'),
             __('Operations', 'headless-sync'),
             $operationsCap,
             self::MENU_SLUG,
-            $this->renderOperations(...),
         );
 
         add_submenu_page(
@@ -111,6 +118,22 @@ final class AdminPageController
         $modules   = $this->modules->all();
 
         $body = $this->dashboardView->render($widgets, $snapshots, $system, $modules);
+
+        // Replay + Reconcile controls (DECISION V (d)). The action set comes from the registry via
+        // OperationsService, so nothing is hardcoded here; the endpoint enforces POST, nonce,
+        // capability and confirmation itself (ConsoleActionController).
+        //
+        // The ajax controller supplies the URL and nonce because the action endpoint shares the
+        // console nonce action by construction (ConsoleActionController::NONCE_ACTION IS
+        // ConsoleAjaxController::NONCE_ACTION) — one nonce covers poll / execute / action. Taking
+        // them from here avoids dragging the whole action controller, and the OperationsActionService
+        // and worker strategies behind it, into a page render that only needs two strings.
+        $body .= $this->actionsView->render(
+            $this->operations->actions(),
+            $this->ajax->url(),
+            $this->ajax->nonce(),
+            ConsoleActionController::ACTION_INVOKE,
+        );
 
         echo $this->page(__('HSP Operations', 'headless-sync'), $body); // phpcs:ignore WordPress.Security.EscapeOutput -- $body is fully escaped by the view via Html.
     }
@@ -169,6 +192,7 @@ final class AdminPageController
                     'nonce'               => $this->ajax->nonce(),
                     'pollAction'          => ConsoleAjaxController::ACTION_POLL,
                     'executeAction'       => ConsoleAjaxController::ACTION_EXECUTE,
+                    'actionAction'        => ConsoleActionController::ACTION_INVOKE,
                     'pollIntervalSeconds' => 15,
                 ]);
             }

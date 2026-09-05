@@ -47,6 +47,7 @@ use HSP\Core\Operations\Services\OperationsService;
 use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Core\Workers\Strategies\ReconciliationWorkerStrategy;
 use HSP\Core\Workers\Strategies\ReplayWorkerStrategy;
+use HSP\Core\Operations\UI\ActionsView;
 use HSP\Core\Operations\UI\DashboardView;
 use HSP\Core\Operations\UI\PlaygroundView;
 
@@ -185,6 +186,7 @@ final class OperationsServiceProvider extends ServiceProvider
 
         // --- OPSC-S3 server-rendered UI (pure renderers — no infra; ADR-053) -------------
         $container->singleton(DashboardView::class, fn () => new DashboardView());
+        $container->singleton(ActionsView::class, fn () => new ActionsView());
         $container->singleton(PlaygroundView::class, fn () => new PlaygroundView());
         $container->singleton(PlaygroundRequestExecutor::class, fn () => new PlaygroundRequestExecutor());
 
@@ -197,6 +199,9 @@ final class OperationsServiceProvider extends ServiceProvider
             fn (Container $c) => new ConsoleAjaxController(
                 $c->get(OperationsService::class),
                 $c->get(PlaygroundRequestExecutor::class),
+                // Same renderer the page render uses, so a polled refresh and a full page load
+                // produce identical markup (escaping included).
+                $c->get(DashboardView::class),
             ),
         );
 
@@ -213,6 +218,9 @@ final class OperationsServiceProvider extends ServiceProvider
                 // gated on onboarding completion. Bound by OnboardingServiceProvider; resolved
                 // lazily here, so provider registration order is irrelevant.
                 $c->get(OnboardingStateInterface::class),
+                // Replay/Reconcile controls (DECISION V (d)); the view is pure, and the action
+                // endpoint reuses the console nonce the ajax controller already supplies.
+                $c->get(ActionsView::class),
             ),
         );
 

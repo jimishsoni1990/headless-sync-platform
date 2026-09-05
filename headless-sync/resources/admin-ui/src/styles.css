@@ -117,4 +117,52 @@
   .hsp-admin-ui p {
     margin: 0;
   }
+
+  /*
+   * Headings must take the mount's foreground, not wp-admin's.
+   *
+   * wp-admin's common.css carries a bare `h1 { color: #1d2327 }` (and siblings). An INHERITED
+   * color always loses to a matching rule, however weak, so every heading inside the dark mount
+   * rendered near-black on the near-black `--background` — the card titles were invisible rather
+   * than merely low-contrast. `color: inherit` puts them back on `--foreground`.
+   *
+   * Specificity is deliberate: `.hsp-admin-ui h1` (0,1,1) beats wp-admin's `h1` (0,0,1) outright
+   * instead of relying on load order. Headings here carry no text-color utility, so nothing of
+   * ours is overridden; a heading that needs a different color should set it on an inner element.
+   */
+  .hsp-admin-ui :is(h1, h2, h3, h4, h5, h6) {
+    color: inherit;
+  }
+
+  /*
+   * Form-control reset — the slice of Tailwind preflight that mattered and went missing.
+   *
+   * Preflight is disabled (tailwind.config.ts) so wp-admin stays untouched, and the reset above
+   * replaced only its box-sizing/border parts. Nothing reset form controls, so a <button> fell
+   * back to the USER-AGENT defaults — opaque #f0f0f0 background, black text, browser font — which
+   * is why button labels went dark-on-dark for every variant that doesn't paint its own
+   * background (outline, ghost, link).
+   *
+   * `:where()` contributes zero specificity, so these land at 0,0,1: strong enough to beat the UA
+   * sheet, weak enough that any single utility class (`bg-primary`, `text-primary-foreground`, …)
+   * still wins. That ordering is exactly what preflight does, and it is what keeps the primary
+   * button from being flattened by its own reset.
+   */
+  :where(.hsp-admin-ui) :is(button, input, select, textarea, optgroup) {
+    font: inherit;
+    color: inherit;
+    background-color: transparent;
+    margin: 0;
+    padding: 0;
+    letter-spacing: inherit;
+  }
+
+  :where(.hsp-admin-ui) button {
+    cursor: pointer;
+    text-transform: none;
+  }
+
+  :where(.hsp-admin-ui) button:disabled {
+    cursor: default;
+  }
 }

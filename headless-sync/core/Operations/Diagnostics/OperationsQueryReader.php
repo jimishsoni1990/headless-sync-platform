@@ -43,6 +43,12 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  */
 final class OperationsQueryReader
 {
+    /**
+     * Most recent per-cycle heartbeat rows the console reads (and renders) at once.
+     * A display bound, not a retention policy — retention is MaintenanceWorkerStrategy's prune.
+     */
+    private const WORKER_ROW_LIMIT = 25;
+
     public function __construct(
         private readonly DatabaseConnectionInterface $conn,
     ) {}
@@ -111,6 +117,14 @@ final class OperationsQueryReader
      */
     public function workerHeartbeats(): array
     {
+        // BOUNDED, newest first. Under ADR-054 every cycle mints a fresh UUIDv7 (DECISION X (1)),
+        // so a row is a cycle EXECUTION, not a worker: at the default 60s cadence this table gains
+        // ~1,440 rows/day and never shrinks. An unbounded SELECT here rendered every cycle since
+        // installation into the Workers table and shipped the whole history in each 15s poll
+        // payload. The console only ever needs the most recent cycles (freshness is judged from
+        // the newest heartbeat), so cap the read; MaintenanceWorkerStrategy prunes the table
+        // itself. Ordering by last_heartbeat_at DESC — not worker_id — is what makes the cap
+        // select the RECENT rows rather than an arbitrary slice of UUID space.
         $rows = $this->conn->query(
             'SELECT worker_id,
                     worker_type,
@@ -118,7 +132,8 @@ final class OperationsQueryReader
                     last_heartbeat_at,
                     EXTRACT(EPOCH FROM (NOW() - last_heartbeat_at)) AS age_seconds
              FROM   system.worker_heartbeats
-             ORDER BY worker_type, worker_id'
+             ORDER BY last_heartbeat_at DESC
+             LIMIT ' . self::WORKER_ROW_LIMIT
         );
 
         $out = [];

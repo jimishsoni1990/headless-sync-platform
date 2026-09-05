@@ -112,7 +112,18 @@ final class OperationalMetricsQuery
         return $age === null ? null : (float) $age;
     }
 
-    /** Number of workers currently recorded in the heartbeat table. */
+    /**
+     * Number of heartbeat rows currently recorded.
+     *
+     * NOTE (flagged, deliberately unchanged): under ADR-054 each cycle mints a fresh UUIDv7
+     * (DECISION X (1)), so a row is a cycle EXECUTION and this is a count of recent cycles, not of
+     * workers. The unbounded-growth half of that problem is fixed — MaintenanceWorkerStrategy now
+     * prunes rows past the retention window — but the NAME still reads as a daemon census.
+     * Renaming it (or switching to distinct worker_type) changes a value asserted by the ratified
+     * OperabilityValidationTest §4 criterion, so it needs a ruling rather than a quiet edit.
+     * The Operations console does not use this method: MetricsProvider derives its own
+     * live-stage count (see the comment there).
+     */
     public function workerCount(): int
     {
         $rows = $this->conn->query(

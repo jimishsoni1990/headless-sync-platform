@@ -9,6 +9,7 @@ use HSP\Core\Contracts\Operations\MetricSample;
 use HSP\Core\Contracts\Operations\QueueStatus;
 use HSP\Core\Contracts\Operations\WorkerStatus;
 use HSP\Core\Operations\Services\OperationsService;
+use HSP\Core\Operations\UI\DashboardView;
 
 /**
  * Nonce- and capability-protected admin-ajax endpoints for the Operations Console (OPSC-S3;
@@ -43,10 +44,18 @@ final class ConsoleAjaxController
     public function __construct(
         private readonly OperationsService $operations,
         private readonly PlaygroundRequestExecutor $executor,
+        private readonly DashboardView $dashboardView,
     ) {}
 
     /**
-     * Handler for ACTION_POLL — refresh + return dashboard snapshots as JSON.
+     * Handler for ACTION_POLL — refresh the dashboard and return the re-rendered widgets.
+     *
+     * Also returns the serialized snapshots, unchanged, for any consumer that wants the values
+     * rather than the markup. The `widgets` field is what makes the poll do something: the client
+     * previously received `snapshots` and dropped them on the floor, so a full provider refresh ran
+     * against PostgreSQL every 15 seconds per open tab and the displayed figures never moved.
+     * Rendering here reuses DashboardView, so the polled markup is escaped and formatted by the
+     * same code that produced the initial page (no parallel JS renderer to drift).
      */
     public function handlePoll(): void
     {
@@ -54,7 +63,13 @@ final class ConsoleAjaxController
 
         $snapshots = $this->operations->refreshAll();
 
-        wp_send_json_success(['snapshots' => $this->serializeSnapshots($snapshots)]);
+        wp_send_json_success([
+            'snapshots' => $this->serializeSnapshots($snapshots),
+            'widgets'   => $this->dashboardView->renderWidgets(
+                $this->operations->widgetsForPage(AdminPageController::PAGE_OPERATIONS),
+                $snapshots,
+            ),
+        ]);
     }
 
     /**

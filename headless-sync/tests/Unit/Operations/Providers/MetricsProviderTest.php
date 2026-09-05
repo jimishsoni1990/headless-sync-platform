@@ -40,7 +40,11 @@ final class MetricsProviderTest extends TestCase
         self::assertContainsOnlyInstancesOf(MetricSample::class, $samples);
         self::assertSame(5, $by['queue_depth']->value);
         self::assertSame(5, $by['dlq_depth']->value);
-        self::assertSame(2, $by['worker_count']->value);
+        // One distinct stage ('processing') heartbeated in the window. Deliberately NOT the two
+        // heartbeat rows the scripted connection returns: each ADR-054 cycle mints a fresh
+        // worker_id, so a row count is a tally of cycles, not of live components.
+        self::assertSame(1, $by['worker_count']->value);
+        self::assertSame('stages', $by['worker_count']->unit);
         self::assertSame(2, $by['replay_pending']->value);
         self::assertSame(3, $by['replay_completed']->value);
         self::assertSame(1, $by['reconciliation_backlog']->value);

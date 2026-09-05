@@ -44,6 +44,56 @@ final class MaintenanceWorkerStrategyTest extends TestCase
         self::assertSame(['content', 'content'], $queue->requeuedPartitions);
     }
 
+    /**
+     * `system.worker_heartbeats` is append-mostly under ADR-054 — each cycle mints a fresh
+     * worker_id (DECISION X (1)), so a row accumulates per cycle and nothing removed them. At the
+     * default 60s cadence that is ~1,440 rows/day, growing without bound in the table the console
+     * reads on every page load and every poll. The sweep is where that retention belongs.
+     */
+    public function test_execute_prunes_heartbeats_older_than_the_retention_window(): void
+    {
+        $conn     = new RecordingSweepConnection();
+        $conn->affected = 7;
+        $strategy = new MaintenanceWorkerStrategy(
+            new RecordingRequeueProvider(),
+            ['partitions' => ['content'], 'heartbeat_retention_seconds' => 3600],
+            $conn,
+        );
+
+        $strategy->execute($this->ctx());
+
+        self::assertCount(1, $conn->executed);
+        self::assertStringContainsString('DELETE FROM system.worker_heartbeats', $conn->executed[0]['sql']);
+        self::assertSame([3600], $conn->executed[0]['params']);
+        self::assertSame(7, $strategy->lastHeartbeatsPruned());
+    }
+
+    /** Retention of 0 disables the prune outright (opt-out, not an accidental full wipe). */
+    public function test_zero_retention_disables_the_prune(): void
+    {
+        $conn     = new RecordingSweepConnection();
+        $strategy = new MaintenanceWorkerStrategy(
+            new RecordingRequeueProvider(),
+            ['heartbeat_retention_seconds' => 0],
+            $conn,
+        );
+
+        $strategy->execute($this->ctx());
+
+        self::assertSame([], $conn->executed);
+    }
+
+    /** Upkeep is never a correctness dependency: with no connection wired the sweep still works. */
+    public function test_sweep_still_succeeds_without_a_connection(): void
+    {
+        $queue    = new RecordingRequeueProvider();
+        $strategy = new MaintenanceWorkerStrategy($queue, ['partitions' => ['content']]);
+
+        self::assertTrue($strategy->execute($this->ctx()));
+        self::assertSame(['content'], $queue->requeuedPartitions);
+        self::assertSame(0, $strategy->lastHeartbeatsPruned());
+    }
+
     public function test_default_partitions_used_when_config_absent(): void
     {
         $queue    = new RecordingRequeueProvider();
@@ -97,4 +147,25 @@ final class RecordingRequeueProvider implements QueueProviderInterface
         $this->requeuedPartitions[] = $queueName;
         return $this->requeueReturn;
     }
+}
+
+/**
+ * DatabaseConnectionInterface double that records the statements the sweep issues.
+ */
+final class RecordingSweepConnection implements \HSP\Core\Database\DatabaseConnectionInterface
+{
+    /** @var list<array{sql:string,params:array<int,mixed>}> */
+    public array $executed = [];
+    public int   $affected = 0;
+
+    public function execute(string $sql, array $params = []): int
+    {
+        $this->executed[] = ['sql' => $sql, 'params' => $params];
+        return $this->affected;
+    }
+
+    public function query(string $sql, array $params = []): array { return []; }
+    public function beginTransaction(): void {}
+    public function commit(): void {}
+    public function rollback(): void {}
 }

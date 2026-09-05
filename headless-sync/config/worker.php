@@ -25,6 +25,7 @@ declare(strict_types=1);
  *   (the cron cadence IS the maintenance cadence — DECISION X); the strategy no longer
  *   self-throttles. The old recovery_interval_seconds throttle key is REMOVED (superseded per
  *   DECISION X — it was inert after ALIGN-S1 and is not read anywhere).
+ *   heartbeat_retention_seconds — how much per-cycle heartbeat history the sweep keeps.
  *
  * reconciliation — DECISION U (v1.19): reconciliation cadence + paging, config-driven.
  *   schedules  — WP-Cron schedule name per mode (hourly / hsp_nightly / hsp_weekly are
@@ -51,6 +52,11 @@ return [
     ],
     'maintenance' => [
         'partitions' => ['content', 'commerce', 'system'],
+        // Retention for the per-cycle rows in system.worker_heartbeats. Each ADR-054 cycle mints a
+        // fresh worker_id (DECISION X (1)), so the table grows by one row per cycle; the sweep
+        // deletes rows older than this. Must stay well above the console's freshness threshold and
+        // its cycles-completed window so pruning never removes a row still being displayed.
+        'heartbeat_retention_seconds' => 86400,
     ],
     'reconciliation' => [
         'schedules' => [

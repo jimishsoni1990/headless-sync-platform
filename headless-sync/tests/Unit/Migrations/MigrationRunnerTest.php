@@ -332,4 +332,59 @@ final class MigrationRunnerTest extends TestCase
         $this->assertTrue($m1->upCalled);
         $this->assertCount(2, $this->conn->insertedRows);
     }
+
+    // -----------------------------------------------------------------------
+    // Self-healing: a ledger row is not proof the artifact still exists
+    // -----------------------------------------------------------------------
+
+    /**
+     * The regression this guards: system.schema_versions lives in PostgreSQL for EVERY context,
+     * MySQL included, so restoring or resetting the WordPress database leaves rows claiming the
+     * outbox migrations are applied while `{prefix}hsp_outbox` is gone. The runner then skipped
+     * them forever — capture failed on every write, reconciliation could not repair it (it
+     * re-emits THROUGH the outbox), and onboarding still reported "All required migrations
+     * applied". A migration that can verify itself must be re-applied when its artifact is missing.
+     */
+    public function testRunReAppliesALedgeredMigrationWhoseArtifactIsMissing(): void
+    {
+        $migration = new FakeVerifiableMigration('0001_create_hsp_outbox', satisfied: false);
+
+        $this->conn->queryRows = [
+            ['migration_name' => '0001_create_hsp_outbox', 'schema_context' => 'core/mysql'],
+        ];
+
+        $this->runOnlyRunner->run([$migration]);
+
+        $this->assertSame(1, $migration->upCalls, 'a missing artifact must be recreated');
+        $this->assertTrue($migration->isSatisfied());
+    }
+
+    /** The ledger still short-circuits the normal case: present artifact, no redundant DDL. */
+    public function testRunSkipsALedgeredMigrationWhoseArtifactIsPresent(): void
+    {
+        $migration = new FakeVerifiableMigration('0001_create_hsp_outbox', satisfied: true);
+
+        $this->conn->queryRows = [
+            ['migration_name' => '0001_create_hsp_outbox', 'schema_context' => 'core/mysql'],
+        ];
+
+        $this->runOnlyRunner->run([$migration]);
+
+        $this->assertSame(0, $migration->upCalls);
+        $this->assertEmpty($this->conn->insertedRows, 'nothing to record — it was already applied');
+    }
+
+    /** Migrations that cannot verify themselves keep plain ledger-only semantics. */
+    public function testRunKeepsLedgerOnlySemanticsForMigrationsWithoutVerification(): void
+    {
+        $migration = new FakeMigration('0001_thing', 'core/pgsql');
+
+        $this->conn->queryRows = [
+            ['migration_name' => '0001_thing', 'schema_context' => 'core/pgsql'],
+        ];
+
+        $this->runOnlyRunner->run([$migration]);
+
+        $this->assertFalse($migration->upCalled);
+    }
 }

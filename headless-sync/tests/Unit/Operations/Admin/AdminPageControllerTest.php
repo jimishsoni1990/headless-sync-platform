@@ -22,6 +22,7 @@ use HSP\Core\Operations\Registries\WidgetRegistry;
 use HSP\Core\Operations\Services\ConsoleStateStore;
 use HSP\Core\Operations\Services\OperationsService;
 use HSP\Core\Operations\Services\RefreshCoordinator;
+use HSP\Core\Operations\UI\ActionsView;
 use HSP\Core\Operations\UI\DashboardView;
 use HSP\Core\Operations\UI\PlaygroundView;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
@@ -110,8 +111,9 @@ final class AdminPageControllerTest extends TestCase
             new ModuleInspector(),
             new DashboardView(),
             new PlaygroundView(),
-            new ConsoleAjaxController($this->operations, new PlaygroundRequestExecutor()),
+            new ConsoleAjaxController($this->operations, new PlaygroundRequestExecutor(), new DashboardView()),
             $onboarding,
+            new ActionsView(),
         );
     }
 

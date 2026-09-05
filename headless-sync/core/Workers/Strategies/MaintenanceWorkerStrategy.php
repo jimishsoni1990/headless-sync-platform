@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Core\Workers\Strategies;
 
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Workers\WorkerExecutionContext;
 use HSP\Core\Workers\WorkerStrategyInterface;
 
@@ -47,16 +48,27 @@ final class MaintenanceWorkerStrategy implements WorkerStrategyInterface
     /** @var array<string,int> last observed requeue counts per partition (for observability). */
     private array $lastRequeuedByPartition = [];
 
+    /** Seconds of per-cycle heartbeat history kept by the sweep. */
+    private readonly int $heartbeatRetentionSeconds;
+
+    /** Rows removed by the most recent heartbeat prune (for observability). */
+    private int $lastHeartbeatsPruned = 0;
+
     /**
-     * @param array<string,mixed> $config keys (under the maintenance sub-array): partitions
+     * @param array<string,mixed> $config keys (under the maintenance sub-array): partitions,
+     *                                    heartbeat_retention_seconds
      */
     public function __construct(
         private readonly QueueProviderInterface $queue,
         array $config = [],
+        private readonly ?DatabaseConnectionInterface $conn = null,
     ) {
         /** @var list<string> $partitions */
         $partitions       = $config['partitions'] ?? ['content', 'commerce', 'system'];
         $this->partitions = array_values($partitions);
+
+        $retention = $config['heartbeat_retention_seconds'] ?? 86400;
+        $this->heartbeatRetentionSeconds = is_numeric($retention) ? (int) $retention : 86400;
     }
 
     public function execute(WorkerExecutionContext $context): bool
@@ -67,7 +79,43 @@ final class MaintenanceWorkerStrategy implements WorkerStrategyInterface
             $this->lastRequeuedByPartition[$partition] = $this->queue->requeueTimedOut($partition);
         }
 
+        $this->lastHeartbeatsPruned = $this->pruneHeartbeats();
+
         return true;
+    }
+
+    /**
+     * Drop per-cycle heartbeat rows older than the retention window.
+     *
+     * `system.worker_heartbeats` is append-mostly under ADR-054: the upsert keys on worker_id and
+     * every cycle mints a fresh UUIDv7 (DECISION X (1)), so each cycle leaves a row behind rather
+     * than updating one. Nothing removed them, so at the default 60s cadence the table grew ~1,440
+     * rows/day without bound — unbounded growth in the table the console reads on every page load
+     * and every 15s poll. Retention belongs to the maintenance stage for the same reason the
+     * visibility-timeout requeue does: it is periodic table upkeep on the cycle's own cadence, with
+     * no new persistence and no new schedule (DECISION Q / ADR-054 §9).
+     *
+     * The window must stay comfortably wider than the console's freshness threshold and its
+     * cycles-completed window, so pruning never erases a row an operator is still reading.
+     * A no-op when no connection is wired (unit contexts) — this is upkeep, never correctness.
+     */
+    private function pruneHeartbeats(): int
+    {
+        if ($this->conn === null || $this->heartbeatRetentionSeconds <= 0) {
+            return 0;
+        }
+
+        return $this->conn->execute(
+            'DELETE FROM system.worker_heartbeats
+             WHERE  last_heartbeat_at < NOW() - make_interval(secs => $1)',
+            [$this->heartbeatRetentionSeconds],
+        );
+    }
+
+    /** Rows removed by the most recent heartbeat prune (DECISION Q observability). */
+    public function lastHeartbeatsPruned(): int
+    {
+        return $this->lastHeartbeatsPruned;
     }
 
     public function getQueueNames(): array

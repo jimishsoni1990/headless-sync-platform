@@ -88,6 +88,7 @@ final class OnboardingServiceProvider extends ServiceProvider
             OnboardingAdminRegistrar::class,
             fn (Container $c) => new OnboardingAdminRegistrar(
                 $c->get(OnboardingPageController::class),
+                $c->get(OnboardingStateInterface::class),
             ),
         );
 

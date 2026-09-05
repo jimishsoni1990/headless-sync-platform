@@ -42,13 +42,7 @@ final class DashboardView
         array $modules,
     ): string {
         $html  = '<div class="hsp-ops-dashboard">';
-        $html .= '<div class="hsp-ops-widgets">';
-
-        foreach ($widgets as $widget) {
-            $html .= $this->widget($widget, $snapshots[$widget->providerKey] ?? null);
-        }
-
-        $html .= '</div>'; // .hsp-ops-widgets
+        $html .= '<div class="hsp-ops-widgets">' . $this->renderWidgets($widgets, $snapshots) . '</div>';
 
         if ($system !== null) {
             $html .= $this->systemInformation($system);
@@ -56,6 +50,29 @@ final class DashboardView
 
         $html .= $this->moduleInspector($modules);
         $html .= '</div>'; // .hsp-ops-dashboard
+
+        return $html;
+    }
+
+    /**
+     * Render just the widget sections — the part of the dashboard that changes between polls.
+     *
+     * Public so the poll endpoint can re-render exactly what the page already shows, through THIS
+     * renderer. The 15s poll used to fetch a full snapshot set and then only stamp a timestamp
+     * attribute on the container, so the console never actually refreshed; re-rendering server-side
+     * and swapping the markup fixes that without a second, JS-side copy of the rendering rules
+     * (which would be free to drift from the escaping and formatting done here).
+     *
+     * @param ConsoleWidget[]      $widgets
+     * @param array<string, mixed> $snapshots provider key → snapshot
+     */
+    public function renderWidgets(array $widgets, array $snapshots): string
+    {
+        $html = '';
+
+        foreach ($widgets as $widget) {
+            $html .= $this->widget($widget, $snapshots[$widget->providerKey] ?? null);
+        }
 
         return $html;
     }

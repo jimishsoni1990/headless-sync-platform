@@ -128,9 +128,26 @@ final class PostExtractorTest extends TestCase
 
     public function test_extract_normalizes_meta_values_to_string(): void
     {
-        $model = $this->extractor->extract($this->validRaw(), ['_num' => 42, '_flag' => true]);
-        $this->assertSame('42', $model->meta['_num']);
-        $this->assertSame('1', $model->meta['_flag']);
+        $model = $this->extractor->extract($this->validRaw(), ['num' => 42, 'flag' => true]);
+        $this->assertSame('42', $model->meta['num']);
+        $this->assertSame('1', $model->meta['flag']);
+    }
+
+    /**
+     * The delivery API is public and unauthenticated, so WordPress's own bookkeeping must never
+     * reach a canonical model: `_edit_lock` / `_edit_last` disclose the editing account and time.
+     * Filtering happens at extraction so the values never enter the outbox or a projection.
+     */
+    public function test_extract_drops_protected_meta_keys(): void
+    {
+        $model = $this->extractor->extract($this->validRaw(), [
+            '_edit_lock'    => '1788597369:1',
+            '_edit_last'    => '1',
+            '_thumbnail_id' => 'a:0:{}',
+            'sub_title'     => 'Sub Title 1',
+        ]);
+
+        $this->assertSame(['sub_title' => 'Sub Title 1'], $model->meta);
     }
 
     public function test_extract_with_empty_meta_and_categories(): void

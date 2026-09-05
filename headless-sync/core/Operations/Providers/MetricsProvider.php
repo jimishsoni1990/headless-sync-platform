@@ -19,8 +19,9 @@ use HSP\Core\Operations\Diagnostics\OperationsQueryReader;
  * Sample set (all point-in-time):
  *   queue_depth              — available/claimable jobs now.
  *   dlq_depth                — dead-lettered rows now (permanent audit rows — DECISION S).
- *   worker_count             — recent processing-cycle heartbeat rows now (ADR-054 §6: cycles
- *                              that ran within the freshness window, NOT daemons — DECISION P/X).
+ *   worker_count             — distinct processing STAGES that heartbeated in the trailing window
+ *                              (ADR-054 §6: components that are live now, NOT daemons and NOT a
+ *                              tally of cycles — DECISION P/X). Cycles run is cycles_completed.
  *   oldest_pending_age       — age of the oldest available job now (seconds); omitted when empty.
  *   processing_rate          — jobs completed in the trailing window, per minute.
  *   replay_pending           — DLQ rows not yet replayed (replayed_at IS NULL) now.
@@ -58,7 +59,18 @@ final class MetricsProvider implements MetricsProviderInterface
         $samples = [
             new MetricSample('queue_depth', $this->reader->queueDepth(), 'jobs'),
             new MetricSample('dlq_depth', $this->reader->deadLetterDepth(), 'jobs'),
-            new MetricSample('worker_count', count($this->reader->workerHeartbeats()), 'workers'),
+            // Distinct processing STAGES that heartbeated in the window — not a row count.
+            // workerHeartbeats() is the console's display read: it is ordered newest-first and
+            // capped, so counting it would report the cap, and before that cap it counted every
+            // cycle ever run (one row per cycle under ADR-054 — DECISION X (1)), which is how a
+            // single-site install came to report "22 workers". cyclesCompletedByType() is already
+            // windowed and keyed by worker_type, so its key count is the live-component count with
+            // no extra query. How many cycles ran stays the separate cycles_completed sample.
+            new MetricSample(
+                'worker_count',
+                count($this->reader->cyclesCompletedByType($this->processingRateWindowSeconds)),
+                'stages',
+            ),
             new MetricSample(
                 'processing_rate',
                 round($this->reader->processingRatePerMinute($this->processingRateWindowSeconds), 3),

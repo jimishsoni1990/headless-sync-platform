@@ -85,3 +85,62 @@
 .hsp-ops-request-form select {
     min-width: 280px;
 }
+
+/* Operational actions (Replay / Reconcile — DECISION V (d)). Styled like the Playground request
+   form, since it is the console's other write-shaped surface. */
+.hsp-ops-actions {
+    margin-top: 20px;
+    padding: 16px;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+}
+
+.hsp-ops-actions-note {
+    margin: 0 0 12px;
+    color: #50575e;
+    max-width: 70ch;
+}
+
+.hsp-ops-action {
+    padding: 12px 0;
+    border-top: 1px solid #dcdcde;
+}
+
+.hsp-ops-action h4 {
+    margin: 0 0 8px;
+}
+
+.hsp-ops-field {
+    display: block;
+    margin: 8px 0;
+}
+
+.hsp-ops-field input[type="text"],
+.hsp-ops-field select {
+    min-width: 280px;
+}
+
+.hsp-ops-field--check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hsp-ops-action-summary {
+    font-weight: 600;
+}
+
+/* Empty until an action runs — collapse it so the panel doesn't reserve a blank slab. */
+.hsp-ops-action-detail:empty {
+    display: none;
+}
+
+.hsp-ops-action-detail {
+    background: #1d2327;
+    color: #f0f0f1;
+    padding: 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    max-height: 320px;
+}

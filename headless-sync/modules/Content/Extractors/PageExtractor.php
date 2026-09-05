@@ -64,16 +64,17 @@ final class PageExtractor
     }
 
     /**
+     * Normalize meta values to string, dropping WordPress-internal keys.
+     *
+     * See {@see ProtectedMeta} — `_`-prefixed meta (`_edit_lock`, `_edit_last`, `_thumbnail_id`, …)
+     * is WordPress bookkeeping and must never reach the public delivery API.
+     *
      * @param array<string,mixed> $rawMeta
      * @return array<string,string>
      */
     private function normalizeMeta(array $rawMeta): array
     {
-        $out = [];
-        foreach ($rawMeta as $key => $value) {
-            $out[(string) $key] = (string) $value;
-        }
-        return $out;
+        return ProtectedMeta::publicOnly($rawMeta);
     }
 
     /**

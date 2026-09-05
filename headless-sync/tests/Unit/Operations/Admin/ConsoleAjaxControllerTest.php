@@ -15,6 +15,7 @@ use HSP\Core\Operations\Registries\WidgetRegistry;
 use HSP\Core\Operations\Services\ConsoleStateStore;
 use HSP\Core\Operations\Services\OperationsService;
 use HSP\Core\Operations\Services\RefreshCoordinator;
+use HSP\Core\Operations\UI\DashboardView;
 use HSP\Modules\Content\Operations\ContentEndpointProvider;
 use HSP\Tests\Support\WpJsonHalt;
 use HSP\Tests\Unit\Operations\Fakes\FakeQueueStatusProvider;
@@ -55,6 +56,7 @@ final class ConsoleAjaxControllerTest extends TestCase
         $this->controller = new ConsoleAjaxController(
             $this->operations,
             new PlaygroundRequestExecutor(),
+            new DashboardView(),
         );
 
         // Default: authorized. Reset boundary stubs.

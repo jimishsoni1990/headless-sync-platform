@@ -21,6 +21,16 @@ final class CreateHspAggregateCountersMigration extends AbstractSqlMigration
         return 'core/mysql';
     }
 
+    /**
+     * Carries the per-aggregate monotonic counter (DECISION 2 v1.1); capture fails without it.
+     * Reported for the same reason as the outbox table — the PostgreSQL ledger outlives a
+     * WordPress-database restore, so presence must be checked, not assumed.
+     */
+    public function isSatisfied(): bool
+    {
+        return $this->connection->query("SHOW TABLES LIKE '{prefix}hsp_aggregate_counters'") !== [];
+    }
+
     protected function getSqlFilePath(): string
     {
         return __DIR__ . '/0002_create_hsp_aggregate_counters.sql';
