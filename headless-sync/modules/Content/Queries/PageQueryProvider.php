@@ -139,6 +139,21 @@ final class PageQueryProvider implements QueryProviderInterface
         return new CursorPage($rows, $nextCursor);
     }
 
+    /**
+     * Resolve a single published page by slug.
+     *
+     * MITIGATION, NOT THE FIX — see FLAG-PAGESLUG-1. WordPress enforces page slug uniqueness
+     * WITHIN a parent, not globally, so `/about/team` and `/services/team` are both legal and both
+     * land here as slug='team'. Without an ORDER BY, `LIMIT 1` returned whichever row PostgreSQL
+     * happened to produce — potentially a DIFFERENT page between requests, which is the worst
+     * version of the bug because it cannot be reproduced or reported.
+     *
+     * `ORDER BY p.parent_id, p.id` makes the answer deterministic and picks the least surprising
+     * one: parent_id 0 sorts first, so a top-level page wins over a nested namesake, with the id
+     * as a stable tiebreak beyond that. It does NOT make the endpoint able to address a specific
+     * nested page — that needs the published-contract change under FLAG-PAGESLUG-1 (path-based
+     * lookup or a parent filter), which is awaiting a ruling.
+     */
     public function findBySlug(string $slug): ?array
     {
         $rows = $this->db->query(
@@ -147,6 +162,7 @@ final class PageQueryProvider implements QueryProviderInterface
              FROM content.pages p
              %s
              WHERE p.slug = \$1 AND p.deleted_at IS NULL AND p.status = 'publish'
+             ORDER BY p.parent_id, p.id
              LIMIT 1",
                 self::COLUMNS,
                 self::FEATURED_MEDIA_JOIN,
