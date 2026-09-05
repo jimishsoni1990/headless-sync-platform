@@ -1,9 +1,22 @@
 # Operations, Deployment & Runtime Architecture
 
 **Project:** Headless Sync Platform (HSP)
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Approved
 **State:** Frozen
+
+**Amended by ADR-054 (2026-07-17; applied 2026-09-05).** Every execution-model assumption in this
+document is superseded by the WP-Cron Processing Engine model in **Document 8 v2.0** and
+**ADR-054** (ARCHITECTURE_DECISIONS.md): HSP v1.x runs background work **only** as bounded,
+stateless WP-Cron processing cycles — **no** CLI daemons, WP-CLI worker processes, Supervisor,
+systemd units, or container-restart workers, and process supervision is **never** a support
+requirement (Principle 8 — zero-configuration operation). Affected sections carry an explicit
+`> **AMENDED BY ADR-054**` banner: **§4/§5** (topologies), **§7** (worker execution strategy),
+**§20** (worker monitoring), **§23** (alerting), **§24** (worker availability target), **§26**
+(runbooks), **§27** (deployment tooling boundary), **§28** (compatibility matrix). Superseded text
+is retained as history and must not be cited as current authority. All non-execution content
+(environments, config, upgrades, migrations, rollback, backup, recovery, queue/API monitoring,
+capacity planning, DR) is **unchanged and current**.
 
 **Depends On:**
 
@@ -14,8 +27,9 @@
 * Document 5 — Event Architecture & Contract Design
 * Document 6 — Transformer Architecture & Canonical Model Design
 * Document 7 — Adapter Architecture & Delivery Projection Design
-* Document 8 — Worker Architecture & Execution Model
+* Document 8 v2.0 — Background Processing & Execution Architecture
 * Document 9 — Delivery API & Consumption Architecture
+* ARCHITECTURE_DECISIONS.md — **ADR-054** (authoritative execution-model ruling)
 
 ---
 
@@ -112,6 +126,12 @@ Consumers
 ---
 
 # 4. Supported Deployment Topologies
+
+> **AMENDED BY ADR-054.** "Workers" in the topology diagrams below is **not** a separate process
+> or tier: processing cycles run inside the WordPress PHP runtime, triggered by WP-Cron. Topology B
+> therefore splits **PostgreSQL and the delivery API**, not a worker fleet, and Topology C's
+> "Multiple Workers" means **higher cron frequency / larger batches / overlapping cycles**
+> (ADR-054 §4), never supervised daemon processes.
 
 ## Topology A — Single Server
 
@@ -231,37 +251,58 @@ Redis is not a platform requirement.
 
 # 7. Worker Execution Strategy
 
-## Production Standard
+> **AMENDED BY ADR-054 — this section is rewritten; the superseded v1.0 text follows as history.**
 
-CLI workers are required.
+## Production Standard (ADR-054)
+
+WP-Cron is the **only** background execution mechanism in v1.x.
 
 ---
-
-Example:
 
 ```text
-WP-CLI Workers
+hsp_processing_cycle (recurring WP-Cron event)
+        ↓
+ONE bounded, stateless Processing Engine cycle
+        ↓
+relay → dispatch → project → maintenance
+        ↓
+exit before max_execution_time
 ```
 
-running under:
-
-* systemd
-* Supervisor
-* Container Runtime
+A backlog larger than one cycle is continued by the next tick. Nothing is supervised, nothing is
+long-running, and nothing needs to be restarted.
 
 ---
 
-## Fallback
+## Reliable Cadence (optional, recommended)
 
-WP-Cron may execute:
+WP-Cron only fires on site traffic. For deterministic cadence, point a system scheduler at:
 
-* Recovery jobs
-* Safety checks
-* Emergency processing
+```text
+wp cron event run --due-now
+```
+
+This is a **trigger** for WP-Cron, not a daemon: each invocation still runs one bounded cycle and
+exits (ADR-054 §23). It is optional — the platform operates with zero configuration on plain
+WordPress hosting (Principle 8).
 
 ---
 
-WP-Cron is not the primary execution mechanism.
+## Not Supported in v1.x
+
+* CLI worker daemons / WP-CLI long-running workers
+* systemd units, Supervisor programs, container-restart workers
+* Any execution path that bypasses `hsp_processing_cycle`
+
+---
+
+## Superseded v1.0 text (history — not current authority)
+
+> CLI workers are required. Example: `WP-CLI Workers` running under systemd / Supervisor /
+> Container Runtime. WP-Cron may execute recovery jobs, safety checks, emergency processing.
+> WP-Cron is not the primary execution mechanism.
+>
+> **This is exactly the decision ADR-054 inverts** (see ADR-024 in Doc 4 §20).
 
 ---
 
@@ -659,22 +700,26 @@ All three are required.
 
 # 20. Worker Monitoring
 
-Minimum worker metrics:
+> **AMENDED BY ADR-054 §5–6.** These are **processing-cycle** metrics, not daemon metrics.
+> `uptime` is **removed** — a cycle has no uptime — and `heartbeat_age` is **cycle freshness**
+> ("are cycles advancing?"), not liveness. `worker_id` is the fresh UUIDv7 of the last cycle
+> (DECISION X (1)); `status` is the cycle state set (`running` / `idle`). Metrics are derived
+> on-demand (DECISION Q), never newly persisted.
+
+Minimum processing-cycle metrics:
 
 ```text
-worker_id
+worker_id (per-cycle UUIDv7)
 
 status
 
 memory_usage
 
-uptime
-
 jobs_processed
 
 jobs_failed
 
-heartbeat_age
+heartbeat_age (cycle freshness)
 ```
 
 ---
@@ -717,10 +762,15 @@ error_rate
 
 # 23. Alerting Strategy
 
+> **AMENDED BY ADR-054 §5.** "Worker Offline" does not exist — there is no process to be offline.
+> The equivalent condition is **processing stalled**: the heartbeat is stale (no cycle within the
+> freshness window) *while* the queue is non-empty. Remediation is "make WP-Cron fire" (traffic, or
+> `wp cron event run --due-now`), never "restart the worker".
+
 Minimum alert conditions:
 
 ```text
-Worker Offline
+Processing Stalled (stale heartbeat while queue non-empty)
 
 Queue Lag Threshold Exceeded
 
@@ -765,15 +815,19 @@ for standard updates.
 
 ---
 
-## Worker Availability
+## Processing Freshness
+
+> **AMENDED BY ADR-054 §5.** The v1.0 "Worker Availability: 99.9%" target is **removed** — there is
+> no persistent process to have an availability figure. The equivalent target is cycle cadence.
 
 Target:
 
 ```text
-99.9%
+A completed processing cycle within the configured freshness window
 ```
 
-or greater.
+whenever the queue is non-empty. A stale heartbeat with an empty queue is **normal idle**, not a
+fault.
 
 ---
 
@@ -809,12 +863,15 @@ Schedules remain configurable.
 
 # 26. Operational Runbooks
 
+> **AMENDED BY ADR-054.** The "Worker Failure" runbook becomes **"Processing Stalled / Cron Not
+> Firing"** — diagnose WP-Cron scheduling and site traffic, not a crashed process.
+
 The platform must provide runbooks for:
 
 ```text
 DLQ Recovery
 
-Worker Failure
+Processing Stalled / Cron Not Firing
 
 Queue Backlog
 
@@ -843,20 +900,21 @@ The platform does not provide infrastructure orchestration.
 
 ---
 
+> **AMENDED BY ADR-054.** **systemd Templates**, **Supervisor Templates** and **Worker Launch
+> Scripts** are **removed** from the supported asset list — they presuppose supervised daemons,
+> which v1.x does not have. The only cadence asset is an optional system-cron example invoking
+> `wp cron event run --due-now` (a WP-Cron trigger, not a daemon).
+
 Supported:
 
 ```text
-systemd Templates
-
-Supervisor Templates
-
 Docker Examples
 
 docker-compose Examples
 
 Environment Templates
 
-Worker Launch Scripts
+System-Cron Trigger Example (wp cron event run --due-now)
 
 Health Check Examples
 
@@ -895,27 +953,39 @@ Docker Deployments
 
 ---
 
+> **AMENDED BY ADR-054 / Principle 8.** Shared hosting **without** CLI access or process
+> supervision is a **first-class supported target** — that is the point of WP-Cron-only execution.
+> Neither CLI access nor process supervision may gate support.
+
+## Supported (continued)
+
+```text
+Shared Hosting (no CLI, no process supervision required)
+```
+
+Requires only: PHP with the `pgsql` extension, reachable PostgreSQL, and WP-Cron enabled.
+
+---
+
 ## Supported With Limitations
 
 ```text
-Shared Hosting
+Sites with DISABLE_WP_CRON set and no external trigger
 ```
 
-Only when:
-
-* CLI execution available
-* Long-running workers possible
+Processing only advances when something fires WP-Cron. Point a system scheduler at
+`wp cron event run --due-now`, or re-enable WP-Cron.
 
 ---
 
 ## Unsupported
 
 ```text
-Environments Without CLI Access
+Environments Without the pgsql PHP Extension
 
-Environments Without Process Supervision
+Environments That Cannot Reach PostgreSQL
 
-Environments Preventing Worker Execution
+Environments With WP-Cron Permanently Disabled And No External Trigger
 ```
 
 ---
@@ -1058,7 +1128,7 @@ Exact values may vary by deployment.
 
 # Approval Status
 
-**Version:** 1.0
+**Version:** 1.1
 
 **Status:** Approved
 

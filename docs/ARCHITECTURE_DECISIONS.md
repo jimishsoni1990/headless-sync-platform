@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.29  
+Version: 1.30  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.30 | 2026-09-05 | **ADR-054 sibling-document reconciliation applied (DOC-RECON-S1, docs-only) — closes FLAG-DOC8V2-1. No new ruling, no ADR re-opened.** The already-ratified ADR-054 wording was propagated into the sibling frozen docs that still asserted the superseded daemon/CLI-worker execution model: **Doc 4 → v1.1** (§19 heartbeat = cycle freshness; §20 ADR-024 status → **SUPERSEDED by ADR-054**, original text retained verbatim as history; §29 scaling = overlapping cycles; §30 checklist), **Doc 10 → v1.1** (§4/§5 topologies, §7 rewritten WP-Cron-only, §20 `uptime` removed, §23 "Worker Offline" → "Processing Stalled", §24 availability target → processing freshness, §26 runbook rename, §27 systemd/Supervisor/worker-launch assets removed, §28 shared hosting without CLI/process supervision promoted to first-class supported), **Doc 11 → v1.1** (Doc-8 title, Scalability "Multiple Worker Processes" → concurrent claimants, "Restart Workers" note). CLAUDE.md was already clean (2026-07-20 rewrite). Superseded text is retained under explicit banners, never deleted; ADR-054 remains the single authority. See the APPLIED note under the ADR-054 Conflict Report. |
 | 1.29 | 2026-07-20 | **ADR-055 (f)(2) meta-schema gate moved to the Node ajv toolchain — architect ruling "D" 2026-07-20 (OAPI-S1), verified against live reproductions.** `opis/json-schema` **2.6.0 is REMOVED from `require-dev`**: it has two reproduced JSON Schema 2020-12 conformance defects that make it unable to validate real OpenAPI 3.1 documents against the official meta-schema — **(i)** it does not index the `$dynamicAnchor: "meta"`, so `$dynamicRef "#meta"` mis-resolves to the document root (every Schema Object slot is validated as if it were a whole OpenAPI document); **(ii)** `unevaluatedProperties` reports schema-declared property names that are **absent** from the instance. The OAI `schema-base` variant does **not** avoid `$dynamicRef` (it overrides the anchor — defect (i) persists), and **no conformant 2020-12 PHP validator exists**. The **(f)(2) gate therefore runs via ajv in the Node toolchain** (already a sanctioned dev/CI dependency — DECISION W (a)), differential-verified against a conformant reference implementation on valid and invalid documents. **Pinned fixture:** `tests/fixtures/openapi-3.1-meta-schema-pinned.json` — the official OAI 3.1 meta-schema (`$id …/2022-10-07`, source tag 3.1.1) with exactly **four semantics-preserving edits** (`$dynamicRef "#meta"` → `$ref "#/$defs/schema"`; equivalent because the fixture validates as its own root resource, so no outer dynamic scope can retarget the anchor). Pinned, **never fetched at test time**. **Gate mechanics:** `tools/openapi-validator/` (committed `package.json` + `package-lock.json`; `node_modules/` gitignored) runs `validate-openapi.mjs` (Ajv2020 + ajv-formats, `strict:false`) over the pinned fixture; the drift guard calls it via `proc_open`, layered over the PHP structural pre-check which stays the fast-fail. **Environment contract:** node available → gate runs; node missing AND `HSP_REQUIRE_NODE_GATE` unset → the meta-schema assertion is **SKIPPED** with a warning naming the env var; `HSP_REQUIRE_NODE_GATE=1` (CI) AND node missing → **FAIL, never skip**. Completeness / exemption / exclusion / non-circularity stay pure PHP. No schema change; no new PG handle / `pg_*` wrapper. |
 | 1.28 | 2026-07-20 | **ADR-055 (f)(1) drift-guard enumeration scoped — resolves the OAPI-S1 drift-guard route-enumeration flag (architect ruling 2026-07-20, "A-modified", OAPI-S1).** The CI drift guard enumerates the **FULL live `hsp/v1` route index** (external ground truth — not the registry, preserving non-circularity), then applies exactly **ONE structural exemption**: routes under the **`hsp/v1/onboarding/` prefix** (authority: DECISION W (e) — the onboarding first-run **admin** surface is outside the published delivery contract; its registrar is gated pre-completion). **Every non-exempted `hsp/v1` route must carry a complete `EndpointDescriptor`** or CI fails. The exemption is a **single prefix frozen in this ADR** — adding any further exempt prefix requires an architect ruling; the guard **hardcodes this one prefix with an ADR-055 (f) citation comment**. Any **future authenticated `hsp/v1` route OUTSIDE the exempted prefix must carry a descriptor** (`auth = authenticated` → excluded from the served document per v1.27; asserted by the exclusion test). **Net today: 13 live `hsp/v1` routes − 6 onboarding = 7 guarded routes** (six content + `openapi.json`), matching the OAPI-S1 seven-route DoD. Adds a named non-circularity test: a fixture route registered on `hsp/v1` **outside** the exempted prefix **without** a descriptor **fails the guard**. No schema change; no new PG handle / `pg_*` wrapper. |
 | 1.27 | 2026-07-20 | **ADR-055 (d) scoping ruled — resolves FLAG-OAPI-1 (architect 2026-07-20, OAPI-S0 closeout).** The served `GET /hsp/v1/openapi.json` document describes **PUBLIC endpoints only**; endpoints requiring authentication/capabilities (Doc 9 §22) are **EXCLUDED from the generated document**. Exclusion is driven by the endpoint metadata **auth field** (ADR-055 (c)), **not by route inspection** (registry-driven, consistent with ADR-055 (a)). The **generator endpoint stays public and stateless** — **no capability check inside request-time generation** (consistent with ADR-055 (e)). The OAPI-S1 drift guard (ADR-055 (f)) must additionally assert, positively, that **no non-public-metadata route appears in the generated document** (exclusion test) — reflected in the OAPI-S1 DoD. No schema change; no new PG handle / `pg_*` wrapper. |
@@ -1149,6 +1150,24 @@ The following sections assume long-running/CLI-daemon workers, external process 
 - **IMPLEMENTATION_PLAN.md §5b / §4** (Operability & Scalability validation) and any worker-launch operational notes similarly assume daemons; flagged for the same future reconciliation session.
 
 *Recommendation:* a follow-up docs-only reconciliation session should apply ADR-054's wording to Doc 4 §19/§20, Doc 10 §7/§24/§27/§28/§20/§23, Doc 11's Doc-8 title + Scalability wording, and CLAUDE.md's worker-execution note. This session edits **only** Doc 8 (→ v2.0), this ADR record, and STATUS.md, per the ARCH-DOC8-V2 scope.
+
+> **APPLIED 2026-09-05 (DOC-RECON-S1, docs-only) — FLAG-DOC8V2-1 CLOSED.** The reconciliation above
+> was carried out: **Doc 4 → v1.1** (header amendment note; §19 heartbeat semantics banner; §20
+> ADR-024 status flipped to *SUPERSEDED by ADR-054* with the original decision/reasoning retained
+> verbatim as history; §29 horizontal scaling reframed as overlapping cycles; §30 checklist item
+> corrected), **Doc 10 → v1.1** (header amendment note + Doc-8 title; §4/§5 topologies; §7 rewritten
+> to WP-Cron-only with the v1.0 text retained as quoted history; §20 `uptime` removed and
+> `heartbeat_age` reframed as cycle freshness; §23 "Worker Offline" → "Processing Stalled"; §24
+> "Worker Availability 99.9%" → processing-freshness target; §26 "Worker Failure" → "Processing
+> Stalled / Cron Not Firing"; §27 systemd/Supervisor templates + worker launch scripts removed in
+> favour of an optional system-cron trigger example; §28 shared hosting without CLI/supervision
+> promoted to first-class supported and the CLI/supervision unsupported-gates replaced by
+> `pgsql`/PostgreSQL/WP-Cron-trigger gates), **Doc 11 → v1.1** (header amendment note + Doc-8 title;
+> Scalability Validation "Multiple Worker Processes" → concurrent claimants / overlapping cycles;
+> Operations Console "Restart Workers" note de-supervisored). **CLAUDE.md** was already reconciled
+> by the 2026-07-20 rewrite (no daemon wording remains). No ADR was re-opened and no new ruling was
+> made — ADR-054 was already authoritative; this only propagated its wording. No production or test
+> code was touched.
 
 ---
 

@@ -1,9 +1,15 @@
 # Development Roadmap & Platform Evolution Strategy
 
 **Project:** Headless Sync Platform (HSP)
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Approved
 **State:** Frozen
+
+**Amended by ADR-054 (2026-07-17; applied 2026-09-05).** Background execution is WP-Cron-only
+(Document 8 v2.0 / ADR-054): no daemons, supervisors, or CLI workers. Two wordings are corrected
+below — the Scalability Validation criterion "Multiple Worker Processes" (now overlapping cron
+cycles / concurrent claimants) and the Operations Console "Restart Workers" note. Roadmap phases
+and gate criteria are otherwise unchanged.
 
 **Depends On:**
 
@@ -14,7 +20,7 @@
 * Document 5 — Event Architecture & Contract Design
 * Document 6 — Transformer Architecture & Canonical Model Design
 * Document 7 — Adapter Architecture & Delivery Projection Design
-* Document 8 — Worker Architecture & Execution Model
+* Document 8 v2.0 — Background Processing & Execution Architecture
 * Document 9 — Delivery API & Consumption Architecture
 * Document 10 — Operations, Deployment & Runtime Architecture
 
@@ -369,7 +375,7 @@ Actions: Replay + Reconcile ONLY — thin delegators, no second repair path (wri
 
 Flush Queue: REMOVED (destructive; violates never-lose-a-sync)
 
-Restart Workers: NONE — status/heartbeat/runbook links only (supervisor owns lifecycle)
+Restart Workers: NONE — nothing to restart under ADR-054; status/heartbeat/runbook links only
 
 PG reads: reuse the delivery DatabaseConnectionInterface — no fifth handle
 
@@ -485,8 +491,12 @@ DLQ Recovery
 
 ## Scalability Validation
 
+> **AMENDED BY ADR-054 §4.** Concurrency is proven by **overlapping cron cycles / concurrent
+> claimants** under `FOR UPDATE SKIP LOCKED`, not by multiple supervised worker processes. GATE-S2
+> already satisfies this with genuinely concurrent PostgreSQL sessions — no re-gate is required.
+
 ```text
-Multiple Worker Processes
+Concurrent Claimants (overlapping processing cycles)
 
 Queue Growth Handling
 
@@ -1024,7 +1034,7 @@ Optimized Consumer Read Models
 
 # Approval Status
 
-**Version:** 1.0
+**Version:** 1.1
 
 **Status:** Approved
 

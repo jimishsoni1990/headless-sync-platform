@@ -1,15 +1,26 @@
 # Queue & Event Processing Architecture
 
 **Project:** Headless Sync Platform (HSP)
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Approved
 **State:** Frozen
+
+**Amended by ADR-054 (2026-07-17; applied 2026-09-05).** The execution-model portions of this
+document — **§19 Worker Heartbeats**, **§20 ADR-024 Worker Execution Model**, **§29 Horizontal
+Scaling**, and the §30 "CLI Worker Strategy" checklist item — are superseded by the WP-Cron
+Processing Engine model in **Document 8 v2.0** and **ADR-054** (ARCHITECTURE_DECISIONS.md). HSP
+v1.x executes background work **only** as bounded, stateless WP-Cron processing cycles; there are
+no CLI daemons, supervisors, or systemd units. The superseded text is **retained below as history**
+under explicit `> **SUPERSEDED BY ADR-054**` banners and must not be cited as current authority.
+Everything else in this document (outbox capture, envelope, queue provider abstraction, retry, DLQ,
+visibility timeout, replay, reconciliation) is **unchanged and current**.
 
 **Depends On:**
 
 * Document 1 — Technical Architecture Specification
 * Document 2 — Plugin Folder Structure & Code Organization
 * Document 3 — Database Design & Persistence Architecture
+* ARCHITECTURE_DECISIONS.md — **ADR-054** (authoritative execution-model ruling), DECISION P / DECISION X (heartbeat semantics)
 
 ---
 
@@ -653,6 +664,14 @@ Job Requeued
 
 # 19. Worker Heartbeats
 
+> **AMENDED BY ADR-054 / DECISION P / DECISION X — read this first.**
+> A heartbeat row records **processing-cycle freshness**, not daemon liveness. Each WP-Cron cycle
+> mints a fresh UUIDv7 `worker_id` (DECISION X (1)) and writes one current-state row; nothing
+> "publishes continuously". `status` is the cycle state set (`running` / `idle`), the daemon-only
+> `shutdown` state is removed, and `current_job` / `memory_usage` are per-cycle observations, not
+> liveness signals. A stale heartbeat means "cycles are not advancing" — never "a daemon crashed".
+> Authoritative wording: Document 8 v2.0 §15.
+
 Workers publish:
 
 ```text
@@ -685,9 +704,18 @@ Purpose:
 
 ### Status
 
-Accepted
+**SUPERSEDED by ADR-054 (2026-07-17).**
 
-### Decision
+> **SUPERSEDED BY ADR-054 — historical record only, not current authority.**
+> The v1.x execution model is **WP-Cron only**: one bounded, stateless Processing Engine cycle per
+> `hsp_processing_cycle` firing (relay → dispatch → project → maintenance), exiting before
+> `max_execution_time`. There are **no** CLI daemons, WP-CLI worker processes, Supervisor, or
+> systemd units, and WP-Cron is **not** a fallback — it is the only mechanism. System cron may
+> invoke `wp cron event run --due-now` as a reliable *trigger*; each invocation still runs one
+> bounded cycle and exits. See **Document 8 v2.0** and **ADR-054** (ARCHITECTURE_DECISIONS.md).
+> The original ADR-024 decision text is preserved verbatim below as history.
+
+### Decision (superseded — history)
 
 Primary:
 
@@ -715,7 +743,7 @@ WP-Cron
 
 ---
 
-### Reasoning
+### Reasoning (superseded — history)
 
 CLI workers provide:
 
@@ -1015,6 +1043,12 @@ without event loss.
 
 # 29. Horizontal Scaling
 
+> **AMENDED BY ADR-054.** Scaling is by **cron frequency and batch size**, not by adding worker
+> processes (ADR-054 §4). The concurrency guarantee below is preserved and satisfied by
+> **overlapping processing cycles / concurrent claimants** — each cycle claims jobs with
+> `FOR UPDATE SKIP LOCKED`, so simultaneous cycles never double-claim (GATE-S2, PASS). Read
+> "Worker 1..N" below as "concurrent cycles", never as supervised daemon processes.
+
 Supported Model:
 
 ```text
@@ -1046,7 +1080,7 @@ Aggregate version tracking prevents stale processing.
 * [x] Dead Letter Queue
 * [x] Visibility Timeout
 * [x] Worker Heartbeats
-* [x] CLI Worker Strategy
+* [x] ~~CLI Worker Strategy~~ → **WP-Cron Processing Engine Strategy** (ADR-054; Doc 8 v2.0)
 * [x] Replay Architecture
 * [x] Reconciliation Architecture
 * [x] Horizontal Scaling
@@ -1055,7 +1089,7 @@ Aggregate version tracking prevents stale processing.
 
 # Approval Status
 
-**Version:** 1.0
+**Version:** 1.1
 
 **Status:** Approved
 
