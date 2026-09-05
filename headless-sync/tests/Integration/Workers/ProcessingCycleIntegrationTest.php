@@ -23,6 +23,7 @@ use HSP\Modules\Content\Events\ContentEventTypes;
 use HSP\Modules\Content\Extractors\CategoryExtractor;
 use HSP\Modules\Content\Extractors\PageExtractor;
 use HSP\Modules\Content\Extractors\PostExtractor;
+use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Handlers\CategoryTombstoneHandler;
 use HSP\Modules\Content\Handlers\CategoryUpsertHandler;
 use HSP\Modules\Content\Handlers\PageTombstoneHandler;
@@ -337,6 +338,159 @@ final class ProcessingCycleIntegrationTest extends TestCase
     // =========================================================================
     // Engine assembly (real runtime) + seeding helpers
     // =========================================================================
+
+
+    // =========================================================================
+    // P1B-S5 — END-TO-END SYNC LATENCY: the platform's first measurement.
+    //
+    // The PRD commits to "content updates appear in delivery systems within 30 seconds"
+    // (PRD §Performance; Doc 10 §24). Nothing had ever measured it — the SLA was an
+    // aspiration, which is half of FLAG-P1BS0-1.
+    //
+    // What CAN be measured in a test is the pipeline: outbox row → relay → dispatch →
+    // project → readable through the delivery query provider. What CANNOT is the wait for
+    // the next WP-Cron tick, which is not elapsed time but a config value
+    // (processing.interval_seconds). So the honest total is:
+    //
+    //     worst case = interval_seconds + cycle duration
+    //     typical    = interval_seconds / 2 + cycle duration
+    //
+    // This test measures the cycle and PRINTS the arithmetic with the cadence and batch
+    // sizes stated, so the number is reproducible and its config dependency explicit.
+    //
+    // It deliberately asserts ONLY on what the code controls — that the pipeline itself is
+    // nowhere near the budget. It does NOT assert the 30s total: the cadence is a config
+    // decision under FLAG-P1BS0-1, and a test that fails until someone rules would block
+    // the suite rather than inform the ruling.
+    // =========================================================================
+
+    public function test_end_to_end_sync_latency_through_one_cycle(): void
+    {
+        // Shipped defaults (config/worker.php → processing), stated so the number is
+        // reproducible and so a config change invalidates the recorded figure loudly.
+        $intervalSeconds  = 60;
+        $batchSize        = 200;
+        $cycleTimeBudget  = 20.0;
+
+        // A realistic single edit: one post published in WordPress.
+        $this->seedPost(1, 'latency-probe');
+
+        $engine = $this->makeEngine($this->db, projectionBatchSize: $batchSize, budget: $cycleTimeBudget);
+
+        $startedAt = microtime(true);
+        $result    = $engine->runCycle();
+        $cycle     = microtime(true) - $startedAt;
+
+        // The edit must actually be readable through the delivery path — measuring a cycle
+        // that projected nothing would measure nothing.
+        self::assertSame(1, $result->projected, 'the probe post was projected by this cycle');
+        $row = (new PostQueryProvider($this->db))->findBySlug('latency-probe');
+        self::assertNotNull($row, 'and is readable through the Delivery API query path');
+
+        $worstCase   = $intervalSeconds + $cycle;
+        $typicalCase = ($intervalSeconds / 2) + $cycle;
+
+        fwrite(STDERR, sprintf(
+            "\n[P1B-S5] END-TO-END SYNC LATENCY (single edit)\n"
+            . "  pipeline (relay→dispatch→project→readable): %.3f s\n"
+            . "  cron cadence (processing.interval_seconds): %d s\n"
+            . "  batch sizes: %d per stage | cycle budget: %.0f s\n"
+            . "  => typical total ≈ %.1f s | worst case ≈ %.1f s | PRD SLA: 30 s\n"
+            . "  => SLA met by the pipeline: YES (%.3f s) | by the shipped cadence: %s\n"
+            . "  (see FLAG-P1BS0-1 — the cadence is unresolved; this session measures, it does not change it)\n\n",
+            $cycle,
+            $intervalSeconds,
+            $batchSize,
+            $cycleTimeBudget,
+            $typicalCase,
+            $worstCase,
+            $cycle,
+            $worstCase <= 30 ? 'YES' : 'NO',
+        ));
+
+        // ASSERTED: the pipeline is not the bottleneck. A single edit must traverse the
+        // whole pipeline in a small fraction of the SLA, leaving the entire remainder as
+        // cadence headroom — that is the property the code is responsible for.
+        self::assertLessThan(
+            5.0,
+            $cycle,
+            sprintf(
+                'One edit took %.3fs to traverse the pipeline. The <30s SLA leaves almost all of '
+                . 'its budget to cron cadence, so the pipeline itself must stay well under it.',
+                $cycle,
+            ),
+        );
+
+        // …and comfortably inside the cycle's own time budget (ADR-054 §9).
+        self::assertFalse($result->budgetExhausted, 'a single edit must not exhaust the cycle budget');
+        self::assertLessThan($cycleTimeBudget, $cycle);
+
+        // RECORDED, NOT ASSERTED: whether the shipped cadence can meet the SLA. At the
+        // default 60s interval the worst case cannot (the wait alone exceeds 30s) — which is
+        // exactly what FLAG-P1BS0-1 asks to be ruled on, now with a measured pipeline cost
+        // rather than a guess.
+        self::assertGreaterThan(0.0, $worstCase);
+    }
+
+    public function test_a_full_default_batch_drains_within_the_cycle_time_budget(): void
+    {
+        // PERFORMANCE DoD (P1B-S0): a full batch must drain inside cycle_time_budget_seconds, or
+        // the Phase 1B aggregates have eaten the headroom that keeps cadence + batch size the
+        // only throughput levers (ADR-054 §4).
+        //
+        // NOTE ON THE NUMBER: this harness's makeEngine() fixes the relay and dispatch batches at
+        // 100, while the shipped config default (config/worker.php → processing.*_batch_size) is
+        // 200. So a full batch HERE is 100 events, and the per-event cost below is what
+        // extrapolates to the shipped size — measuring 100 and calling it 200 would be a
+        // comfortable lie.
+        $harnessBatch  = 100;
+        $shippedBatch  = 200;
+        $budget        = 20.0;
+
+        for ($i = 1; $i <= $harnessBatch; $i++) {
+            $this->seedPost($i, 'batch-' . $i);
+        }
+
+        $engine    = $this->makeEngine($this->db, projectionBatchSize: $harnessBatch, budget: $budget);
+        $startedAt = microtime(true);
+        $result    = $engine->runCycle();
+        $elapsed   = microtime(true) - $startedAt;
+
+        $perEvent    = $elapsed / $harnessBatch;
+        $extrapolate = $perEvent * $shippedBatch;
+
+        fwrite(STDERR, sprintf(
+            "[P1B-S5] FULL BATCH: %d events relayed / %d dispatched / %d projected in %.3f s\n"
+            . "  per event: %.1f ms | extrapolated to the shipped %d-event batch: %.2f s "
+            . "| cycle budget: %.0f s\n\n",
+            $result->relayed,
+            $result->dispatched,
+            $result->projected,
+            $elapsed,
+            $perEvent * 1000,
+            $shippedBatch,
+            $extrapolate,
+            $budget,
+        ));
+
+        self::assertSame($harnessBatch, $result->projected, 'the whole batch projected in one cycle');
+        self::assertFalse($result->budgetExhausted, 'the batch fits inside the cycle budget');
+        self::assertLessThan($budget, $elapsed);
+        self::assertSame($harnessBatch, $this->countRows('content.posts'));
+
+        // The shipped batch is twice this one, so the extrapolated cost must also sit inside the
+        // budget with room to spare — otherwise the default config could exhaust a cycle.
+        self::assertLessThan(
+            $budget / 2,
+            $extrapolate,
+            sprintf(
+                'A shipped-size batch extrapolates to %.2fs against a %.0fs budget — too close to '
+                . 'the limit for the default configuration to be safe.',
+                $extrapolate,
+                $budget,
+            ),
+        );
+    }
 
     private function makeEngine(
         PostgresDatabaseConnection $db,
