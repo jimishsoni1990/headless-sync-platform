@@ -64,10 +64,23 @@ final class ProtectedMeta
     }
 
     /**
-     * Keep only public meta, with values normalized to string.
+     * Keep only public meta, with values normalised to JSON-safe scalars and arrays.
      *
-     * @param array<string,mixed> $rawMeta get_post_meta()-style flat map (meta_key → scalar value)
-     * @return array<string,string>
+     * Values are NO LONGER force-cast to string (P1B-S4). WordPress stores postmeta as strings,
+     * so a scalar still arrives as a string and nothing changes for existing consumers — but a
+     * structured value (an ACF repeater, gallery, checkbox or relationship field) is an ARRAY by
+     * the time the loader has run `maybe_unserialize()` on it, and `(string) $array` published the
+     * literal text "Array" (with a PHP notice), while an un-unserialized value published raw PHP
+     * serialization like `a:2:{i:0;s:1:"a";…}`. Both are Rule 2 violations — a projection is a
+     * delivery store, not a `wp_postmeta` replica — and Rule 6 violations, since a consumer would
+     * have to understand PHP's serialization format to read the API.
+     *
+     * Objects and resources are DROPPED rather than published: `maybe_unserialize()` can return an
+     * arbitrary object graph, which does not belong in a public JSON contract and would make the
+     * adapter's json_encode fail (silently emptying the whole meta object).
+     *
+     * @param array<string,mixed> $rawMeta get_post_meta()-style flat map (meta_key → value)
+     * @return array<string,mixed>
      */
     public static function publicOnly(array $rawMeta): array
     {
@@ -80,7 +93,43 @@ final class ProtectedMeta
                 continue;
             }
 
-            $out[$key] = (string) $value;
+            $sanitised = self::sanitiseValue($value);
+
+            if ($sanitised === null && $value !== null) {
+                continue; // unpublishable (object / resource) — dropped, not stringified
+            }
+
+            $out[$key] = $sanitised;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Reduce a meta value to something safely JSON-encodable, recursively.
+     *
+     * Returns null for values that cannot be published (objects, resources); a genuine null meta
+     * value also returns null, which the caller distinguishes by checking the input.
+     */
+    private static function sanitiseValue(mixed $value): mixed
+    {
+        if ($value === null || is_scalar($value)) {
+            return $value;
+        }
+
+        if (! is_array($value)) {
+            return null; // object, resource, closure — not publishable
+        }
+
+        $out = [];
+        foreach ($value as $k => $v) {
+            $clean = self::sanitiseValue($v);
+
+            if ($clean === null && $v !== null) {
+                continue;
+            }
+
+            $out[$k] = $clean;
         }
 
         return $out;

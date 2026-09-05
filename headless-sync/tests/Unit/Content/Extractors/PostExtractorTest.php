@@ -126,11 +126,15 @@ final class PostExtractorTest extends TestCase
         $this->assertSame([3, 7, 11], $model->categoryIds);
     }
 
-    public function test_extract_normalizes_meta_values_to_string(): void
+    public function test_extract_preserves_meta_value_types(): void
     {
+        // P1B-S4 stopped force-casting meta to string. In production this changes nothing:
+        // WordPress stores postmeta as strings, so a scalar still arrives as a string. What it
+        // fixes is everything else — an array used to publish the literal text "Array", and a
+        // bool was flattened to '1'/''. Types now pass through as given.
         $model = $this->extractor->extract($this->validRaw(), ['num' => 42, 'flag' => true]);
-        $this->assertSame('42', $model->meta['num']);
-        $this->assertSame('1', $model->meta['flag']);
+        $this->assertSame(42, $model->meta['num']);
+        $this->assertTrue($model->meta['flag']);
     }
 
     /**

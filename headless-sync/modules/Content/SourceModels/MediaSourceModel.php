@@ -36,7 +36,7 @@ final class MediaSourceModel
      * @param int                    $attachedToId post_parent (0 = unattached); soft reference
      * @param \DateTimeImmutable     $publishedAt  post_date_gmt as a UTC instant
      * @param \DateTimeImmutable     $modifiedAt   post_modified_gmt as a UTC instant
-     * @param array<string,string>   $meta         public post meta key→value
+     * @param array<string,mixed>   $meta         public post meta key→value
      */
     public function __construct(
         public readonly int $postId,

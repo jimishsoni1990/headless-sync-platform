@@ -35,11 +35,14 @@ interface WpContentLoader
     /**
      * Load raw post meta for the given post.
      *
-     * Returns the flat meta_key → scalar map expected by PageExtractor / PostExtractor.
+     * Returns the flat meta_key → value map expected by PageExtractor / PostExtractor, with
+     * values ALREADY UNSERIALIZED (P1B-S4): the all-meta form of get_post_meta() does not
+     * unserialize, so a structured ACF value would otherwise arrive as a raw PHP-serialized
+     * string. Scalars still arrive as the strings WordPress stores.
      * Returns [] when the post has no meta or does not exist.
      *
      * @param int $postId
-     * @return array<string,string>
+     * @return array<string,mixed>
      */
     public function loadPostMeta(int $postId): array;
 

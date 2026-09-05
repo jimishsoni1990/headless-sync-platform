@@ -27,7 +27,7 @@ final class CanonicalPage implements CanonicalModelInterface
      * @param int                  $menuOrder   Menu order for hierarchical trees
      * @param \DateTimeImmutable   $publishedAt UTC publish instant
      * @param \DateTimeImmutable   $modifiedAt  UTC last-modified instant
-     * @param array<string,string> $meta        Post meta key→value
+     * @param array<string,mixed> $meta        Post meta key→value
      */
     public function __construct(
         public readonly int $postId,
@@ -61,7 +61,7 @@ final class CanonicalPage implements CanonicalModelInterface
         // meta: ksorted — key order from WordPress is not guaranteed stable.
         // Encoded with json_encode(JSON_UNESCAPED_UNICODE); no PHP serialize().
         $meta = $this->meta;
-        ksort($meta);
+        self::ksortRecursive($meta);
         return hash('sha256', implode("\0", [
             (string) $this->postId,
             $this->title,
@@ -75,5 +75,28 @@ final class CanonicalPage implements CanonicalModelInterface
             json_encode($meta, JSON_UNESCAPED_UNICODE),
             (string) $this->featuredMediaId,
         ]));
+    }
+
+    /**
+     * Sort array keys recursively, in place.
+     *
+     * The checksum docblock has always claimed meta is "ksorted recursively"; until P1B-S4 the
+     * code sorted only the top level, which was harmless while meta was a flat map of strings.
+     * Structured ACF values make it load-bearing: WordPress does not guarantee nested key order,
+     * so without this two identical repeater values could hash differently and the projection
+     * would churn (or read as drifted) forever.
+     *
+     * @param array<mixed> $value
+     */
+    private static function ksortRecursive(array &$value): void
+    {
+        ksort($value);
+
+        foreach ($value as &$item) {
+            if (is_array($item)) {
+                self::ksortRecursive($item);
+            }
+        }
+        unset($item);
     }
 }

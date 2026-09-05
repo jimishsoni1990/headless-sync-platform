@@ -87,7 +87,7 @@ final class PostExtractor
      * is WordPress bookkeeping and must never reach the public delivery API.
      *
      * @param array<string,mixed> $rawMeta
-     * @return array<string,string>
+     * @return array<string,mixed>
      */
     private function normalizeMeta(array $rawMeta): array
     {

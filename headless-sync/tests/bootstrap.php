@@ -554,3 +554,47 @@ if (! function_exists('plugins_url')) {
         return 'http://example.test/wp-content/plugins/headless-sync/' . ltrim($path, '/');
     }
 }
+
+// -----------------------------------------------------------------------------
+// Post meta (P1B-S4) — lets WpContentLoaderImpl::loadPostMeta() be exercised for
+// real instead of only through the fake loader. maybe_unserialize() mirrors
+// WordPress: unserialize a serialized string, return anything else untouched.
+// -----------------------------------------------------------------------------
+
+if (! function_exists('get_post_meta')) {
+    /** @return array<string, list<mixed>>|mixed */
+    function get_post_meta(int $postId, string $key = '', bool $single = false): mixed
+    {
+        $all = $GLOBALS['_hsp_stub_post_meta'][$postId] ?? [];
+
+        if ($key === '') {
+            // The all-meta form: key => list of RAW stored values (WordPress does not
+            // unserialize here — the quirk P1B-S4 works around).
+            return $all;
+        }
+
+        $values = $all[$key] ?? [];
+
+        return $single ? ($values[0] ?? '') : $values;
+    }
+}
+
+if (! function_exists('maybe_unserialize')) {
+    function maybe_unserialize(mixed $value): mixed
+    {
+        if (! is_string($value)) {
+            return $value;
+        }
+
+        $trimmed = trim($value);
+
+        // WordPress's own heuristic: only attempt when it looks serialized.
+        if ($trimmed === 'N;' || preg_match('/^[aOsbdi]:/', $trimmed) === 1) {
+            $result = @unserialize($trimmed, ['allowed_classes' => false]);
+
+            return $result === false && $trimmed !== 'b:0;' ? $value : $result;
+        }
+
+        return $value;
+    }
+}

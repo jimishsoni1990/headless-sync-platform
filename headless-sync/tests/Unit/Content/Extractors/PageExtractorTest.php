@@ -114,11 +114,14 @@ final class PageExtractorTest extends TestCase
         $this->assertSame('2024-05-11 07:00:00', $model->modifiedAt->format('Y-m-d H:i:s'));
     }
 
-    public function test_extract_normalizes_meta_values_to_string(): void
+    public function test_extract_preserves_meta_value_types(): void
     {
+        // P1B-S4 stopped force-casting meta to string. In production this changes nothing:
+        // WordPress stores postmeta as strings, so a scalar still arrives as a string. What it
+        // fixes is everything else — an array used to publish the literal text "Array".
         $model = $this->extractor->extract($this->validRaw(), ['template' => 'full-width.php', 'order' => 3]);
         $this->assertSame('full-width.php', $model->meta['template']);
-        $this->assertSame('3', $model->meta['order']);
+        $this->assertSame(3, $model->meta['order']);
     }
 
     /**

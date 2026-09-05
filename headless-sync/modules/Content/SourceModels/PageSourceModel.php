@@ -25,7 +25,7 @@ final class PageSourceModel
      * @param int                    $menuOrder    menu_order
      * @param \DateTimeImmutable     $publishedAt  post_date_gmt as UTC instant
      * @param \DateTimeImmutable     $modifiedAt   post_modified_gmt as UTC instant
-     * @param array<string,string>   $meta         post meta key→value (string values)
+     * @param array<string,mixed>   $meta         post meta key→value (string values)
      * @param int                    $featuredMediaId attachment ID of the featured image
      *                                                (0 = none); soft reference, ADR-013
      */

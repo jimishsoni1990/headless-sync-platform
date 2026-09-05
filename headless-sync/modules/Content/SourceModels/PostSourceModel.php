@@ -27,7 +27,7 @@ final class PostSourceModel
      * @param \DateTimeImmutable     $modifiedAt      post_modified_gmt as UTC instant
      * @param list<int>              $categoryIds     term IDs from the 'category' taxonomy
      * @param list<int>              $tagIds          term IDs from the 'post_tag' taxonomy (P1B-S3)
-     * @param array<string,string>   $meta            post meta key→value (string values; cast at extraction)
+     * @param array<string,mixed>   $meta            post meta key→value (string values; cast at extraction)
      * @param int                    $featuredMediaId attachment ID of the featured image
      *                                                (0 = none); soft reference, ADR-013
      */

@@ -33,7 +33,7 @@ final class WpContentLoaderImpl implements WpContentLoader
     }
 
     /**
-     * @return array<string,string>
+     * @return array<string,mixed>
      */
     public function loadPostMeta(int $postId): array
     {
@@ -45,9 +45,16 @@ final class WpContentLoaderImpl implements WpContentLoader
 
         $out = [];
         foreach ($raw as $key => $values) {
-            // get_post_meta() returns each key as an array of values; take the first scalar.
+            // get_post_meta() returns each key as an array of values; take the first.
             $value = is_array($values) ? ($values[0] ?? '') : $values;
-            $out[(string) $key] = (string) $value;
+
+            // P1B-S4: the all-meta form of get_post_meta() does NOT unserialize — a documented
+            // WordPress quirk (only the single-key form does). Without this, every structured ACF
+            // value (repeater, gallery, checkbox, relationship) reached the projection as a raw
+            // PHP-serialized string like `a:2:{i:0;s:1:"a";…}` and was published verbatim.
+            // maybe_unserialize() is WordPress's own function and this class is the WP boundary,
+            // so it belongs here rather than in an extractor.
+            $out[(string) $key] = maybe_unserialize($value);
         }
 
         return $out;
