@@ -19,6 +19,28 @@ final class MetricsProviderTest extends TestCase
         self::assertSame('metrics', $provider->key());
     }
 
+    /**
+     * ADR-054 §6 makes worker_count a WINDOWED reading. The regression it guards: an unwindowed
+     * count is a tally of cycle executions (each cycle mints a fresh UUIDv7 — DECISION X (1)), so
+     * it climbs for the life of the install; a single-site console reported "22 workers" after 22
+     * cycles. Reading it off workerHeartbeats() would be worse still — that is the capped display
+     * read, so it would report the cap.
+     */
+    public function test_worker_count_is_the_windowed_heartbeat_count_not_the_display_read(): void
+    {
+        $displayRows = array_fill(0, 25, $this->workerRow());
+
+        $conn = (new ScriptedReaderConnection())
+            ->on('recent_heartbeats', [['recent_heartbeats' => '3']])
+            ->on('GROUP BY worker_type', [['worker_type' => 'processing', 'c' => '6']])
+            ->on('AVG(EXTRACT', [['avg_secs' => '1.5']])
+            ->on('worker_heartbeats', $displayRows);
+
+        $by = $this->byName((new MetricsProvider(new OperationsQueryReader($conn), 300, 60))->samples());
+
+        self::assertSame(3, $by['worker_count']->value, 'the windowed count, not the 25 display rows');
+    }
+
     public function test_samples_are_derived_point_in_time(): void
     {
         $conn = (new ScriptedReaderConnection())
@@ -27,6 +49,7 @@ final class MetricsProviderTest extends TestCase
             ->on('FROM system.dead_letter_jobs WHERE replayed_at IS NOT NULL', [['c' => '3']])
             ->on('FROM system.dead_letter_jobs', [['c' => '5']])
             // Cycle metrics (matched before the plain worker_heartbeats needle):
+            ->on('recent_heartbeats', [['recent_heartbeats' => '2']])
             ->on('GROUP BY worker_type', [['worker_type' => 'processing', 'c' => '6']])
             ->on('AVG(EXTRACT', [['avg_secs' => '1.5']])
             ->on('worker_heartbeats', [$this->workerRow(), $this->workerRow()])
@@ -40,11 +63,11 @@ final class MetricsProviderTest extends TestCase
         self::assertContainsOnlyInstancesOf(MetricSample::class, $samples);
         self::assertSame(5, $by['queue_depth']->value);
         self::assertSame(5, $by['dlq_depth']->value);
-        // One distinct stage ('processing') heartbeated in the window. Deliberately NOT the two
-        // heartbeat rows the scripted connection returns: each ADR-054 cycle mints a fresh
-        // worker_id, so a row count is a tally of cycles, not of live components.
-        self::assertSame(1, $by['worker_count']->value);
-        self::assertSame('stages', $by['worker_count']->unit);
+        // ADR-054 §6: rows that heartbeated within the FRESHNESS window, counted in the database.
+        // Deliberately not derived from workerHeartbeats() — that is the console's display read
+        // (newest-first, capped), so its length would report the cap rather than the population.
+        self::assertSame(2, $by['worker_count']->value);
+        self::assertSame('cycles', $by['worker_count']->unit);
         self::assertSame(2, $by['replay_pending']->value);
         self::assertSame(3, $by['replay_completed']->value);
         self::assertSame(1, $by['reconciliation_backlog']->value);

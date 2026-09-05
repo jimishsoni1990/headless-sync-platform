@@ -19,9 +19,9 @@ use HSP\Core\Operations\Diagnostics\OperationsQueryReader;
  * Sample set (all point-in-time):
  *   queue_depth              — available/claimable jobs now.
  *   dlq_depth                — dead-lettered rows now (permanent audit rows — DECISION S).
- *   worker_count             — distinct processing STAGES that heartbeated in the trailing window
- *                              (ADR-054 §6: components that are live now, NOT daemons and NOT a
- *                              tally of cycles — DECISION P/X). Cycles run is cycles_completed.
+ *   worker_count             — processing-component rows that heartbeated within the FRESHNESS
+ *                              window (ADR-054 §6 reinterpretation: cycles/stages that ran
+ *                              recently, NOT a live-daemon population — DECISION P/X).
  *   oldest_pending_age       — age of the oldest available job now (seconds); omitted when empty.
  *   processing_rate          — jobs completed in the trailing window, per minute.
  *   replay_pending           — DLQ rows not yet replayed (replayed_at IS NULL) now.
@@ -46,6 +46,9 @@ final class MetricsProvider implements MetricsProviderInterface
     public function __construct(
         private readonly OperationsQueryReader $reader,
         private readonly int $processingRateWindowSeconds,
+        /** ADR-054 §6 freshness window for worker_count — the same threshold the health and
+         *  worker-status providers use, so every console surface agrees on "recent". */
+        private readonly int $heartbeatFreshnessSeconds = 60,
     ) {}
 
     public function key(): string
@@ -59,17 +62,17 @@ final class MetricsProvider implements MetricsProviderInterface
         $samples = [
             new MetricSample('queue_depth', $this->reader->queueDepth(), 'jobs'),
             new MetricSample('dlq_depth', $this->reader->deadLetterDepth(), 'jobs'),
-            // Distinct processing STAGES that heartbeated in the window — not a row count.
-            // workerHeartbeats() is the console's display read: it is ordered newest-first and
-            // capped, so counting it would report the cap, and before that cap it counted every
-            // cycle ever run (one row per cycle under ADR-054 — DECISION X (1)), which is how a
-            // single-site install came to report "22 workers". cyclesCompletedByType() is already
-            // windowed and keyed by worker_type, so its key count is the live-component count with
-            // no extra query. How many cycles ran stays the separate cycles_completed sample.
+            // ADR-054 §6, verbatim: processing-component rows that heartbeated within the
+            // FRESHNESS window. Previously this counted workerHeartbeats() — the display read,
+            // which is newest-first and capped (so its length reports the cap) and which before
+            // that cap returned every row in the table. Since each cycle mints a fresh UUIDv7
+            // (DECISION X (1)), an unwindowed count is a tally of cycles ever run: a single-site
+            // install reported "22 workers". Counting in the window is what makes the number mean
+            // "ran recently" and keeps it bounded by cadence rather than by uptime.
             new MetricSample(
                 'worker_count',
-                count($this->reader->cyclesCompletedByType($this->processingRateWindowSeconds)),
-                'stages',
+                $this->reader->recentHeartbeatCount($this->heartbeatFreshnessSeconds),
+                'cycles',
             ),
             new MetricSample(
                 'processing_rate',

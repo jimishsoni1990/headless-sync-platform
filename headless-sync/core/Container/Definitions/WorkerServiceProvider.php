@@ -89,6 +89,10 @@ final class WorkerServiceProvider extends ServiceProvider
             OperationalMetricsQuery::class,
             fn (Container $c) => new OperationalMetricsQuery(
                 $c->get(DatabaseConnectionInterface::class),
+                // ADR-054 §6 freshness window for worker_count — the same config value the
+                // console's health/worker-status providers use, so both surfaces agree on what
+                // "recent" means. No hardcoded cadence at the call site (DECISION R precedent).
+                (int) ($this->config['worker']['heartbeat']['offline_after_seconds'] ?? 60),
             ),
         );
 

@@ -150,6 +150,32 @@ final class OperationsQueryReader
         return $out;
     }
 
+    /**
+     * Processing-component rows that heartbeated within the freshness window.
+     *
+     * The ADR-054 §6 worker_count basis. Counted in the database rather than by measuring
+     * workerHeartbeats(), which is the console's DISPLAY read — newest-first and capped, so its
+     * length reports the cap, not the population.
+     */
+    public function recentHeartbeatCount(int $windowSeconds): int
+    {
+        if ($windowSeconds <= 0) {
+            return 0;
+        }
+
+        // Aliased `recent_heartbeats` rather than the usual `c`: several reader queries are plain
+        // COUNT(*)s over different tables, and a distinct alias keeps them individually
+        // addressable when a test scripts results by SQL substring.
+        $rows = $this->conn->query(
+            'SELECT COUNT(*) AS recent_heartbeats
+             FROM   system.worker_heartbeats
+             WHERE  last_heartbeat_at >= NOW() - make_interval(secs => $1)',
+            [$windowSeconds],
+        );
+
+        return (int) ($rows[0]['recent_heartbeats'] ?? 0);
+    }
+
     // -------------------------------------------------------------------------
     // Cycle metrics (ADR-054 §17/§27) — derived on demand from per-cycle heartbeat rows
     // -------------------------------------------------------------------------

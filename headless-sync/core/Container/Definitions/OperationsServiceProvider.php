@@ -166,7 +166,15 @@ final class OperationsServiceProvider extends ServiceProvider
 
         $container->singleton(
             MetricsProvider::class,
-            fn (Container $c) => new MetricsProvider($c->get(OperationsQueryReader::class), $rateWindow),
+            // $offlineAfter is passed twice over: it is the ADR-054 §6 freshness window that
+            // scopes worker_count, and it is the same threshold HealthProvider and
+            // WorkerStatusProvider judge staleness by — one definition of "recent" across the
+            // whole console.
+            fn (Container $c) => new MetricsProvider(
+                $c->get(OperationsQueryReader::class),
+                $rateWindow,
+                $offlineAfter,
+            ),
         );
 
         // --- OPSC-S2 System Information + Module Inspector (diagnostics services) --------

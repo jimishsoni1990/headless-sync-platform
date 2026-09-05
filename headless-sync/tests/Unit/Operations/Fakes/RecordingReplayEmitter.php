@@ -22,6 +22,15 @@ final class RecordingReplayEmitter implements ReplayEmitterInterface
     /** @var array<int, array{aggregate_type:string, aggregate_id:string, correlation_id:string, causation_id:string}> */
     public array $emitted = [];
 
+    /**
+     * Aggregate ids to treat as absent from WordPress, so the emit produces a TOMBSTONE
+     * (`content.<type>.deleted`) rather than a reprojection — what a real emitter does for an
+     * aggregate that no longer exists, and equally what a mistyped id produces.
+     *
+     * @var list<string>
+     */
+    public array $absentAggregateIds = [];
+
     /** @return string[] */
     public function getSupportedAggregateTypes(): array
     {
@@ -41,10 +50,12 @@ final class RecordingReplayEmitter implements ReplayEmitterInterface
             'causation_id'   => $causationId,
         ];
 
+        $action = in_array($aggregateId, $this->absentAggregateIds, true) ? 'deleted' : 'updated';
+
         return new SyntheticReplayEvent(
             aggregateType: $aggregateType,
             aggregateId: $aggregateId,
-            eventType: "content.{$aggregateType}.updated",
+            eventType: "content.{$aggregateType}.{$action}",
             correlationId: $correlationId,
             causationId: $causationId,
         );

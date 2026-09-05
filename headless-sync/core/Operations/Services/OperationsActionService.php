@@ -131,10 +131,36 @@ final class OperationsActionService
     {
         $count = $r->count();
 
+        // Say when a replay produced TOMBSTONES rather than reprojections.
+        //
+        // Replay reproduces current WordPress state, so an aggregate that is absent there emits
+        // `<domain>.<type>.deleted` — correct WordPress-wins behaviour (Rule 1), and the way a
+        // missed delete gets repaired. But it is also exactly what a mistyped aggregate_id
+        // produces, and "re-emitted 1 event(s)" reads as success either way: an operator who
+        // fat-fingers an id in the console's Replay form is told the entity was replayed when the
+        // platform has simply confirmed it does not exist. Naming the tombstones makes the two
+        // outcomes distinguishable without blocking the legitimate one.
+        $tombstones = 0;
+        foreach ($r->emitted as $event) {
+            if (str_ends_with((string) ($event['event_type'] ?? ''), '.deleted')) {
+                $tombstones++;
+            }
+        }
+
+        $summary = sprintf('Replay (%s): re-emitted %d event(s).', $mode, $count);
+        if ($tombstones > 0) {
+            $summary .= sprintf(
+                ' %d of them %s a deletion — that aggregate is absent from WordPress'
+                . ' (check the id if you did not expect this).',
+                $tombstones,
+                $tombstones === 1 ? 'is' : 'are',
+            );
+        }
+
         return new ActionResult(
             action: self::ACTION_REPLAY,
             ok: true,
-            summary: sprintf('Replay (%s): re-emitted %d event(s).', $mode, $count),
+            summary: $summary,
             count: $count,
             detail: [
                 'mode'           => $mode,

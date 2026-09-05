@@ -186,9 +186,28 @@ final class OperabilityValidationTest extends TestCase
         self::assertContains($stalledWorkerId, $staleIds, 'the stalled cycle is the one flagged');
         self::assertNotContains($healthyWorkerId, $staleIds, 'the fresh cycle is not flagged');
 
-        // The derived worker_count metric (DECISION Q) reports both workers as visible.
-        $metrics = new OperationalMetricsQuery($this->db);
-        self::assertSame(2, $metrics->snapshot()['worker_count'], 'worker health is visible via the derived metrics surface');
+        // The derived worker_count metric (DECISION Q) surfaces the same picture, scoped to the
+        // ADR-054 §6 FRESHNESS WINDOW: "the count of distinct processing-component rows that
+        // heartbeated within the freshness window (i.e. how many cycles/stages ran recently), not
+        // a live-daemon population". Two rows exist here, but only the fresh cycle is recent — so
+        // the ratified reading is 1, and the stalled cycle's exclusion is the metric AGREEING with
+        // the stall detection above rather than restating a row count.
+        //
+        // This previously asserted 2, which only held while worker_count was an unwindowed
+        // COUNT(*) — a daemon-era reading (both "workers" exist) that ADR-054 replaced. Unwindowed,
+        // the figure also only ever climbed, since each cycle mints a fresh UUIDv7
+        // (DECISION X (1)): a single-site install reported "22 workers" after 22 cycles.
+        $metrics = new OperationalMetricsQuery($this->db, $cycleSeconds);
+        self::assertSame(
+            1,
+            $metrics->snapshot()['worker_count'],
+            'worker health is visible via the derived metrics surface, scoped to the freshness window',
+        );
+
+        // And the window is what does the scoping: widened past the stalled row's age, both
+        // cycles count — so the metric is bounded by cadence, not by how long the site has run.
+        $wide = new OperationalMetricsQuery($this->db, ($cycleSeconds + 3) * 10);
+        self::assertSame(2, $wide->snapshot()['worker_count'], 'a wider window includes the stalled cycle');
     }
 
     // =========================================================================

@@ -82,6 +82,41 @@ final class OperationsActionServiceTest extends TestCase
         self::assertSame('42', $this->emitter->emitted[0]['aggregate_id']);
     }
 
+    /**
+     * Replay reproduces current WordPress state, so an absent aggregate emits a tombstone — right
+     * for repairing a missed delete, and identical to what a mistyped aggregate_id produces. The
+     * plain "re-emitted 1 event(s)" summary read as success in both cases, telling an operator who
+     * fat-fingered an id in the console's Replay form that the entity had been replayed. The
+     * emission stays (blocking it would break the legitimate repair); the report must distinguish.
+     */
+    public function test_replay_summary_names_tombstones_so_a_mistyped_id_is_visible(): void
+    {
+        $this->emitter->absentAggregateIds = ['99999'];
+
+        $result = $this->service->execute(OperationsActionService::ACTION_REPLAY, [
+            'mode'           => 'entity',
+            'aggregate_type' => 'post',
+            'aggregate_id'   => '99999',
+        ]);
+
+        self::assertTrue($result->ok, 'a tombstone is a valid outcome, not a failure');
+        self::assertSame(1, $result->count);
+        self::assertStringContainsString('1 of them is a deletion', $result->summary);
+        self::assertStringContainsString('absent from WordPress', $result->summary);
+    }
+
+    /** A normal reprojection says nothing about deletions — the clause is not boilerplate. */
+    public function test_replay_summary_omits_the_tombstone_clause_for_a_live_aggregate(): void
+    {
+        $result = $this->service->execute(OperationsActionService::ACTION_REPLAY, [
+            'mode'           => 'entity',
+            'aggregate_type' => 'post',
+            'aggregate_id'   => '42',
+        ]);
+
+        self::assertStringNotContainsString('deletion', $result->summary);
+    }
+
     public function test_replay_range_delegates_to_the_replay_service(): void
     {
         // system.events discovery returns two distinct aggregates in the window.
