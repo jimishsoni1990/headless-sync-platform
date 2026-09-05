@@ -1,7 +1,7 @@
 # Development Roadmap & Platform Evolution Strategy
 
 **Project:** Headless Sync Platform (HSP)
-**Version:** 1.1
+**Version:** 1.2
 **Status:** Approved
 **State:** Frozen
 
@@ -10,6 +10,13 @@
 below — the Scalability Validation criterion "Multiple Worker Processes" (now overlapping cron
 cycles / concurrent claimants) and the Operations Console "Restart Workers" note. Roadmap phases
 and gate criteria are otherwise unchanged.
+
+**Amended by DECISION Y (2026-09-05; applied 2026-09-05).** **PostgreSQL Search is removed from
+the §7 Phase 1B deliverables** and defers to **Phase 5 — Search Expansion (§14)**, which already
+states PostgreSQL Search remains supported; the §7 "Search Queries" validation item moves with
+it. The **§17 Search Roadmap ordering is unchanged** — PostgreSQL Search still precedes the
+provider contract and OpenSearch/Typesense; only its phase placement moved. Superseded §7
+entries are retained under a banner, not deleted. Nothing else in this document changes.
 
 **Depends On:**
 
@@ -395,6 +402,15 @@ infrastructure-control action exists.
 
 # 7. Phase 1B — Content Enhancement
 
+> **Amended by DECISION Y (2026-09-05; applied 2026-09-05).** **PostgreSQL Search is NOT a
+> Phase 1B deliverable** — it defers to **Phase 5 — Search Expansion** (§14), which already
+> states PostgreSQL Search remains supported. The **§17 Search Roadmap ordering is unchanged**
+> (PostgreSQL Search still precedes the provider contract and OpenSearch/Typesense); only its
+> phase placement moved. The superseded entries are retained below under this banner rather
+> than deleted. Phase 1B is: **Featured Images, Media Synchronization, Tags, Basic ACF,
+> Pagination.** Authority: `docs/ARCHITECTURE_DECISIONS.md` DECISION Y (v1.32) — that document
+> wins on conflict.
+
 ## Objective
 
 Expand content capabilities without introducing commerce complexity.
@@ -413,7 +429,11 @@ Tags
 Basic ACF
 
 Pagination
+```
 
+**Superseded by DECISION Y — deferred to Phase 5 (§14), retained as history:**
+
+```text
 PostgreSQL Search
 ```
 
@@ -426,9 +446,13 @@ Structured Content
 
 Media Relationships
 
-Search Queries
-
 Pagination Workflows
+```
+
+**Superseded by DECISION Y — validated in Phase 5 (§14), retained as history:**
+
+```text
+Search Queries
 ```
 
 ---

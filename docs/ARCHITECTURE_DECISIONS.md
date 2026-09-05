@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.31  
+Version: 1.32  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.32 | 2026-09-05 | **DECISION Y — PostgreSQL full-text search deferred from Phase 1B to Phase 5 (P1B-S0, docs-only; product decision 2026-09-05).** Phase 1B — Content Enhancement is **featured images, media synchronization, tags, basic ACF, pagination**; **search is NOT a Phase 1B deliverable** and lands in **Phase 5 — Search Expansion** (Doc 11 §14), which already states PostgreSQL Search remains supported. **Doc 11 → v1.2**: the "PostgreSQL Search" deliverable and the "Search Queries" validation item in §7 are retained under an explicit DECISION Y banner (superseded text is bannered, never deleted — DOC-RECON-S1 precedent). **§17 Search Roadmap ordering is unchanged** (PostgreSQL Search still precedes the provider contract and OpenSearch/Typesense — only the phase placement moved), and **Doc 9 §14/§15, Doc 3 §27 and the Doc 5/6/7 search-projection references are untouched** — all Phase 5+ material. No Phase 1B session may introduce a `tsvector` column, full-text index, or search endpoint. No schema change, no contract change, no code change. |
 | 1.31 | 2026-09-05 | **DECISION Z — lazy PostgreSQL connections at the container boundary (LAZYPG-S1, interstitial before P1B-S0).** Resolves the ONB-S1b "lazy-connection ruling pre-Phase-1B" carry-forward. All four runtime PG handles (delivery, relay, queue-claim, dispatcher) previously called `pg_connect()` **inside their singleton factory**, so merely RESOLVING a binding threw a raw `\RuntimeException` when PostgreSQL was unreachable or unconfigured; because `rest_api_init` fires on **every REST request to the site** (`wp/v2` and the block editor included) and building the content registrar resolves the query providers, an unreachable PostgreSQL fatalled **every REST request**, not just `hsp/v1`. Each factory now hands a **connector `\Closure`** to its wrapper; `PostgresDatabaseConnection` accepts a handle **or** a connector, invokes it at most once on first real use, memoizes it, and translates connect failure to `DatabaseException` at that boundary (onward translation to `OutboxWriteException`/`QueueException` unchanged — DECISION E v1.6); `rollback()` on a never-opened connection is a no-op. Mirrors the existing `MysqliOutboxConnection` connector hotfix on the capture path. **Still four handles with their existing flags** — FORCE_NEW on delivery/queue/dispatcher, none on relay: DECISION K isolation and DECISION L Ruling 0 topology untouched. No fifth handle, no new `pg_*` wrapper, no persistence, no schema change, no contract change. DECISION **Y** is reserved for the P1B-S0 Phase-1B search deferral. |
 | 1.30 | 2026-09-05 | **ADR-054 sibling-document reconciliation applied (DOC-RECON-S1, docs-only) — closes FLAG-DOC8V2-1. No new ruling, no ADR re-opened.** The already-ratified ADR-054 wording was propagated into the sibling frozen docs that still asserted the superseded daemon/CLI-worker execution model: **Doc 4 → v1.1** (§19 heartbeat = cycle freshness; §20 ADR-024 status → **SUPERSEDED by ADR-054**, original text retained verbatim as history; §29 scaling = overlapping cycles; §30 checklist), **Doc 10 → v1.1** (§4/§5 topologies, §7 rewritten WP-Cron-only, §20 `uptime` removed, §23 "Worker Offline" → "Processing Stalled", §24 availability target → processing freshness, §26 runbook rename, §27 systemd/Supervisor/worker-launch assets removed, §28 shared hosting without CLI/process supervision promoted to first-class supported), **Doc 11 → v1.1** (Doc-8 title, Scalability "Multiple Worker Processes" → concurrent claimants, "Restart Workers" note). CLAUDE.md was already clean (2026-07-20 rewrite). Superseded text is retained under explicit banners, never deleted; ADR-054 remains the single authority. See the APPLIED note under the ADR-054 Conflict Report. |
 | 1.29 | 2026-07-20 | **ADR-055 (f)(2) meta-schema gate moved to the Node ajv toolchain — architect ruling "D" 2026-07-20 (OAPI-S1), verified against live reproductions.** `opis/json-schema` **2.6.0 is REMOVED from `require-dev`**: it has two reproduced JSON Schema 2020-12 conformance defects that make it unable to validate real OpenAPI 3.1 documents against the official meta-schema — **(i)** it does not index the `$dynamicAnchor: "meta"`, so `$dynamicRef "#meta"` mis-resolves to the document root (every Schema Object slot is validated as if it were a whole OpenAPI document); **(ii)** `unevaluatedProperties` reports schema-declared property names that are **absent** from the instance. The OAI `schema-base` variant does **not** avoid `$dynamicRef` (it overrides the anchor — defect (i) persists), and **no conformant 2020-12 PHP validator exists**. The **(f)(2) gate therefore runs via ajv in the Node toolchain** (already a sanctioned dev/CI dependency — DECISION W (a)), differential-verified against a conformant reference implementation on valid and invalid documents. **Pinned fixture:** `tests/fixtures/openapi-3.1-meta-schema-pinned.json` — the official OAI 3.1 meta-schema (`$id …/2022-10-07`, source tag 3.1.1) with exactly **four semantics-preserving edits** (`$dynamicRef "#meta"` → `$ref "#/$defs/schema"`; equivalent because the fixture validates as its own root resource, so no outer dynamic scope can retarget the anchor). Pinned, **never fetched at test time**. **Gate mechanics:** `tools/openapi-validator/` (committed `package.json` + `package-lock.json`; `node_modules/` gitignored) runs `validate-openapi.mjs` (Ajv2020 + ajv-formats, `strict:false`) over the pinned fixture; the drift guard calls it via `proc_open`, layered over the PHP structural pre-check which stays the fast-fail. **Environment contract:** node available → gate runs; node missing AND `HSP_REQUIRE_NODE_GATE` unset → the meta-schema assertion is **SKIPPED** with a warning naming the env var; `HSP_REQUIRE_NODE_GATE=1` (CI) AND node missing → **FAIL, never skip**. Completeness / exemption / exclusion / non-circularity stay pure PHP. No schema change; no new PG handle / `pg_*` wrapper. |
@@ -1326,6 +1327,43 @@ This decision changes only the credential source. The four FORCE_NEW handles est
 #### Problem statement (retained for context)
 
 `HookWiring::onTransitionPostStatus` previously bailed on every transition whose `$newStatus !== 'publish'`. This dropped four WordPress post-status changes that are not trash operations and are not caught by `wp_trash_post` or `after_delete_post`: `publish → draft`, `publish → pending`, `publish → private`, `publish → future`. The result was a lost sync — a stale published row in the delivery projection with no delete event emitted.
+
+---
+
+### DECISION Y — PostgreSQL Full-Text Search Deferred from Phase 1B to Phase 5
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-09-05 |
+| **Session** | P1B-S0 (Phase 1B planning) |
+| **Authority** | Product decision 2026-09-05 (scope owner); Doc 11 §7 (Phase 1B deliverables), §14 (Phase 5 — Search Expansion), §17 (Search Roadmap); Doc 9 §14/§15 (search architecture, provider-based); Doc 3 §27 (search & indexing strategy) |
+| **Resolves** | The Phase 1B/Phase 5 placement of PostgreSQL full-text search |
+| **Amends** | Doc 11 §7 (v1.1 → v1.2 — "PostgreSQL Search" removed from the Phase 1B deliverable list and from the §7 "Search Queries" validation item); IMPLEMENTATION_PLAN.md §5 Phase 1B/Phase 5 pointers. **Nothing else** |
+
+**Ruling.** **PostgreSQL full-text search is NOT a Phase 1B deliverable.** Phase 1B — Content
+Enhancement is: **featured images, media synchronization, tags, basic ACF, and pagination**.
+Search — the PostgreSQL provider included — is delivered in **Phase 5, Search Expansion**
+(Doc 11 §14), which already states that PostgreSQL Search remains supported.
+
+**Explicitly unchanged.** The **§17 Search Roadmap ordering stands**: PostgreSQL Search still
+comes first, before the search provider contract and any OpenSearch/Typesense provider — only
+its *phase placement* moved. **Doc 9 §14/§15** (`SearchProviderInterface`, provider-based search
+strategy), **Doc 3 §27** (search & indexing strategy, `tsvector`), and the Doc 5/6/7
+search-projection references are **untouched**: they describe Phase 5+ material and were never
+Phase 1B commitments. No search contract, schema, index, migration or endpoint is created,
+renamed, or removed by this decision — Phase 1B simply does not open the topic.
+
+**Why it is recorded rather than edited in.** Doc 11 is frozen and listed "PostgreSQL Search"
+among the Phase 1B deliverables. A scope change against a frozen document requires an explicit
+ruling here (precedence: this document wins), with the superseded line retained under a banner
+in Doc 11 §7 rather than deleted — the same treatment DOC-RECON-S1 applied to the ADR-054
+sibling-document reconciliation.
+
+**Consequence for planning.** The IMPLEMENTATION_PLAN §5b Phase 1B session map authored in
+P1B-S0 contains **no search session**, and no Phase 1B session DoD may introduce a `tsvector`
+column, a full-text index, or a search endpoint. A Phase 1B row that would benefit from search
+must instead rely on the existing DECISION F filters and cursor pagination.
 
 ---
 
