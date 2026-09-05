@@ -53,6 +53,7 @@ use HSP\Tests\Integration\Replay\FakeWpStore;
 use HSP\Tests\Integration\Replay\ReplayReadingLoader;
 use PHPUnit\Framework\TestCase;
 use HSP\Tests\Support\FakeModuleMigration;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * ONB-S2 — First-run backfill on LIVE MySQL + LIVE PostgreSQL (DECISION W (b)/(c)/(d)).
@@ -108,6 +109,9 @@ final class BackfillIntegrationTest extends TestCase
 
         $this->createMysqlSchema();
         $this->createPgsqlSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the featured
+        // image, so any test touching them needs that table + featured_media_id present.
+        ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
 
         // DECISION X (4) Option-C: the worker gate requires the processing cron to be scheduled.
         // Opt the WP-Cron stub into recording and schedule it by default; the block/unblock test

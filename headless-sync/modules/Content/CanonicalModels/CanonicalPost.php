@@ -42,6 +42,7 @@ final class CanonicalPost implements CanonicalModelInterface
         public readonly \DateTimeImmutable $modifiedAt,
         public readonly array $categoryIds,
         public readonly array $meta,
+        public readonly int $featuredMediaId = 0,
     ) {}
 
     public function getSourceId(): int
@@ -53,7 +54,12 @@ final class CanonicalPost implements CanonicalModelInterface
     {
         // Fixed field order (must match the write-side recomputation in P1A-S4 adapters):
         // postId | title | content | excerpt | slug | status | author |
-        // publishedAt(ATOM) | modifiedAt(ATOM) | categoryIds(JSON) | meta(JSON)
+        // publishedAt(ATOM) | modifiedAt(ATOM) | categoryIds(JSON) | meta(JSON) | featuredMediaId
+        //
+        // featuredMediaId is APPENDED (P1B-S2) — order is append-only so the field list stays
+        // readable against its history. It MUST be in the digest: a featured-image change touches
+        // no other field, so without it the recomputed checksum would equal the stored one and
+        // DECISION 3 would suppress the write, silently losing the change.
         // Separator: chr(0) — cannot appear in any field value.
         // categoryIds: sorted ascending — it is a set; insertion order is not meaningful.
         // meta: ksorted recursively — key order from WordPress is not guaranteed stable.
@@ -74,6 +80,7 @@ final class CanonicalPost implements CanonicalModelInterface
             $this->modifiedAt->format(\DateTimeInterface::ATOM),
             json_encode($categoryIds, JSON_UNESCAPED_UNICODE),
             json_encode($meta, JSON_UNESCAPED_UNICODE),
+            (string) $this->featuredMediaId,
         ]));
     }
 }

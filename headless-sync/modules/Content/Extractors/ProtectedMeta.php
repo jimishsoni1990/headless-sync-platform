@@ -29,6 +29,40 @@ namespace HSP\Modules\Content\Extractors;
  */
 final class ProtectedMeta
 {
+    /** WordPress's postmeta key for the featured image (attachment ID). */
+    public const THUMBNAIL_ID = '_thumbnail_id';
+
+    /**
+     * Read the featured-image attachment ID out of raw post meta.
+     *
+     * `_thumbnail_id` is `_`-prefixed, so {@see publicOnly()} strips it — correctly, because the
+     * raw value is WordPress bookkeeping and must not be published as a meta field. The featured
+     * image still has to reach the projection, so it is extracted DELIBERATELY here and carried
+     * as a typed field on the source model rather than smuggled through `meta` (P1B-S2).
+     *
+     * Returns 0 when absent, empty, or not a positive integer — WordPress post IDs start at 1,
+     * so 0 unambiguously means "no featured image".
+     *
+     * @param array<string,mixed> $rawMeta get_post_meta()-style flat map
+     */
+    public static function featuredMediaId(array $rawMeta): int
+    {
+        $value = $rawMeta[self::THUMBNAIL_ID] ?? null;
+
+        if (is_array($value)) {
+            // Some callers hand through the raw get_post_meta() shape (key → list of values).
+            $value = $value[0] ?? null;
+        }
+
+        if ($value === null || ! is_numeric($value)) {
+            return 0;
+        }
+
+        $id = (int) $value;
+
+        return $id > 0 ? $id : 0;
+    }
+
     /**
      * Keep only public meta, with values normalized to string.
      *

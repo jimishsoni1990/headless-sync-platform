@@ -178,11 +178,11 @@ final class PageAdapter implements AdapterInterface
         $this->db->execute(
             'INSERT INTO content.pages
                 (id, source_post_id, source_entity_type, slug, title, content, status,
-                 parent_id, menu_order, published_at, updated_at, deleted_at,
+                 parent_id, menu_order, featured_media_id, published_at, updated_at, deleted_at,
                  checksum, meta_jsonb, created_at, synced_at)
-             VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,
-                     $10::timestamptz,$11::timestamptz,NULL,
-                     $12,$13::jsonb,$14::timestamptz,$15::timestamptz)
+             VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                     $11::timestamptz,$12::timestamptz,NULL,
+                     $13,$14::jsonb,$15::timestamptz,$16::timestamptz)
              ON CONFLICT (source_post_id) DO UPDATE SET
                 slug         = EXCLUDED.slug,
                 title        = EXCLUDED.title,
@@ -190,6 +190,7 @@ final class PageAdapter implements AdapterInterface
                 status       = EXCLUDED.status,
                 parent_id    = EXCLUDED.parent_id,
                 menu_order   = EXCLUDED.menu_order,
+                featured_media_id = EXCLUDED.featured_media_id,
                 published_at = EXCLUDED.published_at,
                 updated_at   = EXCLUDED.updated_at,
                 deleted_at   = NULL,
@@ -206,6 +207,7 @@ final class PageAdapter implements AdapterInterface
                 $model->status,
                 $model->parentId,
                 $model->menuOrder,
+                $model->featuredMediaId,
                 $publishedAt,
                 $updatedAt,
                 $checksum,

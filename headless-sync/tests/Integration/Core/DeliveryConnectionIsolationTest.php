@@ -18,6 +18,7 @@ use HSP\Modules\Content\Transformers\PageTransformer;
 use HSP\Modules\Content\Validation\PageValidator;
 use HSP\Tests\Unit\Content\FakeWpContentLoader;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * Integration proof for DECISION K (v1.11) — Delivery Connection Isolation.
@@ -50,6 +51,9 @@ final class DeliveryConnectionIsolationTest extends TestCase
     {
         $this->testConn = $this->openConnection();
         $this->createSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the featured
+        // image, so any test touching them needs that table + featured_media_id present.
+        ContentSchema::ensureFeaturedMediaSupport($this->testConn);
     }
 
     protected function tearDown(): void
@@ -871,6 +875,7 @@ final class DeliveryConnectionIsolationTest extends TestCase
                 updated_at         TIMESTAMPTZ  NOT NULL,
                 deleted_at         TIMESTAMPTZ  NULL,
                 checksum           VARCHAR(64)  NOT NULL,
+                featured_media_id  BIGINT       NOT NULL DEFAULT 0,
                 meta_jsonb         JSONB        NOT NULL DEFAULT \'{}\'::jsonb,
                 created_at         TIMESTAMPTZ  NOT NULL,
                 synced_at          TIMESTAMPTZ  NOT NULL,

@@ -177,11 +177,11 @@ final class PostAdapter implements AdapterInterface
         $this->db->execute(
             'INSERT INTO content.posts
                 (id, source_post_id, source_entity_type, slug, title, content, excerpt,
-                 status, author, published_at, updated_at, deleted_at,
+                 status, author, featured_media_id, published_at, updated_at, deleted_at,
                  checksum, meta_jsonb, created_at, synced_at)
-             VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,
-                     $10::timestamptz,$11::timestamptz,NULL,
-                     $12,$13::jsonb,$14::timestamptz,$15::timestamptz)
+             VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                     $11::timestamptz,$12::timestamptz,NULL,
+                     $13,$14::jsonb,$15::timestamptz,$16::timestamptz)
              ON CONFLICT (source_post_id) DO UPDATE SET
                 slug         = EXCLUDED.slug,
                 title        = EXCLUDED.title,
@@ -189,6 +189,7 @@ final class PostAdapter implements AdapterInterface
                 excerpt      = EXCLUDED.excerpt,
                 status       = EXCLUDED.status,
                 author       = EXCLUDED.author,
+                featured_media_id = EXCLUDED.featured_media_id,
                 published_at = EXCLUDED.published_at,
                 updated_at   = EXCLUDED.updated_at,
                 deleted_at   = NULL,
@@ -205,6 +206,7 @@ final class PostAdapter implements AdapterInterface
                 $model->excerpt,
                 $model->status,
                 $model->author,
+                $model->featuredMediaId,
                 $publishedAt,
                 $updatedAt,
                 $checksum,

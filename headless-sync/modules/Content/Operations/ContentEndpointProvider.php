@@ -216,6 +216,9 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'published_at' => 'string',
             'updated_at'   => 'string',
             'meta'         => 'object',
+            // Resolved featured image, or null (P1B-S2). Nullable because the reference is soft
+            // (ADR-013): no image set, never projected, or soft-deleted all read as null.
+            'featured_media' => 'object',
         ]);
     }
 
@@ -232,6 +235,9 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'published_at' => 'string',
             'updated_at'   => 'string',
             'meta'         => 'object',
+            // Resolved featured image, or null (P1B-S2). Nullable because the reference is soft
+            // (ADR-013): no image set, never projected, or soft-deleted all read as null.
+            'featured_media' => 'object',
         ]);
     }
 

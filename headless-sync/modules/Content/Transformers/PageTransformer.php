@@ -36,6 +36,7 @@ final class PageTransformer implements TransformerInterface
             publishedAt: $source->publishedAt,
             modifiedAt:  $source->modifiedAt,
             meta:        $source->meta,
+            featuredMediaId: $source->featuredMediaId,
         );
     }
 

@@ -43,6 +43,7 @@ use HSP\Tests\Integration\Replay\FakeWpdb;
 use HSP\Tests\Integration\Replay\FakeWpStore;
 use HSP\Tests\Integration\Replay\ReplayReadingLoader;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * OPS-S3 — Reconciliation MVP (DECISION U): drift detection + WordPress-wins repair via
@@ -90,6 +91,10 @@ final class ReconciliationIntegrationTest extends TestCase
 
         $this->createMysqlSchema();
         $this->createPgsqlSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the
+        // featured image, so any test touching them needs that table plus the
+        // featured_media_id column present.
+        ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
     }
 
     protected function tearDown(): void

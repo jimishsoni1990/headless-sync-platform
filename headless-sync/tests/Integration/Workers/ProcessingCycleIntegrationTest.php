@@ -39,6 +39,7 @@ use HSP\Modules\Content\Validation\PostValidator;
 use HSP\Tests\Integration\Replay\FakeWpStore;
 use HSP\Tests\Integration\Replay\ReplayReadingLoader;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * ADR-054 / Doc 8 v2.0 §29 — WP-Cron Processing Engine cycle behaviours, on LIVE MySQL + PG.
@@ -94,6 +95,10 @@ final class ProcessingCycleIntegrationTest extends TestCase
 
         $this->createMysqlSchema();
         $this->createPgsqlSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the
+        // featured image, so any test touching them needs that table plus the
+        // featured_media_id column present.
+        ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
     }
 
     protected function tearDown(): void

@@ -37,6 +37,7 @@ use HSP\Modules\Content\Migrations\CreateContentPostsMigration;
 use HSP\Modules\Content\Migrations\CreateContentTaxonomiesMigration;
 use HSP\Modules\Content\Migrations\CreateContentEntityTaxonomiesMigration;
 use HSP\Modules\Content\Migrations\CreateContentMediaMigration;
+use HSP\Modules\Content\Migrations\AddFeaturedMediaToContentEntitiesMigration;
 use HSP\Modules\Content\Handlers\CategoryTombstoneHandler;
 use HSP\Modules\Content\Handlers\CategoryUpsertHandler;
 use HSP\Modules\Content\Handlers\MediaTombstoneHandler;
@@ -178,6 +179,7 @@ final class ContentServiceProvider extends ServiceProvider
                         new CreateContentTaxonomiesMigration($pgsql),
                         new CreateContentEntityTaxonomiesMigration($pgsql),
                         new CreateContentMediaMigration($pgsql),
+                        new AddFeaturedMediaToContentEntitiesMigration($pgsql),
                     ];
                 },
             )

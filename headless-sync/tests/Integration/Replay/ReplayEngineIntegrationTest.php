@@ -41,6 +41,7 @@ use HSP\Modules\Content\Validation\PageValidator;
 use HSP\Modules\Content\Validation\PostValidator;
 use HSP\Modules\Content\WpContentLoader;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * OPS-S2 — Replay Engine (DECISION T): entity + date-range replay end-to-end on
@@ -92,6 +93,10 @@ final class ReplayEngineIntegrationTest extends TestCase
 
         $this->createMysqlSchema();
         $this->createPgsqlSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the
+        // featured image, so any test touching them needs that table plus the
+        // featured_media_id column present.
+        ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
     }
 
     protected function tearDown(): void

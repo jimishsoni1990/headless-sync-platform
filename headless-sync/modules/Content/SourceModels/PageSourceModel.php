@@ -26,6 +26,8 @@ final class PageSourceModel
      * @param \DateTimeImmutable     $publishedAt  post_date_gmt as UTC instant
      * @param \DateTimeImmutable     $modifiedAt   post_modified_gmt as UTC instant
      * @param array<string,string>   $meta         post meta key→value (string values)
+     * @param int                    $featuredMediaId attachment ID of the featured image
+     *                                                (0 = none); soft reference, ADR-013
      */
     public function __construct(
         public readonly int $postId,
@@ -38,5 +40,6 @@ final class PageSourceModel
         public readonly \DateTimeImmutable $publishedAt,
         public readonly \DateTimeImmutable $modifiedAt,
         public readonly array $meta,
+        public readonly int $featuredMediaId = 0,
     ) {}
 }

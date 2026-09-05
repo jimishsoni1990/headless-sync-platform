@@ -10,6 +10,7 @@ use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * Integration tests for the REST Delivery API query providers.
@@ -43,6 +44,9 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->pgConn = $this->connectPgsql();
         $this->db     = new PostgresDatabaseConnection($this->pgConn);
         $this->createSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the featured
+        // image, so any test touching them needs that table + featured_media_id present.
+        ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
     }
 
     protected function tearDown(): void
@@ -505,6 +509,7 @@ final class DeliveryApiIntegrationTest extends TestCase
                 updated_at       TIMESTAMPTZ  NOT NULL,
                 deleted_at       TIMESTAMPTZ  NULL,
                 checksum         VARCHAR(64)  NOT NULL DEFAULT \'\',
+                featured_media_id BIGINT     NOT NULL DEFAULT 0,
                 meta_jsonb       JSONB        NOT NULL DEFAULT \'{}\',
                 created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                 synced_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -528,6 +533,7 @@ final class DeliveryApiIntegrationTest extends TestCase
                 updated_at       TIMESTAMPTZ  NOT NULL,
                 deleted_at       TIMESTAMPTZ  NULL,
                 checksum         VARCHAR(64)  NOT NULL DEFAULT \'\',
+                featured_media_id BIGINT     NOT NULL DEFAULT 0,
                 meta_jsonb       JSONB        NOT NULL DEFAULT \'{}\',
                 created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                 synced_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),

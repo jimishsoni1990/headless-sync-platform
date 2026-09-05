@@ -34,6 +34,32 @@ final class PostQueryProvider implements QueryProviderInterface
     private const DEFAULT_LIMIT = 20;
     private const MAX_LIMIT     = 100;
 
+    /**
+     * Featured image resolution (P1B-S2).
+     *
+     * A LEFT JOIN, deliberately: resolving the featured image per row would turn one listing into
+     * N+1 round-trips, which at the 100,000+ record target is the difference between a page load
+     * and a timeout. One join keeps a listing at exactly ONE query whatever the page size, and it
+     * rides `uq_content_media_source_post_id`, so it stays index-backed.
+     *
+     * featured_media_id is a SOFT reference (ADR-013): no FK, so the join simply finds nothing
+     * when the attachment was never projected, was soft-deleted, or the entity has no featured
+     * image at all (id 0). All three cases yield NULLs and the Resource emits `featured_media:
+     * null` — never a dangling reference and never a 500.
+     */
+    private const FEATURED_MEDIA_JOIN =
+        'LEFT JOIN content.media fm
+                ON fm.source_post_id = p.featured_media_id
+               AND fm.deleted_at IS NULL';
+
+    /** Entity columns plus the resolved featured-image columns, all `fm_`-prefixed. */
+    private const COLUMNS =
+        'p.id, p.slug, p.title, p.content, p.excerpt, p.status, p.author,
+                    p.published_at, p.updated_at, p.meta_jsonb, p.featured_media_id,
+                    fm.slug AS fm_slug, fm.url AS fm_url, fm.alt_text AS fm_alt_text,
+                    fm.mime_type AS fm_mime_type, fm.width AS fm_width, fm.height AS fm_height,
+                    fm.sizes_jsonb AS fm_sizes_jsonb';
+
     public function __construct(
         private readonly DatabaseConnectionInterface $db,
     ) {}
@@ -97,12 +123,14 @@ final class PostQueryProvider implements QueryProviderInterface
 
         $params[] = $limit + 1;
         $fetchSql  = sprintf(
-            'SELECT p.id, p.slug, p.title, p.content, p.excerpt, p.status, p.author,
-                    p.published_at, p.updated_at, p.meta_jsonb
+            'SELECT %s
              FROM content.posts p
+             %s
              WHERE %s
              ORDER BY p.published_at DESC, p.id DESC
              LIMIT $%d',
+            self::COLUMNS,
+            self::FEATURED_MEDIA_JOIN,
             $whereClause,
             count($params)
         );
@@ -126,11 +154,15 @@ final class PostQueryProvider implements QueryProviderInterface
     public function findBySlug(string $slug): ?array
     {
         $rows = $this->db->query(
-            "SELECT id, slug, title, content, excerpt, status, author,
-                    published_at, updated_at, meta_jsonb
-             FROM content.posts
-             WHERE slug = \$1 AND deleted_at IS NULL AND status = 'publish'
+            sprintf(
+                "SELECT %s
+             FROM content.posts p
+             %s
+             WHERE p.slug = \$1 AND p.deleted_at IS NULL AND p.status = 'publish'
              LIMIT 1",
+                self::COLUMNS,
+                self::FEATURED_MEDIA_JOIN,
+            ),
             [$slug]
         );
         return $rows[0] ?? null;

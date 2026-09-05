@@ -40,6 +40,7 @@ final class CanonicalPage implements CanonicalModelInterface
         public readonly \DateTimeImmutable $publishedAt,
         public readonly \DateTimeImmutable $modifiedAt,
         public readonly array $meta,
+        public readonly int $featuredMediaId = 0,
     ) {}
 
     public function getSourceId(): int
@@ -51,7 +52,11 @@ final class CanonicalPage implements CanonicalModelInterface
     {
         // Fixed field order (must match the write-side recomputation in P1A-S4 adapters):
         // postId | title | content | slug | status | parentId | menuOrder |
-        // publishedAt(ATOM) | modifiedAt(ATOM) | meta(JSON)
+        // publishedAt(ATOM) | modifiedAt(ATOM) | meta(JSON) | featuredMediaId
+        //
+        // featuredMediaId is APPENDED (P1B-S2) — order is append-only. It MUST be in the digest:
+        // a featured-image change touches no other field, so without it the recomputed checksum
+        // would equal the stored one and DECISION 3 would suppress the write, losing the change.
         // Separator: chr(0) — cannot appear in any field value.
         // meta: ksorted — key order from WordPress is not guaranteed stable.
         // Encoded with json_encode(JSON_UNESCAPED_UNICODE); no PHP serialize().
@@ -68,6 +73,7 @@ final class CanonicalPage implements CanonicalModelInterface
             $this->publishedAt->format(\DateTimeInterface::ATOM),
             $this->modifiedAt->format(\DateTimeInterface::ATOM),
             json_encode($meta, JSON_UNESCAPED_UNICODE),
+            (string) $this->featuredMediaId,
         ]));
     }
 }

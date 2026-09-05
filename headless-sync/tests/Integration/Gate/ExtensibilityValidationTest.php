@@ -17,6 +17,7 @@ use HSP\Modules\Content\SourceModels\PostSourceModel;
 use HSP\Modules\Content\Transformers\PostTransformer;
 use HSP\Tests\Unit\Content\Adapters\FakeAdapterEvent;
 use PHPUnit\Framework\TestCase;
+use HSP\Tests\Support\ContentSchema;
 
 /**
  * GATE-S4 — Architecture Validation Gate: Extensibility Validation.
@@ -73,6 +74,10 @@ final class ExtensibilityValidationTest extends TestCase
         $this->repoRoot = $this->resolveRepoRoot();
 
         $this->createPgsqlSchema();
+        // P1B-S2: the content query providers LEFT JOIN content.media to resolve the
+        // featured image, so any test touching them needs that table plus the
+        // featured_media_id column present.
+        ContentSchema::ensureFeaturedMediaSupport($this->pgConn);
     }
 
     protected function tearDown(): void

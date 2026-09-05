@@ -27,6 +27,8 @@ final class PostSourceModel
      * @param \DateTimeImmutable     $modifiedAt      post_modified_gmt as UTC instant
      * @param list<int>              $categoryIds     term IDs from the 'category' taxonomy
      * @param array<string,string>   $meta            post meta key→value (string values; cast at extraction)
+     * @param int                    $featuredMediaId attachment ID of the featured image
+     *                                                (0 = none); soft reference, ADR-013
      */
     public function __construct(
         public readonly int $postId,
@@ -40,5 +42,6 @@ final class PostSourceModel
         public readonly \DateTimeImmutable $modifiedAt,
         public readonly array $categoryIds,
         public readonly array $meta,
+        public readonly int $featuredMediaId = 0,
     ) {}
 }

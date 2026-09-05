@@ -85,7 +85,10 @@ final class CanonicalPostTest extends TestCase
     {
         // Pinned digest for the exact input below — computed once and locked.
         // Field order: postId|title|content|excerpt|slug|status|author|
-        //              publishedAt(ATOM)|modifiedAt(ATOM)|categoryIds(JSON sorted asc)|meta(JSON ksorted)
+        //              publishedAt(ATOM)|modifiedAt(ATOM)|categoryIds(JSON sorted asc)|meta(JSON ksorted)|featuredMediaId
+        // featuredMediaId appended by P1B-S2 — a featured-image change must move the digest,
+        // or DECISION 3 suppresses the write. Re-pinned by recomputing the algorithm, not by
+        // copying the new output.
         // Separator: chr(0). Arrays: json_encode with JSON_UNESCAPED_UNICODE.
         $pub = new \DateTimeImmutable('2024-03-01 09:00:00', new \DateTimeZone('UTC'));
         $mod = new \DateTimeImmutable('2024-03-02 10:00:00', new \DateTimeZone('UTC'));
@@ -103,7 +106,7 @@ final class CanonicalPostTest extends TestCase
             meta:        ['key' => 'val'],
         );
         $this->assertSame(
-            'bb16c1752b439914af06305934cffd96308c7e25803f241e8b8991af4969de96',
+            'c7e94d92fcd8c41c8cfa25ba815d15c4ee4e1826f0078eef24991a07b786a795',
             $m->getChecksum(),
         );
     }
@@ -112,7 +115,7 @@ final class CanonicalPostTest extends TestCase
     {
         // Two instances identical in value but with categoryIds and meta keys in different
         // input order must produce the same checksum — order is not semantically meaningful
-        // for sets and associative maps. Pinned digest: 96de8d80...
+        // for sets and associative maps. Pinned digest: c1cd4749... (re-pinned by P1B-S2 — featuredMediaId appended)
         $pub = new \DateTimeImmutable('2024-03-01 09:00:00', new \DateTimeZone('UTC'));
         $mod = new \DateTimeImmutable('2024-03-02 10:00:00', new \DateTimeZone('UTC'));
         $base = [
@@ -132,7 +135,7 @@ final class CanonicalPostTest extends TestCase
         );
         $this->assertSame($a->getChecksum(), $b->getChecksum());
         $this->assertSame(
-            '96de8d8059ea8f5d0c0808d5a5f973fecca145722c75110a92f6f36b6ceeeb88',
+            'c1cd47491a4a568f83445f4a847c2548dc1af7377bb3773a7413fdedecb8ff0d',
             $a->getChecksum(),
         );
     }

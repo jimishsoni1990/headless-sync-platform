@@ -33,6 +33,35 @@ final class PostResource implements ResourceInterface
             'published_at' => $this->normaliseTimestamp($row['published_at'] ?? null),
             'updated_at'  => $this->normaliseTimestamp($row['updated_at'] ?? null),
             'meta'        => $this->decodeMeta($row['meta_jsonb'] ?? null),
+            'featured_media' => $this->featuredMedia($row),
+        ];
+    }
+
+    /**
+     * Shape the LEFT JOIN-ed featured image, or null.
+     *
+     * Null covers all three no-image cases identically, which is what keeps consumers simple: no
+     * featured image set, the attachment never projected, or the attachment soft-deleted. A soft
+     * reference (ADR-013) can always dangle; the contract answers null rather than leaking a bare
+     * id the consumer cannot resolve (Rule 6).
+     *
+     * @param array<string,mixed> $row
+     * @return array<string,mixed>|null
+     */
+    private function featuredMedia(array $row): ?array
+    {
+        if (! isset($row['fm_url']) || (string) $row['fm_url'] === '') {
+            return null;
+        }
+
+        return [
+            'slug'      => (string) ($row['fm_slug'] ?? ''),
+            'url'       => (string) $row['fm_url'],
+            'alt_text'  => (string) ($row['fm_alt_text'] ?? ''),
+            'mime_type' => (string) ($row['fm_mime_type'] ?? ''),
+            'width'     => (int) ($row['fm_width'] ?? 0),
+            'height'    => (int) ($row['fm_height'] ?? 0),
+            'sizes'     => $this->decodeMeta($row['fm_sizes_jsonb'] ?? null),
         ];
     }
 

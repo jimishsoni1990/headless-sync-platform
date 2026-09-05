@@ -81,7 +81,10 @@ final class CanonicalPageTest extends TestCase
     {
         // Pinned digest for the exact input below — computed once and locked.
         // Field order: postId|title|content|slug|status|parentId|menuOrder|
-        //              publishedAt(ATOM)|modifiedAt(ATOM)|meta(JSON ksorted)
+        //              publishedAt(ATOM)|modifiedAt(ATOM)|meta(JSON ksorted)|featuredMediaId
+        // featuredMediaId appended by P1B-S2 — a featured-image change must move the digest,
+        // or DECISION 3 suppresses the write. Re-pinned by recomputing the algorithm, not by
+        // copying the new output.
         // Separator: chr(0). Arrays: json_encode with JSON_UNESCAPED_UNICODE.
         $pub = new \DateTimeImmutable('2024-01-01 08:00:00', new \DateTimeZone('UTC'));
         $mod = new \DateTimeImmutable('2024-01-02 08:00:00', new \DateTimeZone('UTC'));
@@ -98,7 +101,7 @@ final class CanonicalPageTest extends TestCase
             meta:        ['_seo' => 'contact'],
         );
         $this->assertSame(
-            '13621b9d94428d024d108405bd5992438e8c174c2b7d5667269d2c6cc81f1307',
+            '1f8a548b2e267e186faef628943dd139530ef534f065b32c586d47f32a3a645d',
             $m->getChecksum(),
         );
     }
@@ -107,7 +110,7 @@ final class CanonicalPageTest extends TestCase
     {
         // Two instances identical in value but with meta keys in different input order
         // must produce the same checksum — key order from WordPress is not stable.
-        // Pinned digest: dc020024...
+        // Pinned digest: 201210b5... (re-pinned by P1B-S2 — featuredMediaId appended)
         $pub = new \DateTimeImmutable('2024-01-01 08:00:00', new \DateTimeZone('UTC'));
         $mod = new \DateTimeImmutable('2024-01-02 08:00:00', new \DateTimeZone('UTC'));
         $base = [
@@ -119,7 +122,7 @@ final class CanonicalPageTest extends TestCase
         $b = new CanonicalPage(...$base, meta: ['a' => 'first', 'z' => 'last']);
         $this->assertSame($a->getChecksum(), $b->getChecksum());
         $this->assertSame(
-            'dc020024d310f586655d5d387a5b6f7ead3c0c69c930017cefb6c34a9184243f',
+            '201210b562915d196204301c6f48297b691e76ff5072785387401fa5f7f55cb0',
             $a->getChecksum(),
         );
     }

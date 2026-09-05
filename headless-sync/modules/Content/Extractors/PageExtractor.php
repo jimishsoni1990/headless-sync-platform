@@ -60,6 +60,9 @@ final class PageExtractor
             publishedAt: $publishedAt,
             modifiedAt:  $modifiedAt,
             meta:        $normalizedMeta,
+            // _thumbnail_id is `_`-prefixed, so normalizeMeta() strips it; the featured image is
+            // extracted deliberately as a typed field instead of riding in meta (P1B-S2).
+            featuredMediaId: ProtectedMeta::featuredMediaId($rawMeta),
         );
     }
 
