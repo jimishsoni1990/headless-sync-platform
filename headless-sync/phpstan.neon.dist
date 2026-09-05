@@ -5,6 +5,19 @@ includes:
 parameters:
     level: 8
     phpVersion: 80100          # platform minimum — plugin header "Requires PHP: 8.1"
+    #
+    # RUN THIS VIA `composer analyse` — it passes `--memory-limit=1G`, which PHPStan accepts
+    # ONLY on the command line (there is no neon parameter for it). Invoking
+    # `vendor/bin/phpstan analyse` directly inherits PHP's default limit; a parallel worker
+    # then dies and PHPStan reports a misleading "Found 1 error / Result is incomplete"
+    # instead of a memory error. If you must call the binary directly, pass the flag
+    # yourself.
+    #
+    # This is DEV TOOLING ONLY and is NOT a platform runtime requirement: PHPStan holds the
+    # whole codebase plus WordPress stubs in one type graph, whereas the plugin runtime
+    # works in bounded per-cycle batches and is stateless between runs (ADR-054;
+    # config/worker.php). A WordPress host needs only ordinary memory.
+    #
     paths:
         - bootstrap
         - config
