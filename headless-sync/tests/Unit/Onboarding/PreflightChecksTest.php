@@ -100,6 +100,7 @@ final class PreflightChecksTest extends TestCase
                 '0002_create_content_pages',
                 '0003_create_content_posts',
                 '0004_create_content_taxonomies',
+                '0006_create_content_media',
             ],
         );
 

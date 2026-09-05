@@ -55,6 +55,9 @@ final class MigrationsAppliedCheck implements PreflightCheckInterface
         '0002_create_content_pages',
         '0003_create_content_posts',
         '0004_create_content_taxonomies',
+        // Media hooks are wired from activation, so media events start flowing immediately;
+        // without this table every one of them would fail projection and land in the DLQ.
+        '0006_create_content_media',
     ];
 
     public function __construct(

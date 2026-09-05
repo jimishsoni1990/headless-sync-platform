@@ -55,6 +55,23 @@ interface WpContentLoader
     public function loadTerm(int $termId): ?array;
 
     /**
+     * Load raw WordPress attachment data (post_type='attachment').
+     *
+     * Returns the WP_Post cast-to-array shape PLUS three loader-resolved extras that only
+     * WordPress can compute, so no extractor or handler has to call a WP function:
+     *   hsp_url      — wp_get_attachment_url()          (string, '' when unresolvable)
+     *   hsp_alt      — _wp_attachment_image_alt          (string, '' when unset)
+     *   hsp_metadata — wp_get_attachment_metadata()      (array: width / height / sizes)
+     * The keys are hsp_-prefixed so they cannot collide with a WP_Post column.
+     *
+     * Returns null if the attachment does not exist or is not an attachment.
+     *
+     * @param int $postId The WordPress attachment ID (source_post_id).
+     * @return array<string,mixed>|null
+     */
+    public function loadAttachment(int $postId): ?array;
+
+    /**
      * Load category term IDs assigned to a post.
      *
      * Returns a list of term_id integers for the 'category' taxonomy attached to $postId.

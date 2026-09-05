@@ -22,7 +22,10 @@ use HSP\Modules\Content\WpContentLoader;
  *              missing OR non-publish                 → content.{type}.deleted
  *   category:  term exists                            → content.category.updated
  *              term missing                           → content.category.deleted
- *   (Categories have no post_status; existence is the only membership signal.)
+ *   media:     attachment exists                      → content.media.updated
+ *              attachment missing                     → content.media.deleted
+ *   (Categories have no post_status, and attachments carry 'inherit' — which is outside
+ *    the public set — so for both, existence is the only membership signal.)
  *
  * The emitted event takes a fresh aggregate_version from wp_hsp_aggregate_counters
  * (DECISION 2) inside the OutboxWriter, so it is strictly greater than the aggregate's
@@ -34,7 +37,7 @@ use HSP\Modules\Content\WpContentLoader;
  */
 final class ContentReplayEmitter implements ReplayEmitterInterface
 {
-    private const AGGREGATE_TYPES = ['page', 'post', 'category'];
+    private const AGGREGATE_TYPES = ['page', 'post', 'category', 'media'];
 
     public function __construct(
         private readonly EventProviderInterface $eventProvider,
@@ -97,6 +100,11 @@ final class ContentReplayEmitter implements ReplayEmitterInterface
             case 'category':
                 // Categories have no post_status; existence is the membership signal.
                 return $this->wpContentLoader->loadTerm((int) $aggregateId) !== null;
+
+            case 'media':
+                // Attachments carry post_status='inherit', which is outside the {publish}
+                // public set, so status cannot be the signal — existence is (as for terms).
+                return $this->wpContentLoader->loadAttachment((int) $aggregateId) !== null;
 
             default:
                 throw new \InvalidArgumentException(

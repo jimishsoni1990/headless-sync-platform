@@ -9,7 +9,7 @@ use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
 
 /**
- * Registers all six Content REST endpoints with WordPress.
+ * Registers all eight Content REST endpoints with WordPress.
  *
  * This class is the ONLY place where WP_REST_Request / WP_REST_Response / WP_Error
  * or any WordPress REST types appear. Query Providers and Resources are kept
@@ -39,9 +39,11 @@ final class ContentRestRegistrar
         private readonly QueryProviderInterface $pageQueryProvider,
         private readonly QueryProviderInterface $postQueryProvider,
         private readonly QueryProviderInterface $categoryQueryProvider,
+        private readonly QueryProviderInterface $mediaQueryProvider,
         private readonly ResourceInterface      $pageResource,
         private readonly ResourceInterface      $postResource,
         private readonly ResourceInterface      $categoryResource,
+        private readonly ResourceInterface      $mediaResource,
     ) {}
 
     /** Called from ContentModule::register() via add_action('rest_api_init'). */
@@ -100,6 +102,27 @@ final class ContentRestRegistrar
         register_rest_route(self::NAMESPACE, '/categories/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => $this->handleCategorySingle(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'slug' => [
+                    'required'          => true,
+                    'type'              => 'string',
+                    'sanitize_callback' => 'sanitize_title',
+                ],
+            ],
+        ]);
+
+        // Media
+        register_rest_route(self::NAMESPACE, '/media', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleMediaListing(...),
+            'permission_callback' => '__return_true',
+            'args'                => $this->listingArgs(['published_after']),
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/media/(?P<slug>[a-z0-9_-]+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleMediaSingle(...),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -230,6 +253,43 @@ final class ContentRestRegistrar
         }
 
         return rest_ensure_response($this->categoryResource->toArray($row));
+    }
+
+    public function handleMediaListing(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
+        // No status filter: attachments carry post_status='inherit', outside the {publish}
+        // public set (OPEN-10), so membership is "not soft-deleted" — as for categories.
+        $filters = new FilterSet(
+            publishedAfter: $this->sanitizeDate($request->get_param('published_after')),
+            cursor:         $this->sanitizeCursor($request->get_param('cursor')),
+            limit:          $this->sanitizeLimit($request->get_param('per_page')),
+        );
+
+        $page = $this->mediaQueryProvider->list($filters);
+        return rest_ensure_response(
+            $this->mediaResource->toCollection($page->rows, $page->nextCursor)
+        );
+    }
+
+    public function handleMediaSingle(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $slug = sanitize_title((string) ($request->get_param('slug') ?? ''));
+        $row  = $this->mediaQueryProvider->findBySlug($slug);
+
+        if ($row === null) {
+            return new \WP_Error(
+                'hsp_not_found',
+                __('Media item not found.', 'headless-sync'),
+                ['status' => 404]
+            );
+        }
+
+        return rest_ensure_response($this->mediaResource->toArray($row));
     }
 
     // -------------------------------------------------------------------------

@@ -690,6 +690,117 @@ final class HookWiringTest extends TestCase
     }
 
     // =========================================================================
+    // Media hooks (attachments — P1B-S1)
+    // =========================================================================
+
+    public function test_add_attachment_emits_media_created(): void
+    {
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        $this->wiring->onAddAttachment(42);
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::MEDIA_CREATED, $this->writer->lastWrite()['eventType']);
+        self::assertSame('media', $this->writer->lastWrite()['aggregateType']);
+        self::assertSame('42', $this->writer->lastWrite()['aggregateId']);
+    }
+
+    public function test_attachment_updated_emits_media_updated(): void
+    {
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        $this->wiring->onAttachmentUpdated(42);
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::MEDIA_UPDATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_edit_attachment_emits_media_updated(): void
+    {
+        // An alt-text change reaches consumers only through edit_attachment: the post row
+        // itself does not change, so attachment_updated never fires.
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        $this->wiring->onEditAttachment(42);
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::MEDIA_UPDATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_an_upload_firing_several_hooks_emits_exactly_one_event(): void
+    {
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        // WordPress fires add_attachment and then edit_attachment for one upload once the
+        // size variants are generated. Processing is state-sync (DECISION H / ADR-044), so
+        // the single emitted event reloads the final state — collapsing the duplicate is safe.
+        $this->wiring->onAddAttachment(42);
+        $this->wiring->onEditAttachment(42);
+        $this->wiring->onAttachmentUpdated(42);
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::MEDIA_CREATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_delete_attachment_emits_media_deleted_even_after_an_upsert_this_request(): void
+    {
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        $this->wiring->onEditAttachment(42);
+        $this->wiring->onDeleteAttachment(42);
+
+        // Deletion is terminal: the guard must never swallow it, or the projection keeps
+        // serving a file that no longer exists.
+        self::assertSame(2, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::MEDIA_DELETED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_no_upsert_is_emitted_after_a_delete_in_the_same_request(): void
+    {
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        $this->wiring->onDeleteAttachment(42);
+        $this->wiring->onEditAttachment(42);
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::MEDIA_DELETED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_media_hooks_ignore_a_post_that_is_not_an_attachment(): void
+    {
+        // A plugin calling these hooks with a normal post must not route it into the media
+        // spine — the media transformer knows nothing about post content.
+        $GLOBALS['_hsp_stub_get_post'][7] = $this->makePost(7, 'post', 'publish');
+
+        $this->wiring->onAddAttachment(7);
+        $this->wiring->onEditAttachment(7);
+        $this->wiring->onDeleteAttachment(7);
+
+        self::assertSame(0, $this->writer->writeCount());
+    }
+
+    public function test_media_hooks_ignore_a_missing_post(): void
+    {
+        $this->wiring->onAddAttachment(999);
+        $this->wiring->onDeleteAttachment(999);
+
+        self::assertSame(0, $this->writer->writeCount());
+    }
+
+    public function test_a_post_and_an_attachment_do_not_share_the_double_emit_guard(): void
+    {
+        // The media guard is keyed by attachment id; a post with the same id must be
+        // unaffected (the two guards are separate maps).
+        $GLOBALS['_hsp_stub_get_post'][42] = $this->makePost(42, 'attachment', 'inherit');
+
+        $this->wiring->onAddAttachment(42);
+        $this->wiring->onTransitionPostStatus('publish', 'draft', $this->makePost(42, 'post', 'publish'));
+
+        self::assertSame(2, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::POST_CREATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 

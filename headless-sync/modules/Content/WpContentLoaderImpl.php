@@ -68,6 +68,32 @@ final class WpContentLoaderImpl implements WpContentLoader
     }
 
     /**
+     * @return array<string,mixed>|null
+     */
+    public function loadAttachment(int $postId): ?array
+    {
+        $post = get_post($postId);
+
+        if (! $post instanceof \WP_Post || $post->post_type !== 'attachment') {
+            return null;
+        }
+
+        $url = wp_get_attachment_url($postId);
+        $alt = get_post_meta($postId, '_wp_attachment_image_alt', true);
+
+        // wp_get_attachment_metadata() returns false for non-images and for attachments
+        // whose metadata was never generated — normalise both to an empty array so the
+        // extractor never has to type-check a WordPress return value.
+        $metadata = wp_get_attachment_metadata($postId);
+
+        return (array) $post + [
+            'hsp_url'      => is_string($url) ? $url : '',
+            'hsp_alt'      => is_string($alt) ? $alt : '',
+            'hsp_metadata' => is_array($metadata) ? $metadata : [],
+        ];
+    }
+
+    /**
      * @return list<int>
      */
     public function loadPostCategoryIds(int $postId): array

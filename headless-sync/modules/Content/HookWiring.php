@@ -28,6 +28,10 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  *   created_term    → category created
  *   edited_term     → category updated
  *   delete_term     → category deleted
+ *   add_attachment     → media created
+ *   attachment_updated → media updated
+ *   edit_attachment    → media updated
+ *   delete_attachment  → media deleted
  *
  * All outbox writes are post-commit (DECISION 1) — hooks fire after WordPress
  * completes its own DB transaction. No cross-DB transaction is attempted.
@@ -39,6 +43,8 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  * post_id it handles. Both save_post and wp_trash_post skip any post_id already
  * handled by transition_post_status in the same request. transition_post_status
  * is the authoritative hook for all status-change emits including trash.
+ * The three media upsert hooks share the same discipline through their own
+ * per-request flag — see the media hook section below for why that is safe.
  */
 final class HookWiring
 {
@@ -46,6 +52,9 @@ final class HookWiring
 
     /** @var array<int,true> post_ids handled by transition_post_status this request */
     private array $handledByTransition = [];
+
+    /** @var array<int,true> attachment ids already emitted for this request (see onAddAttachment) */
+    private array $handledMedia = [];
 
     /** True once a capture failed this request — drives the one-shot admin notice. */
     private bool $captureFailed = false;
@@ -121,6 +130,10 @@ final class HookWiring
         add_action('created_term',           [$this, 'onCreatedTerm'],           10, 3);
         add_action('edited_term',            [$this, 'onEditedTerm'],            10, 3);
         add_action('delete_term',            [$this, 'onDeleteTerm'],            10, 4);
+        add_action('add_attachment',         [$this, 'onAddAttachment'],         10, 1);
+        add_action('attachment_updated',     [$this, 'onAttachmentUpdated'],     10, 1);
+        add_action('edit_attachment',        [$this, 'onEditAttachment'],        10, 1);
+        add_action('delete_attachment',      [$this, 'onDeleteAttachment'],      10, 1);
     }
 
     // -------------------------------------------------------------------------
@@ -325,6 +338,96 @@ final class HookWiring
             (string) $termId,
             $this->categoryContext($termId),
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Media hooks (post_type='attachment' — P1B-S1)
+    //
+    // Attachments are NOT routed through SUPPORTED_POST_TYPES: widening that list would
+    // send them into the post/page transformer, which knows nothing about MIME types,
+    // dimensions or size variants. They get their own hooks and their own spine.
+    //
+    // WordPress fires several of these for a single user action (an upload fires
+    // add_attachment and then edit_attachment once metadata is generated), so the first
+    // upsert emit per attachment per request wins. That is safe precisely because
+    // processing is state-sync (DECISION H / ADR-044): the one emitted event reloads
+    // whatever the attachment looks like at process time, so a collapsed duplicate loses
+    // nothing. Deletion is exempt from the guard — it is terminal and must always emit.
+    // -------------------------------------------------------------------------
+
+    /**
+     * add_attachment: fires after a new attachment row is inserted.
+     *
+     * @param int $postId
+     */
+    public function onAddAttachment(int $postId): void
+    {
+        $this->captureMediaUpsert($postId, ContentEventTypes::MEDIA_CREATED);
+    }
+
+    /**
+     * attachment_updated: fires when an existing attachment's post row changes.
+     *
+     * @param int $postId
+     */
+    public function onAttachmentUpdated(int $postId): void
+    {
+        $this->captureMediaUpsert($postId, ContentEventTypes::MEDIA_UPDATED);
+    }
+
+    /**
+     * edit_attachment: fires when attachment metadata changes (alt text, regenerated
+     * sizes) without the post row itself necessarily changing — an alt-text edit reaches
+     * consumers only through this hook.
+     *
+     * @param int $postId
+     */
+    public function onEditAttachment(int $postId): void
+    {
+        $this->captureMediaUpsert($postId, ContentEventTypes::MEDIA_UPDATED);
+    }
+
+    /**
+     * delete_attachment: fires before an attachment is permanently deleted (the post is
+     * still readable here, which is why the context can still be built).
+     *
+     * @param int $postId
+     */
+    public function onDeleteAttachment(int $postId): void
+    {
+        $post = get_post($postId);
+        if ($post === null || $post->post_type !== 'attachment') {
+            return;
+        }
+
+        // Deletion is terminal: emit even if an upsert already fired this request, and
+        // block any later upsert emit for this id.
+        $this->handledMedia[$postId] = true;
+
+        $this->capture(
+            ContentEventTypes::MEDIA_DELETED,
+            (string) $postId,
+            $this->postContext($post),
+        );
+    }
+
+    /**
+     * Emit one media upsert event, honouring the per-request first-emit-wins guard.
+     */
+    private function captureMediaUpsert(int $postId, string $eventType): void
+    {
+        if (isset($this->handledMedia[$postId])) {
+            return;
+        }
+
+        $post = get_post($postId);
+        if ($post === null || $post->post_type !== 'attachment') {
+            return;
+        }
+
+        $this->handledMedia[$postId] = true;
+
+        $this->capture($eventType, (string) $postId, $this->postContext($post));
     }
 
     // -------------------------------------------------------------------------

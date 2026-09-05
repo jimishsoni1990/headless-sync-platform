@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Rest;
 
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
+use HSP\Modules\Content\Queries\MediaQueryProvider;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\CategoryResource;
+use HSP\Modules\Content\Resources\MediaResource;
 use HSP\Modules\Content\Resources\PageResource;
 use HSP\Modules\Content\Resources\PostResource;
 
@@ -33,17 +35,21 @@ final class ContentRestRegistrarFactory
      * @param \Closure(): PageQueryProvider     $pageQueryProviderFactory
      * @param \Closure(): PostQueryProvider     $postQueryProviderFactory
      * @param \Closure(): CategoryQueryProvider $categoryQueryProviderFactory
+     * @param \Closure(): MediaQueryProvider    $mediaQueryProviderFactory
      * @param \Closure(): PageResource          $pageResourceFactory
      * @param \Closure(): PostResource          $postResourceFactory
      * @param \Closure(): CategoryResource      $categoryResourceFactory
+     * @param \Closure(): MediaResource         $mediaResourceFactory
      */
     public function __construct(
         private readonly \Closure $pageQueryProviderFactory,
         private readonly \Closure $postQueryProviderFactory,
         private readonly \Closure $categoryQueryProviderFactory,
+        private readonly \Closure $mediaQueryProviderFactory,
         private readonly \Closure $pageResourceFactory,
         private readonly \Closure $postResourceFactory,
         private readonly \Closure $categoryResourceFactory,
+        private readonly \Closure $mediaResourceFactory,
     ) {}
 
     /**
@@ -58,9 +64,11 @@ final class ContentRestRegistrarFactory
             ($this->pageQueryProviderFactory)(),
             ($this->postQueryProviderFactory)(),
             ($this->categoryQueryProviderFactory)(),
+            ($this->mediaQueryProviderFactory)(),
             ($this->pageResourceFactory)(),
             ($this->postResourceFactory)(),
             ($this->categoryResourceFactory)(),
+            ($this->mediaResourceFactory)(),
         );
     }
 }

@@ -81,8 +81,9 @@ final class OpenApiDriftGuardTest extends TestCase
         $liveRoutes = $this->guardedRoutes($this->captureLiveHspV1Routes());
         $described  = $this->describedRouteKeys($this->registryDescriptors());
 
-        // Net today: 13 live − 6 onboarding = 7 guarded (six content + openapi.json).
-        self::assertCount(7, $liveRoutes, 'Expected 7 guarded hsp/v1 routes (six content + openapi.json).');
+        // Net today: 15 live − 6 onboarding = 9 guarded (eight content + openapi.json).
+        // P1B-S1 added the two media routes; the exempted onboarding prefix is unchanged.
+        self::assertCount(9, $liveRoutes, 'Expected 9 guarded hsp/v1 routes (eight content + openapi.json).');
 
         foreach ($liveRoutes as $route) {
             self::assertContains(

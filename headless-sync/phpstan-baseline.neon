@@ -411,7 +411,7 @@ parameters:
 		-
 			message: '#^Access to an undefined property object\:\:\$posts\.$#'
 			identifier: property.notFound
-			count: 1
+			count: 2
 			path: modules/Content/Reconciliation/WpReconciliationSource.php
 
 		-
@@ -435,7 +435,7 @@ parameters:
 		-
 			message: '#^Call to an undefined method object\:\:get_col\(\)\.$#'
 			identifier: method.notFound
-			count: 2
+			count: 3
 			path: modules/Content/Reconciliation/WpReconciliationSource.php
 
 		-
@@ -447,7 +447,7 @@ parameters:
 		-
 			message: '#^Call to an undefined method object\:\:prepare\(\)\.$#'
 			identifier: method.notFound
-			count: 3
+			count: 4
 			path: modules/Content/Reconciliation/WpReconciliationSource.php
 
 		-

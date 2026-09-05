@@ -9,7 +9,9 @@ use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Modules\Content\Extractors\CategoryExtractor;
 use HSP\Modules\Content\Extractors\PageExtractor;
 use HSP\Modules\Content\Extractors\PostExtractor;
+use HSP\Modules\Content\Extractors\MediaExtractor;
 use HSP\Modules\Content\Transformers\CategoryTransformer;
+use HSP\Modules\Content\Transformers\MediaTransformer;
 use HSP\Modules\Content\Transformers\PageTransformer;
 use HSP\Modules\Content\Transformers\PostTransformer;
 use HSP\Modules\Content\WpContentLoader;
@@ -30,7 +32,7 @@ use HSP\Modules\Content\WpContentLoader;
  */
 final class WpReconciliationSource implements WpReconciliationSourceInterface
 {
-    private const AGGREGATE_TYPES = ['page', 'post', 'category'];
+    private const AGGREGATE_TYPES = ['page', 'post', 'category', 'media'];
 
     /** post_status values in the public set (OPEN-10). */
     private const PUBLIC_POST_STATUS = 'publish';
@@ -40,9 +42,11 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
         private readonly PageExtractor       $pageExtractor,
         private readonly PostExtractor       $postExtractor,
         private readonly CategoryExtractor   $categoryExtractor,
+        private readonly MediaExtractor      $mediaExtractor,
         private readonly PageTransformer     $pageTransformer,
         private readonly PostTransformer     $postTransformer,
         private readonly CategoryTransformer $categoryTransformer,
+        private readonly MediaTransformer    $mediaTransformer,
     ) {}
 
     /** @return string[] */
@@ -63,6 +67,9 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
 
             case 'category':
                 return $this->listTermIdsAfter($afterId, $limit);
+
+            case 'media':
+                return $this->listAttachmentIdsAfter($afterId, $limit);
 
             default:
                 return [];
@@ -91,6 +98,20 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
                 }
                 // Terms have no post_status (public == exists) and no modified timestamp (D2).
                 return new SourceState(true, true, null);
+
+            case 'media':
+                $attachment = $this->loader->loadAttachment((int) $aggregateId);
+                if ($attachment === null) {
+                    return SourceState::absent();
+                }
+                // Attachments carry post_status='inherit', outside the {publish} public set,
+                // so existence is membership — as for terms. Unlike terms they DO carry
+                // post_modified_gmt, so incremental detection (D1) works on them.
+                return new SourceState(
+                    true,
+                    true,
+                    $this->parseGmt($attachment['post_modified_gmt'] ?? null),
+                );
 
             default:
                 return SourceState::absent();
@@ -126,6 +147,15 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
                 }
                 $source = $this->categoryExtractor->extract($term);
                 return $this->categoryTransformer->transform($source)->getChecksum();
+
+            case 'media':
+                $attachment = $this->loader->loadAttachment((int) $aggregateId);
+                if ($attachment === null) {
+                    return null;
+                }
+                $meta   = $this->loader->loadPostMeta((int) $aggregateId);
+                $source = $this->mediaExtractor->extract($attachment, $meta);
+                return $this->mediaTransformer->transform($source)->getChecksum();
 
             default:
                 return null;
@@ -174,6 +204,35 @@ final class WpReconciliationSource implements WpReconciliationSourceInterface
              LIMIT %d",
             $postType,
             self::PUBLIC_POST_STATUS,
+            $afterId,
+            $limit,
+        );
+
+        $rows = $wpdb->get_col($sql);
+
+        return is_array($rows) ? array_map('strval', $rows) : [];
+    }
+
+    /**
+     * Attachments are paged separately from posts/pages: they carry post_status='inherit',
+     * so the publish-only predicate in listPostIdsAfter() would return an empty corpus and
+     * media would silently never reconcile.
+     *
+     * @return string[]
+     */
+    private function listAttachmentIdsAfter(int $afterId, int $limit): array
+    {
+        global $wpdb;
+
+        if (! isset($wpdb) || ! is_object($wpdb)) {
+            return [];
+        }
+
+        $sql = $wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts}
+             WHERE post_type = 'attachment' AND ID > %d
+             ORDER BY ID ASC
+             LIMIT %d",
             $afterId,
             $limit,
         );

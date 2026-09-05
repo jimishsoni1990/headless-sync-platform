@@ -37,6 +37,16 @@ final class ReplayReadingLoader implements WpContentLoader
         return $this->store->term($termId);
     }
 
+    /**
+     * The replay integration test's corpus has no attachments; media replay is covered by
+     * MediaProjectionIntegrationTest and ContentReplayEmitterTest. Returning null here means
+     * "absent", which is the honest answer for this store.
+     */
+    public function loadAttachment(int $postId): ?array
+    {
+        return null;
+    }
+
     public function loadPostCategoryIds(int $postId): array
     {
         return [];

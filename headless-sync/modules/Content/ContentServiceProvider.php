@@ -23,10 +23,12 @@ use HSP\Modules\Content\Operations\ContentMetricsProvider;
 use HSP\Modules\Content\Operations\ContentModuleInspection;
 use HSP\Modules\Content\Reconciliation\WpReconciliationSource;
 use HSP\Modules\Content\Adapters\CategoryAdapter;
+use HSP\Modules\Content\Adapters\MediaAdapter;
 use HSP\Modules\Content\Adapters\PageAdapter;
 use HSP\Modules\Content\Adapters\PostAdapter;
 use HSP\Modules\Content\Events\ContentEventTypes;
 use HSP\Modules\Content\Extractors\CategoryExtractor;
+use HSP\Modules\Content\Extractors\MediaExtractor;
 use HSP\Modules\Content\Extractors\PageExtractor;
 use HSP\Modules\Content\Extractors\PostExtractor;
 use HSP\Modules\Content\Migrations\CreateContentSchemaMigration;
@@ -34,17 +36,22 @@ use HSP\Modules\Content\Migrations\CreateContentPagesMigration;
 use HSP\Modules\Content\Migrations\CreateContentPostsMigration;
 use HSP\Modules\Content\Migrations\CreateContentTaxonomiesMigration;
 use HSP\Modules\Content\Migrations\CreateContentEntityTaxonomiesMigration;
+use HSP\Modules\Content\Migrations\CreateContentMediaMigration;
 use HSP\Modules\Content\Handlers\CategoryTombstoneHandler;
 use HSP\Modules\Content\Handlers\CategoryUpsertHandler;
+use HSP\Modules\Content\Handlers\MediaTombstoneHandler;
+use HSP\Modules\Content\Handlers\MediaUpsertHandler;
 use HSP\Modules\Content\Handlers\PageTombstoneHandler;
 use HSP\Modules\Content\Handlers\PageUpsertHandler;
 use HSP\Modules\Content\Handlers\PostTombstoneHandler;
 use HSP\Modules\Content\Handlers\PostUpsertHandler;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Replay\ContentReplayEmitter;
+use HSP\Modules\Content\Queries\MediaQueryProvider;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\CategoryResource;
+use HSP\Modules\Content\Resources\MediaResource;
 use HSP\Modules\Content\Resources\PageResource;
 use HSP\Modules\Content\Resources\PostResource;
 use HSP\Modules\Content\Rest\ContentRestRegistrar;
@@ -52,9 +59,11 @@ use HSP\Modules\Content\Rest\ContentRestRegistrarFactory;
 use HSP\Modules\Content\Subscribers\ContentSubscriber;
 use HSP\Modules\Content\Subscribers\ContentSubscriberRegistrar;
 use HSP\Modules\Content\Transformers\CategoryTransformer;
+use HSP\Modules\Content\Transformers\MediaTransformer;
 use HSP\Modules\Content\Transformers\PageTransformer;
 use HSP\Modules\Content\Transformers\PostTransformer;
 use HSP\Modules\Content\Validation\CategoryValidator;
+use HSP\Modules\Content\Validation\MediaValidator;
 use HSP\Modules\Content\Validation\PageValidator;
 use HSP\Modules\Content\Validation\PostValidator;
 
@@ -93,20 +102,27 @@ final class ContentServiceProvider extends ServiceProvider
             new CategoryQueryProvider($c->get(DatabaseConnectionInterface::class))
         );
 
+        $container->singleton(MediaQueryProvider::class, fn (Container $c) =>
+            new MediaQueryProvider($c->get(DatabaseConnectionInterface::class))
+        );
+
         // Resources — no dependencies; singletons for efficiency.
         $container->singleton(PageResource::class, fn () => new PageResource());
         $container->singleton(PostResource::class, fn () => new PostResource());
         $container->singleton(CategoryResource::class, fn () => new CategoryResource());
+        $container->singleton(MediaResource::class, fn () => new MediaResource());
 
-        // REST registrar — depends on all three query providers and resources.
+        // REST registrar — depends on all four query providers and resources.
         $container->singleton(ContentRestRegistrar::class, fn (Container $c) =>
             new ContentRestRegistrar(
                 $c->get(PageQueryProvider::class),
                 $c->get(PostQueryProvider::class),
                 $c->get(CategoryQueryProvider::class),
+                $c->get(MediaQueryProvider::class),
                 $c->get(PageResource::class),
                 $c->get(PostResource::class),
                 $c->get(CategoryResource::class),
+                $c->get(MediaResource::class),
             )
         );
 
@@ -138,9 +154,11 @@ final class ContentServiceProvider extends ServiceProvider
                     fn () => $c->get(PageQueryProvider::class),
                     fn () => $c->get(PostQueryProvider::class),
                     fn () => $c->get(CategoryQueryProvider::class),
+                    fn () => $c->get(MediaQueryProvider::class),
                     fn () => $c->get(PageResource::class),
                     fn () => $c->get(PostResource::class),
                     fn () => $c->get(CategoryResource::class),
+                    fn () => $c->get(MediaResource::class),
                 ),
                 new ContentSubscriberRegistrar(
                     fn () => $c->get(EventRegistry::class),
@@ -159,6 +177,7 @@ final class ContentServiceProvider extends ServiceProvider
                         new CreateContentPostsMigration($pgsql),
                         new CreateContentTaxonomiesMigration($pgsql),
                         new CreateContentEntityTaxonomiesMigration($pgsql),
+                        new CreateContentMediaMigration($pgsql),
                     ];
                 },
             )
@@ -178,6 +197,10 @@ final class ContentServiceProvider extends ServiceProvider
 
         $container->singleton(CategoryAdapter::class, fn (Container $c) =>
             new CategoryAdapter($c->get(DatabaseConnectionInterface::class))
+        );
+
+        $container->singleton(MediaAdapter::class, fn (Container $c) =>
+            new MediaAdapter($c->get(DatabaseConnectionInterface::class))
         );
 
         // -------------------------------------------------------------------------
@@ -215,14 +238,17 @@ final class ContentServiceProvider extends ServiceProvider
         $container->singleton(PageValidator::class,    fn () => new PageValidator());
         $container->singleton(PostValidator::class,    fn () => new PostValidator());
         $container->singleton(CategoryValidator::class, fn () => new CategoryValidator());
+        $container->singleton(MediaValidator::class,   fn () => new MediaValidator());
 
         $container->singleton(PageExtractor::class,    fn (Container $c) => new PageExtractor($c->get(PageValidator::class)));
         $container->singleton(PostExtractor::class,    fn (Container $c) => new PostExtractor($c->get(PostValidator::class)));
         $container->singleton(CategoryExtractor::class, fn (Container $c) => new CategoryExtractor($c->get(CategoryValidator::class)));
+        $container->singleton(MediaExtractor::class,   fn (Container $c) => new MediaExtractor($c->get(MediaValidator::class)));
 
         $container->singleton(PageTransformer::class,     fn () => new PageTransformer());
         $container->singleton(PostTransformer::class,     fn () => new PostTransformer());
         $container->singleton(CategoryTransformer::class, fn () => new CategoryTransformer());
+        $container->singleton(MediaTransformer::class,    fn () => new MediaTransformer());
 
         // -------------------------------------------------------------------------
         // Reconciliation (DECISION U) — the Content module owns the WP-side detection
@@ -237,9 +263,11 @@ final class ContentServiceProvider extends ServiceProvider
                 $c->get(PageExtractor::class),
                 $c->get(PostExtractor::class),
                 $c->get(CategoryExtractor::class),
+                $c->get(MediaExtractor::class),
                 $c->get(PageTransformer::class),
                 $c->get(PostTransformer::class),
                 $c->get(CategoryTransformer::class),
+                $c->get(MediaTransformer::class),
             )
         );
 
@@ -274,6 +302,15 @@ final class ContentServiceProvider extends ServiceProvider
             )
         );
 
+        $container->singleton(MediaUpsertHandler::class, fn (Container $c) =>
+            new MediaUpsertHandler(
+                $c->get(WpContentLoader::class),
+                $c->get(MediaExtractor::class),
+                $c->get(MediaTransformer::class),
+                $c->get(MediaAdapter::class),
+            )
+        );
+
         // -------------------------------------------------------------------------
         // Tombstone handlers
         // -------------------------------------------------------------------------
@@ -288,6 +325,10 @@ final class ContentServiceProvider extends ServiceProvider
 
         $container->singleton(CategoryTombstoneHandler::class, fn (Container $c) =>
             new CategoryTombstoneHandler($c->get(CategoryAdapter::class))
+        );
+
+        $container->singleton(MediaTombstoneHandler::class, fn (Container $c) =>
+            new MediaTombstoneHandler($c->get(MediaAdapter::class))
         );
 
         // -------------------------------------------------------------------------
@@ -307,6 +348,9 @@ final class ContentServiceProvider extends ServiceProvider
                 ContentEventTypes::CATEGORY_CREATED => $c->get(CategoryUpsertHandler::class),
                 ContentEventTypes::CATEGORY_UPDATED => $c->get(CategoryUpsertHandler::class),
                 ContentEventTypes::CATEGORY_DELETED => $c->get(CategoryTombstoneHandler::class),
+                ContentEventTypes::MEDIA_CREATED    => $c->get(MediaUpsertHandler::class),
+                ContentEventTypes::MEDIA_UPDATED    => $c->get(MediaUpsertHandler::class),
+                ContentEventTypes::MEDIA_DELETED    => $c->get(MediaTombstoneHandler::class),
             ])
         );
 

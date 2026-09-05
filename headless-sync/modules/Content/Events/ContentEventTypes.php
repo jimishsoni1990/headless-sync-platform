@@ -8,7 +8,8 @@ namespace HSP\Modules\Content\Events;
  * Canonical fully-qualified event type names for the Content module.
  *
  * Authority: OPEN-1 — all names follow <domain>.<aggregate>.<action>.
- * Bare names are prohibited; these nine constants are the complete MVP set.
+ * Bare names are prohibited. Nine constants are the Blog MVP set; P1B-S1 adds the three
+ * content.media.* types (Doc 11 §7 Media Synchronization).
  */
 final class ContentEventTypes
 {
@@ -27,7 +28,12 @@ final class ContentEventTypes
     public const CATEGORY_UPDATED = 'content.category.updated';
     public const CATEGORY_DELETED = 'content.category.deleted';
 
-    /** All nine OPEN-1 event types in a single list. */
+    // Media (attachments — P1B-S1)
+    public const MEDIA_CREATED = 'content.media.created';
+    public const MEDIA_UPDATED = 'content.media.updated';
+    public const MEDIA_DELETED = 'content.media.deleted';
+
+    /** Every OPEN-1 event type the Content module emits, in a single list. */
     public const ALL = [
         self::PAGE_CREATED,
         self::PAGE_UPDATED,
@@ -38,6 +44,9 @@ final class ContentEventTypes
         self::CATEGORY_CREATED,
         self::CATEGORY_UPDATED,
         self::CATEGORY_DELETED,
+        self::MEDIA_CREATED,
+        self::MEDIA_UPDATED,
+        self::MEDIA_DELETED,
     ];
 
     private function __construct() {}

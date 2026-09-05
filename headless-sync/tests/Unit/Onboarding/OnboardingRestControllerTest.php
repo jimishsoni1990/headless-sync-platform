@@ -299,6 +299,7 @@ final class OnboardingRestControllerTest extends TestCase
         '0005_create_system_aggregate_versions', '0006_create_system_processed_events',
         '0008_create_system_schema_versions',
         '0002_create_content_pages', '0003_create_content_posts', '0004_create_content_taxonomies',
+        '0006_create_content_media',
     ];
 
     /**

@@ -15,10 +15,10 @@ use HSP\Core\Contracts\Operations\SchemaObject;
  * ADR-055).
  *
  * Implements the core-owned EndpointProviderInterface (Rule 5) and populates the ADR-055 (c)
- * enriched descriptors for the six published content endpoints (DECISION N: 'hsp/v1'): parameters
+ * enriched descriptors for the eight published content endpoints (DECISION N: 'hsp/v1'): parameters
  * (DECISION F filters + cursor pagination — Doc 9 §13), published request/response shapes (Rule 6
  * — the fields the Resources expose, NOT internal content.* / canonical columns), auth requirement
- * (all six are PUBLIC — Doc 9 §22), deprecation (none at MVP — Doc 9 §26), version (v1 — Doc 9 §7),
+ * (all eight are PUBLIC — Doc 9 §22), deprecation (none at MVP — Doc 9 §26), version (v1 — Doc 9 §7),
  * and module owner ('content' — Doc 9 §6). The generator (ADR-055) and the API Playground (OPSC-S3)
  * both read these descriptors — one source of truth (ADR-055 (b)). ADR-038: plain metadata only;
  * no HTTP/framework types cross this contract.
@@ -49,6 +49,8 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             $this->postSingle(),
             $this->categoriesList(),
             $this->categorySingle(),
+            $this->mediaList(),
+            $this->mediaSingle(),
         ];
     }
 
@@ -114,6 +116,29 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     private function categorySingle(): EndpointDescriptor
     {
         return $this->single('/categories/{slug}', 'Fetch a single category by slug.', $this->categorySchema());
+    }
+
+    // -------------------------------------------------------------------------
+    // Media
+    // -------------------------------------------------------------------------
+
+    private function mediaList(): EndpointDescriptor
+    {
+        return $this->listing(
+            route: '/media',
+            description: 'List media items (cursor-paginated).',
+            itemSchema: $this->mediaSchema(),
+            // No status filter: attachments carry post_status='inherit', outside the
+            // {publish} public set (OPEN-10) — membership is "not soft-deleted".
+            filters: [
+                EndpointParameter::query('published_after', 'string', 'ISO-8601 UTC lower bound on published_at.'),
+            ],
+        );
+    }
+
+    private function mediaSingle(): EndpointDescriptor
+    {
+        return $this->single('/media/{slug}', 'Fetch a single media item by slug.', $this->mediaSchema());
     }
 
     // -------------------------------------------------------------------------
@@ -219,6 +244,33 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'description' => 'string',
             'parent_id'   => 'integer',
             'post_count'  => 'integer',
+        ]);
+    }
+
+    /**
+     * Mirrors MediaResource::toArray() published fields.
+     *
+     * `sizes` is an object keyed by registered size name, each value carrying an already
+     * resolved absolute url plus width / height / mime_type — consumers never rebuild a
+     * filename from upload paths (Rule 6).
+     */
+    private function mediaSchema(): SchemaObject
+    {
+        return SchemaObject::object([
+            'slug'           => 'string',
+            'title'          => 'string',
+            'mime_type'      => 'string',
+            'url'            => 'string',
+            'alt_text'       => 'string',
+            'caption'        => 'string',
+            'description'    => 'string',
+            'width'          => 'integer',
+            'height'         => 'integer',
+            'sizes'          => 'object',
+            'attached_to_id' => 'integer',
+            'published_at'   => 'string',
+            'updated_at'     => 'string',
+            'meta'           => 'object',
         ]);
     }
 }

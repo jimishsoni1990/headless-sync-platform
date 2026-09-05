@@ -34,9 +34,9 @@ final class ContentReplayEmitterTest extends TestCase
         );
     }
 
-    public function testSupportsThreeContentAggregateTypes(): void
+    public function testSupportsFourContentAggregateTypes(): void
     {
-        self::assertSame(['page', 'post', 'category'], $this->emitter->getSupportedAggregateTypes());
+        self::assertSame(['page', 'post', 'category', 'media'], $this->emitter->getSupportedAggregateTypes());
     }
 
     public function testPublishedPostEmitsUpdated(): void
@@ -49,6 +49,30 @@ final class ContentReplayEmitterTest extends TestCase
         self::assertSame('content.post.updated', $write['eventType']);
         self::assertSame('post', $write['aggregateType']);
         self::assertSame('42', $write['aggregateId']);
+    }
+
+    public function testExistingMediaEmitsUpdated(): void
+    {
+        // Reconciliation and the onboarding backfill both re-emit through this emitter
+        // (DECISION T/U); if media were absent here, a full reconcile would silently
+        // ignore the entire media library.
+        $this->emitter->emitForAggregate('media', '42', 'corr-1', 'cause-1');
+
+        $write = $this->outbox->lastWrite();
+        self::assertSame('content.media.updated', $write['eventType']);
+        self::assertSame('media', $write['aggregateType']);
+        self::assertSame('42', $write['aggregateId']);
+    }
+
+    public function testMissingMediaEmitsDeletedTombstone(): void
+    {
+        // Attachments carry post_status='inherit', outside the {publish} public set, so
+        // existence is the only membership signal (as for terms).
+        $this->loader->attachmentResult = null;
+
+        $this->emitter->emitForAggregate('media', '999', 'corr-1', 'cause-1');
+
+        self::assertSame('content.media.deleted', $this->outbox->lastWrite()['eventType']);
     }
 
     public function testNonPublicPostEmitsDeleted(): void
