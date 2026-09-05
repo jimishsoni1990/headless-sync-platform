@@ -30,3 +30,7 @@
 *.ico  binary
 *.woff binary
 *.woff2 binary
+
+# `*.xml` / `*.neon` do not match `phpcs.xml.dist` / `phpstan.neon.dist` — the
+# extension is `.dist`. Match those explicitly so tool configs stay LF too.
+*.dist text eol=lf
