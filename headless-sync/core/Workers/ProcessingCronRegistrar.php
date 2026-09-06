@@ -32,8 +32,14 @@ final class ProcessingCronRegistrar
     /** Default custom-interval schedule name if none is configured. */
     private const DEFAULT_SCHEDULE = 'hsp_processing';
 
-    /** Default custom-interval period (seconds). */
-    private const DEFAULT_INTERVAL_SECONDS = 60;
+    /**
+     * Default custom-interval period (seconds) when config is absent. Must track
+     * config/worker.php → processing.interval_seconds, which DECISION AB (FLAG-P1BS0-1) pins at
+     * 20 so the worst-case sync latency fits the PRD <30s SLA. The SLA additionally needs an
+     * out-of-band `wp cron event run --due-now` trigger at <= 20s — WordPress's own
+     * request-triggered cron is floored at WP_CRON_LOCK_TIMEOUT (60s) by spawn_cron().
+     */
+    private const DEFAULT_INTERVAL_SECONDS = 20;
 
     /** @var array<string,mixed> The 'processing' config block. */
     private array $config;

@@ -8,7 +8,7 @@ document that owns it. On any conflict, the cited source wins, and
 Doc 1, Doc 8, Doc 10 and Doc 11**. Read this first; open the cited section only when the number
 itself is in dispute or you need the surrounding rationale.
 
-**Last verified against the sources:** 2026-09-05 (P1B-S0).
+**Last verified against the sources:** 2026-09-06 (FLAG-P1BS0-1 → DECISION AB — §3 cadence + SLA rewritten).
 
 ---
 
@@ -64,18 +64,57 @@ the shape that scales; do not pre-build for a million rows.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `interval_seconds` | **60** | recurring `hsp_processing_cycle` interval |
+| `interval_seconds` | **20** | recurring `hsp_processing_cycle` interval — pinned by **DECISION AB** so the worst case fits the <30s SLA (was 60) |
 | `relay_batch_size` | 200 | max `wp_hsp_outbox` rows relayed per cycle |
 | `dispatch_batch_size` | 200 | max `system.events` rows enqueued per cycle |
 | `projection_batch_size` | 200 | max `system.queue_jobs` claimed + projected per cycle |
 | `cycle_time_budget_seconds` | 20 | soft budget; the cycle stops claiming new work past it. Keep **well inside** PHP `max_execution_time` |
 
-> **Open tension — see FLAG-P1BS0-1 in `STATUS.md`.** A 60s default interval cannot meet a <30s
-> SLA in the worst case: the wait for the next cycle alone is 0–60s. Ordinary content saves do
-> **not** spawn a cycle (only the onboarding remediation endpoint calls `spawn_cron()`), and
-> WP-Cron itself only fires on traffic unless a system cron drives
-> `wp cron event run --due-now`. No test measures end-to-end latency today. Awaiting a ruling —
-> do not "fix" it by inventing a cadence in a build session.
+### The <30s SLA: settled by DECISION AB (2026-09-06) — FLAG-P1BS0-1 closed
+
+Measured (P1B-S5): a single edit traverses **outbox → relay → dispatch → project → readable** in
+**0.06s**; a saturated 200-event batch costs ~25–30ms per event, so **6–9s depending on host** (measured on two runs). **The pipeline is ~0.2%
+of sync latency; the cron cadence is the other ~99.8%.** So the SLA is a cadence question and
+nothing else — the ruling is two halves, and **both are required**:
+
+**1. Config (shipped).** `processing.interval_seconds` is **20**, not 60. Worst case ≈ 20.1s for a
+single edit, ≈ 26–29s with a saturated 200-batch (the burst regime — batch size is the other lever there) — inside 30s either way. A change takes effect on the
+next firing: `wp_reschedule_event()` looks the interval up by schedule name, so there is no
+migration and no re-scheduling step.
+
+**2. Deployment (operator obligation).** The interval alone is **not sufficient**. WordPress's own
+request-triggered cron refuses to spawn more often than `WP_CRON_LOCK_TIMEOUT` — **60s** by core
+default, enforced in `spawn_cron()`:
+
+```php
+// wp-includes/cron.php — "Don't run … more than once every 60 sec."
+if ( $lock + WP_CRON_LOCK_TIMEOUT > $gmt_time ) { return false; }
+```
+
+so on a default site the effective cadence is floored at 60s no matter what the schedule says (and
+on a quiet site it is worse — WP-Cron only fires on traffic at all). **`wp cron event run` defines
+`DOING_CRON` and bypasses that path entirely**, which is why the SLA requires an out-of-band
+trigger at **≤ 20s**. System cron is minute-granular, so use the offset trio:
+
+```cron
+* * * * *              cd /path/to/wp && wp cron event run --due-now >/dev/null 2>&1
+* * * * * sleep 20 ;   cd /path/to/wp && wp cron event run --due-now >/dev/null 2>&1
+* * * * * sleep 40 ;   cd /path/to/wp && wp cron event run --due-now >/dev/null 2>&1
+```
+
+Pair it with `define( 'DISABLE_WP_CRON', true );` so page loads stop racing the trigger. This is a
+**trigger, not a daemon** — each invocation runs one bounded cycle and exits (ADR-054 §5/§23).
+
+**Without the trigger the platform still works with zero configuration** (Principle 8) — content
+syncs, nothing breaks, only the <30s SLA is unmet. The SLA is therefore a *supported deployment
+property*, not an unconditional platform guarantee.
+
+**Rejected options** (recorded in DECISION AB): restating the SLA to fit a 60s cadence — the
+measurement shows there was nothing to concede; and emitting `spawn_cron()` on every content save,
+which the same 60s lock renders ineffective while adding a loopback HTTP request per save.
+
+**Guard:** `ProcessingCycleIntegrationTest::test_end_to_end_sync_latency_through_one_cycle` now
+reads `interval_seconds` from the shipped config and **asserts** the worst case is under 30s.
 
 ---
 

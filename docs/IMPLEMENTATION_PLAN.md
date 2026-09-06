@@ -424,10 +424,14 @@ Ordered execution plan derived from Phase 0, Phase 1A, the Early Operational Bas
 > batch draining inside `cycle_time_budget_seconds`. P1B-S5 adds the **first end-to-end
 > sync-latency measurement the platform has had**. Targets, defaults and the reasoning are
 > digested in **`docs/notes/PERFORMANCE-BRIEF.md`** (cited, non-authoritative) so a session need
-> not re-read the PRD, Doc 1, Doc 8, Doc 10 and Doc 11 to size a decision. **Open:
-> FLAG-P1BS0-1** — the shipped `processing.interval_seconds = 60` default cannot meet a <30s SLA
-> worst case (the wait for the next cycle alone is 0–60s), and no session may change the cadence
-> on its own authority; P1B-S5 measures and reports under that flag.
+> not re-read the PRD, Doc 1, Doc 8, Doc 10 and Doc 11 to size a decision. **Settled:
+> FLAG-P1BS0-1 → DECISION AB (2026-09-06)** — `processing.interval_seconds` is **20** (worst case
+> ≈20.1s, ≈26–29s saturated, inside the <30s SLA), and the SLA additionally **requires** an
+> out-of-band `wp cron event run --due-now` trigger at ≤20s, because `spawn_cron()` floors
+> request-triggered WP-Cron at `WP_CRON_LOCK_TIMEOUT` (60s). Without the trigger the platform
+> still runs zero-config (Principle 8) — only the SLA is unmet. The worst case is now **asserted**
+> against the shipped config by `ProcessingCycleIntegrationTest`; changing the cadence past the
+> SLA fails the suite and needs a new ruling.
 
 ---
 

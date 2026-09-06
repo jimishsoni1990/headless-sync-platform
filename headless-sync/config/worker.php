@@ -20,6 +20,21 @@ declare(strict_types=1);
  *                               event (defaults to WP core 'hsp_processing' custom interval;
  *                               the cron registrar registers the interval).
  *   interval_seconds          — interval (seconds) for the custom 'hsp_processing' schedule.
+ *                               DEFAULT 20 per DECISION AB (FLAG-P1BS0-1 ruling, 2026-09-06):
+ *                               latency = (wait for the next cycle) + (cycle duration), and the
+ *                               cycle is ~0.06s for one edit / ~6–9s for a saturated 200-batch, so
+ *                               this interval IS the sync latency. 20s puts the worst case at
+ *                               ~20.1s (saturated ~26–29s) inside the PRD <30s SLA. A change here
+ *                               takes effect on the next firing — wp_reschedule_event() looks the
+ *                               interval up by schedule name; no migration, no re-scheduling.
+ *                               OPERATOR OBLIGATION: WordPress's own request-triggered cron will
+ *                               not spawn more often than WP_CRON_LOCK_TIMEOUT (60s core default,
+ *                               enforced in spawn_cron()), so this interval ALONE does not deliver
+ *                               <30s. The SLA requires an out-of-band trigger running
+ *                               `wp cron event run --due-now` at <= 20s (WP-CLI defines DOING_CRON
+ *                               and bypasses the spawn lock). Without one the platform still runs
+ *                               with zero configuration (Principle 8) — only the <30s SLA is
+ *                               unmet. Recipe: docs/notes/PERFORMANCE-BRIEF.md.
  *
  * maintenance — under ADR-054 the MaintenanceWorkerStrategy sweep runs once per WP-Cron cycle
  *   (the cron cadence IS the maintenance cadence — DECISION X); the strategy no longer
@@ -48,7 +63,7 @@ return [
         'projection_batch_size'     => 200,
         'cycle_time_budget_seconds' => 20,
         'schedule'                  => 'hsp_processing',
-        'interval_seconds'          => 60,
+        'interval_seconds'          => 20,   // DECISION AB — see the note above.
     ],
     'maintenance' => [
         'partitions' => ['content', 'commerce', 'system'],

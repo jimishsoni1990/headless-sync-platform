@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.33  
+Version: 1.34  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.34 | 2026-09-06 | **DECISION AB — sync-latency SLA: 20s shipped cadence + out-of-band trigger obligation (FLAG-P1BS0-1 settled; product/architect ruling 2026-09-06).** Options **(a) + (c) together**; (b) and (d) rejected. The P1B-S5 measurement made the ruling cheap: the pipeline costs **0.06s** for one edit (~6–9s for a saturated 200-batch) — **~0.2% of sync latency against the cadence's ~99.8%** — so cadence was the entire problem. **(1)** `config/worker.php` → `processing.interval_seconds` **60 → 20** (with `ProcessingCronRegistrar::DEFAULT_INTERVAL_SECONDS` tracking it), putting the worst case at **≈20.1s** (≈26–29s at a saturated 200-batch — the burst regime, where batch size is the other lever) inside the PRD <30s SLA; propagates on the next firing (`wp_reschedule_event()` resolves the interval by schedule name) — **no migration, no re-scheduling**. **(2)** The interval **alone is insufficient**: `spawn_cron()` enforces `WP_CRON_LOCK_TIMEOUT` (**60s** core default), so request-triggered WP-Cron is floored at 60s regardless of the schedule. The SLA therefore **requires** an out-of-band trigger running `wp cron event run --due-now` at **≤20s** (WP-CLI defines `DOING_CRON` and bypasses the lock) — a **trigger, not a daemon**; ADR-054 is not reopened. **(3)** The <30s SLA is consequently a supported **deployment property**, not an unconditional guarantee — without the trigger the platform still runs with zero configuration (Principle 8) and only the SLA is unmet. **(4)** `ProcessingCycleIntegrationTest::test_end_to_end_sync_latency_through_one_cycle` now reads the interval **from the shipped config** (never restated) and **asserts** the worst case < 30s. **Rejected: (b)** restating the SLA's basis — nothing left to concede once measured; **(d)** `spawn_cron()` on capture — the same 60s lock makes it ineffective for sub-60s cadence while adding a loopback request per save and edging toward the in-request drain DECISION W (c) forbids. No schema, no migration, no persistence, no contract change, no new PG handle (L Ruling 0) or `pg_*` wrapper (E); batch sizes, `cycle_time_budget_seconds` and `heartbeat.offline_after_seconds` untouched. Doc 10 §7 "Reliable Cadence (optional, recommended)" is **narrowed in effect, not contradicted** (optional for function, required for the SLA). |
 | 1.33 | 2026-09-06 | **DECISION AA — shared taxonomy projection per owning domain (FLAG-TAXSCHEMA-1 settled; architect ruling 2026-09-06).** Taxonomies project into **one shared table per owning domain**, told apart by a `taxonomy_type` discriminator — `content.taxonomies` + `content.entity_taxonomies` carry `category`, `post_tag` and every future **Content** taxonomy. **Not** table-per-taxonomy; **not** one platform-wide taxonomy table (Commerce gets its own `commerce.*` projection model, designed with the Commerce module). A new Content taxonomy is **new data, not a migration**. The shipped Phase 1B implementation **already matched this model and is preserved** — no rewrite. What the ruling changed: (1) a **query rule** — every read of the shared table must identify BOTH taxonomy type and term identity (a read keyed on the globally-unique `source_term_id` is exempt), now enforced by `tests/Unit/Content/TaxonomyQueryRuleTest.php`; (2) **index shapes aligned to the real delivery query paths** — migration `0008_align_content_taxonomy_indexes` replaces `(slug)` and `(taxonomy_type)` with `(taxonomy_type, slug)` and widens the entity-join reverse index to `(taxonomy_id, entity_id)`; `(taxonomy_type, parent_id)` is deliberately deferred until a query path needs it. The P1A-S4 pure-join ruling on `content.entity_taxonomies` is **upheld**. No column, key, constraint, contract, event, handle or persistence change. |
 | 1.32 | 2026-09-05 | **DECISION Y — PostgreSQL full-text search deferred from Phase 1B to Phase 5 (P1B-S0, docs-only; product decision 2026-09-05).** Phase 1B — Content Enhancement is **featured images, media synchronization, tags, basic ACF, pagination**; **search is NOT a Phase 1B deliverable** and lands in **Phase 5 — Search Expansion** (Doc 11 §14), which already states PostgreSQL Search remains supported. **Doc 11 → v1.2**: the "PostgreSQL Search" deliverable and the "Search Queries" validation item in §7 are retained under an explicit DECISION Y banner (superseded text is bannered, never deleted — DOC-RECON-S1 precedent). **§17 Search Roadmap ordering is unchanged** (PostgreSQL Search still precedes the provider contract and OpenSearch/Typesense — only the phase placement moved), and **Doc 9 §14/§15, Doc 3 §27 and the Doc 5/6/7 search-projection references are untouched** — all Phase 5+ material. No Phase 1B session may introduce a `tsvector` column, full-text index, or search endpoint. No schema change, no contract change, no code change. |
 | 1.31 | 2026-09-05 | **DECISION Z — lazy PostgreSQL connections at the container boundary (LAZYPG-S1, interstitial before P1B-S0).** Resolves the ONB-S1b "lazy-connection ruling pre-Phase-1B" carry-forward. All four runtime PG handles (delivery, relay, queue-claim, dispatcher) previously called `pg_connect()` **inside their singleton factory**, so merely RESOLVING a binding threw a raw `\RuntimeException` when PostgreSQL was unreachable or unconfigured; because `rest_api_init` fires on **every REST request to the site** (`wp/v2` and the block editor included) and building the content registrar resolves the query providers, an unreachable PostgreSQL fatalled **every REST request**, not just `hsp/v1`. Each factory now hands a **connector `\Closure`** to its wrapper; `PostgresDatabaseConnection` accepts a handle **or** a connector, invokes it at most once on first real use, memoizes it, and translates connect failure to `DatabaseException` at that boundary (onward translation to `OutboxWriteException`/`QueueException` unchanged — DECISION E v1.6); `rollback()` on a never-opened connection is a no-op. Mirrors the existing `MysqliOutboxConnection` connector hotfix on the capture path. **Still four handles with their existing flags** — FORCE_NEW on delivery/queue/dispatcher, none on relay: DECISION K isolation and DECISION L Ruling 0 topology untouched. No fifth handle, no new `pg_*` wrapper, no persistence, no schema change, no contract change. DECISION **Y** is reserved for the P1B-S0 Phase-1B search deferral. |
@@ -1475,6 +1476,72 @@ no timestamps, no checksum, no metadata — P1A-S4). No new handle (DECISION L R
 
 ---
 
+### DECISION AB — Sync-Latency SLA: 20s Shipped Cadence + Out-of-Band Trigger Obligation (FLAG-P1BS0-1)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-09-06 |
+| **Session** | FLAG-P1BS0-1 (interstitial, after Phase 1B close) |
+| **Authority** | Product/architect ruling 2026-09-06 answering FLAG-P1BS0-1 (raised P1B-S0, measured P1B-S5); PRD §Performance / §Success Criteria (<30s sync SLA); ADR-054 §4/§5/§23 (cadence + batch size are the only throughput levers; WP-Cron is the only mechanism); Principle 8 (zero configuration) |
+| **Resolves** | FLAG-P1BS0-1 — the shipped 60s cycle cadence cannot meet the PRD <30s sync SLA, and no test measures sync latency |
+| **Amends** | Nothing frozen. ADR-054 is **not** reopened: no daemon, no supervisor, no worker pool, no in-request drain. Doc 10 §7's "Reliable Cadence (optional, recommended)" is **narrowed in effect, not contradicted** — still optional for function, now required for the SLA |
+
+**Ruling — options (a) + (c) together, both halves required. (b) and (d) are rejected.**
+
+**(1) The shipped default is `processing.interval_seconds = 20`** (was 60), with
+`ProcessingCronRegistrar::DEFAULT_INTERVAL_SECONDS` tracking it so the code fallback cannot
+contradict the config. The P1B-S5 measurement makes this free rather than a trade-off: the whole
+pipeline (outbox → relay → dispatch → project → readable) costs **0.06s** for a single edit and
+**~6–9s** for a saturated 200-event batch, i.e. **~0.2% of sync latency against the cadence's
+~99.8%**. Worst case becomes **≈20.1s** (≈26–29s at a saturated 200-batch — the burst regime, where batch size is the other lever) inside the 30s SLA, with the cycle still
+finishing far inside `cycle_time_budget_seconds = 20`. Overlapping cycles remain safe by the
+existing guarantees only (`FOR UPDATE SKIP LOCKED` + aggregate versioning + visibility timeout +
+the DECISION 3 atomic commit) — ADR-054 §3 adds no lock and none is added here. The change
+propagates on the next firing: `wp_reschedule_event()` resolves the interval by **schedule name**
+from `cron_schedules`, so there is **no migration and no re-scheduling step**.
+
+**(2) The SLA carries an explicit operator obligation, because (1) alone cannot deliver it.**
+WordPress's own request-triggered cron refuses to spawn more often than `WP_CRON_LOCK_TIMEOUT` —
+**60s by core default**, enforced in `spawn_cron()` (*"Don't run … more than once every 60 sec."*).
+A 20s *schedule* therefore still fires at best every 60s on a default site, and less than that on
+a quiet one, since WP-Cron only runs on traffic at all. **`wp cron event run` defines `DOING_CRON`
+and bypasses that path**, so the <30s SLA holds **only** where an out-of-band trigger invokes
+`wp cron event run --due-now` at **≤ 20s** (system cron is minute-granular — use three offset
+entries at `sleep 0/20/40`, paired with `DISABLE_WP_CRON`). This remains a **trigger, not a
+daemon**: one bounded cycle per invocation, then exit (ADR-054 §5/§23). Recipe:
+`docs/notes/PERFORMANCE-BRIEF.md`.
+
+**(3) Consequently the <30s SLA is a supported *deployment property*, not an unconditional
+platform guarantee.** Without the trigger the platform still operates with **zero configuration**
+(Principle 8) — content syncs, nothing is broken, nothing needs starting; only the SLA is unmet.
+Any document restating the SLA must state the trigger condition with it.
+
+**(4) The SLA is now asserted, not aspirational.**
+`ProcessingCycleIntegrationTest::test_end_to_end_sync_latency_through_one_cycle` reads
+`interval_seconds` from the **shipped config file** (it must never be restated in the test — the
+P1B-S5 version hardcoded 60 and would have gone silently stale) and **asserts the worst case is
+under 30s**. Raising the interval past the SLA fails the suite and requires a new ruling.
+
+**Rejected.**
+- **(b) Restate the SLA's measurement basis** (p50, or "from cycle start"). The measurement removed
+  the reason to concede anything: the pipeline is 0.2% of the number. Redefining a product
+  commitment to fit a config default we could simply change is backwards.
+- **(d) Emit `spawn_cron()` on capture.** The same 60s `WP_CRON_LOCK_TIMEOUT` makes it **ineffective
+  for the stated purpose** — it cannot produce sub-60s cadence on the very sites that need it —
+  while adding a loopback HTTP request to every content save and edging toward the in-request drain
+  DECISION W (c) prohibits. The capture path stays free of cron concerns; `spawn_cron()` remains
+  used **only** by the onboarding remediation endpoint (`core/Onboarding/WorkerCronSpawner.php`).
+
+**Explicitly unchanged.** No schema, no migration, no new persistence, no contract change, no new
+PG handle (DECISION L Ruling 0) and no `pg_*` wrapper (DECISION E). Batch sizes and
+`cycle_time_budget_seconds` are untouched — cadence was the whole problem.
+`heartbeat.offline_after_seconds = 60` is untouched and stays correct (it is now three missed
+cycles rather than one, a strictly more forgiving staleness threshold; DECISION P/X (4) gates are
+unaffected).
+
+---
+
 ## Implications Carried into Schema
 
 > **This table is ADDITIVE: it lists only deltas from Doc 3. Base table DDL remains governed by Doc 3 §4/§20–24. Migrations must compose Doc 3 base + these deltas; freeze checks verify both.**
@@ -1568,3 +1635,4 @@ The following tables and columns are affected by the rulings above. Migration fr
 | OpenAPI generator (`core/`) + `GET /hsp/v1/openapi.json` | New core generator produces an **OpenAPI 3.1** document **from the endpoint registry** (`EndpointProviderInterface`) — **never hand-authored, never reflection/scan-derived** from WP routes (explicit-registration idiom, ADR-048/052). Single source of truth = the registrations; the served spec **auto-updates** because it is derived at request time. Route `GET /hsp/v1/openapi.json` registered on the `hsp/v1` namespace (DECISION N) at the normal REST boundary (WPCS per DECISION V (b)/W (a)); versioned per Doc 9 §7 (the v1 doc describes v1). **Scoped to PUBLIC endpoints only** (Doc 9 §22 — FLAG-OAPI-1 resolved v1.27): endpoints requiring auth/capabilities are **excluded from the generated document**, exclusion driven by the metadata **auth field** (not route inspection); the generator endpoint itself stays **public + stateless** (no capability check inside generation — consistent with ADR-055 (e)). **Request-time + stateless:** NO persistence, NO PG read, NO new handle (DECISION L Ruling 0), NO `pg_*` wrapper (DECISION E), **NOT part of the ADR-054 cron cycle**. No schema change; no new event contract. | ADR-055 (v1.26; scoping v1.27); ADR-050; DECISION N/F; Doc 9 §7/§22; DECISION E; DECISION L Ruling 0; ADR-054 |
 | OpenAPI drift guard (CI test) | A test asserts **(1)** every **non-exempted** registered `hsp/v1` REST route has a **complete** endpoint-metadata entry — enumeration reads the **full live `hsp/v1` REST index** (external ground truth, never the registry — non-circular), **subtracts the one frozen structural exemption `hsp/v1/onboarding/`** (DECISION W (e) — first-run admin surface, outside the published contract; further exempt prefixes need an architect ruling; guard hardcodes this prefix with an ADR-055 (f) citation), then requires a complete descriptor per remaining route — a non-exempted route without metadata **fails CI** (net today 13 − 6 = **7** guarded routes); route enumeration permitted here ONLY as a completeness assertion, never as the generation source; **(2)** the generated document **validates against the pinned OpenAPI 3.1 meta-schema** — the gate runs via **ajv (Node toolchain, `tools/openapi-validator/`)** layered over a PHP structural pre-check (ruling D, v1.29 — `opis/json-schema` removed for two reproduced 2020-12 defects; no conformant PHP validator; Node is a sanctioned dev/CI dep per DECISION W (a)); node-missing SKIPs unless `HSP_REQUIRE_NODE_GATE=1` (then FAILs); **(3)** (exclusion test, v1.27) **no endpoint whose metadata marks it non-public appears in the generated document** — public-only scoping (ADR-055 (d)) asserted positively; **(4)** (non-circularity, v1.28) a fixture `hsp/v1` route **outside** the exempted prefix **without** a descriptor **fails the guard**. | ADR-055 (v1.26 — clause (f); scoping v1.27; enumeration v1.28; ajv gate v1.29); ADR-048/052; DECISION W (a)/(e) |
 | `content.taxonomies` + `content.entity_taxonomies` (shared taxonomy projection) | **One shared taxonomy projection per owning DOMAIN**, told apart by `taxonomy_type` — `category`, `post_tag` and every future **Content** taxonomy live in `content.taxonomies`; a new Content taxonomy is **new data, not a new table and not a migration**. **No table-per-taxonomy** and **no platform-wide taxonomy table** (Commerce gets its own `commerce.*` projection model, designed with the Commerce module — never `content.taxonomies` merely because WordPress stores it via the taxonomy API). `content.entity_taxonomies` stays a **pure join table** (composite PK only — P1A-S4 upheld, not amended). **Query rule:** every read of the shared table identifies BOTH taxonomy type and term identity; a read keyed on the globally-unique `source_term_id` is exempt. Enforced by `tests/Unit/Content/TaxonomyQueryRuleTest.php`. **Index deltas (migration `0008_align_content_taxonomy_indexes`):** `+ (taxonomy_type, slug)`, `+ entity_taxonomies (taxonomy_id, entity_id)`, `− (slug)`, `− (taxonomy_type)`, `− entity_taxonomies (taxonomy_id)`; `(taxonomy_type, parent_id)` deliberately **deferred** until a delivery query predicates on parent. **No column, key, constraint, contract, event, handle or persistence change.** No partitioning or table-per-taxonomy optimisation without profiling plus a future ruling. | DECISION AA (v1.33); FLAG-TAXSCHEMA-1; P1A-S4 join-table ruling; Rule 2 / Rule 5 |
+| `config/worker.php` → `processing.interval_seconds` + `core/Workers/ProcessingCronRegistrar` | Shipped cadence is **20** seconds, not 60, and `ProcessingCronRegistrar::DEFAULT_INTERVAL_SECONDS` **must track it** (the code fallback may not contradict the shipped config). Worst-case sync latency ≈ interval + cycle ≈ **20.1s** (≈26–29s at a saturated 200-batch) against the PRD **<30s** SLA; the pipeline itself is 0.06s. Changing the interval needs **no migration and no re-scheduling** — `wp_reschedule_event()` resolves it by schedule name. **The interval alone does not deliver the SLA:** `spawn_cron()` enforces `WP_CRON_LOCK_TIMEOUT` (60s core default), so the SLA additionally **requires** an out-of-band trigger running `wp cron event run --due-now` at **≤20s** (a trigger, not a daemon — ADR-054 §5/§23); without it the platform still runs zero-config (Principle 8) and only the SLA is unmet. **Guarded by** `ProcessingCycleIntegrationTest::test_end_to_end_sync_latency_through_one_cycle`, which reads the interval from the shipped config (never restates it) and asserts the worst case < 30s. `spawn_cron()` stays confined to `core/Onboarding/WorkerCronSpawner` — **never** called from the capture path. **No schema, migration, persistence, contract, handle (L Ruling 0) or `pg_*` wrapper (E) change; batch sizes, `cycle_time_budget_seconds` and `heartbeat.offline_after_seconds` untouched.** | DECISION AB (v1.34); FLAG-P1BS0-1; PRD §Performance; ADR-054 §4/§5/§23; Principle 8 |

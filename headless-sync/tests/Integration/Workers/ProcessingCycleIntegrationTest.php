@@ -358,19 +358,26 @@ final class ProcessingCycleIntegrationTest extends TestCase
     // This test measures the cycle and PRINTS the arithmetic with the cadence and batch
     // sizes stated, so the number is reproducible and its config dependency explicit.
     //
-    // It deliberately asserts ONLY on what the code controls — that the pipeline itself is
-    // nowhere near the budget. It does NOT assert the 30s total: the cadence is a config
-    // decision under FLAG-P1BS0-1, and a test that fails until someone rules would block
-    // the suite rather than inform the ruling.
+    // RULED 2026-09-06 — DECISION AB (FLAG-P1BS0-1). The cadence is no longer open, so the
+    // 30s total IS now asserted: config/worker.php → processing.interval_seconds is read
+    // from the shipped file (never restated here — the P1B-S5 version hardcoded 60 and would
+    // have gone quietly stale) and the worst case must fit the SLA. Raising the interval past
+    // the SLA now fails this test instead of being noticed by nobody.
+    //
+    // What this test CANNOT prove is the operator half of DECISION AB: WordPress's own
+    // request-triggered cron is floored at WP_CRON_LOCK_TIMEOUT (60s) inside spawn_cron(), so
+    // the interval below is achievable only with an out-of-band `wp cron event run --due-now`
+    // trigger at <= interval_seconds. That is a deployment obligation, not a code property.
     // =========================================================================
 
     public function test_end_to_end_sync_latency_through_one_cycle(): void
     {
-        // Shipped defaults (config/worker.php → processing), stated so the number is
-        // reproducible and so a config change invalidates the recorded figure loudly.
-        $intervalSeconds  = 60;
-        $batchSize        = 200;
-        $cycleTimeBudget  = 20.0;
+        // Read from the SHIPPED config, not restated — a cadence change must move this number.
+        $processing       = require dirname(__DIR__, 3) . '/config/worker.php';
+        $processing       = $processing['processing'];
+        $intervalSeconds  = (int) $processing['interval_seconds'];
+        $batchSize        = (int) $processing['projection_batch_size'];
+        $cycleTimeBudget  = (float) $processing['cycle_time_budget_seconds'];
 
         // A realistic single edit: one post published in WordPress.
         $this->seedPost(1, 'latency-probe');
@@ -397,7 +404,7 @@ final class ProcessingCycleIntegrationTest extends TestCase
             . "  batch sizes: %d per stage | cycle budget: %.0f s\n"
             . "  => typical total ≈ %.1f s | worst case ≈ %.1f s | PRD SLA: 30 s\n"
             . "  => SLA met by the pipeline: YES (%.3f s) | by the shipped cadence: %s\n"
-            . "  (see FLAG-P1BS0-1 — the cadence is unresolved; this session measures, it does not change it)\n\n",
+            . "  (DECISION AB — cadence ruled; the SLA also needs an out-of-band trigger at <= interval)\n\n",
             $cycle,
             $intervalSeconds,
             $batchSize,
@@ -425,11 +432,21 @@ final class ProcessingCycleIntegrationTest extends TestCase
         self::assertFalse($result->budgetExhausted, 'a single edit must not exhaust the cycle budget');
         self::assertLessThan($cycleTimeBudget, $cycle);
 
-        // RECORDED, NOT ASSERTED: whether the shipped cadence can meet the SLA. At the
-        // default 60s interval the worst case cannot (the wait alone exceeds 30s) — which is
-        // exactly what FLAG-P1BS0-1 asks to be ruled on, now with a measured pipeline cost
-        // rather than a guess.
-        self::assertGreaterThan(0.0, $worstCase);
+        // ASSERTED since DECISION AB: the SHIPPED cadence must leave the worst case inside the
+        // SLA. This is the guard the P1B-S5 measurement could not have — it reads the real
+        // config file, so raising processing.interval_seconds past the SLA fails here.
+        self::assertLessThan(
+            30.0,
+            $worstCase,
+            sprintf(
+                'Worst-case sync latency is %.1fs (interval_seconds=%d + %.3fs cycle) against the '
+                . 'PRD 30s SLA. DECISION AB pins the shipped interval so this fits; raising it '
+                . 'needs a new ruling, not a looser test.',
+                $worstCase,
+                $intervalSeconds,
+                $cycle,
+            ),
+        );
     }
 
     public function test_a_full_default_batch_drains_within_the_cycle_time_budget(): void
