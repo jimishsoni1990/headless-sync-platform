@@ -14,6 +14,7 @@ use HSP\Core\Operations\Providers\QueueStatusProvider;
 use HSP\Core\Operations\Providers\WorkerStatusProvider;
 use HSP\Modules\Content\Operations\ContentMetricsProvider;
 use HSP\Tests\Integration\Reconciliation\WriteSpyConnection;
+use HSP\Tests\Support\ContentSchema;
 use HSP\Tests\Unit\Operations\Fakes\FakeModuleInspectionProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -203,6 +204,13 @@ final class OperationsProvidersIntegrationTest extends TestCase
         $this->insertContentPage(deleted: false);
         $this->insertContentPage(deleted: true); // tombstone excluded
 
+        // Categories and tags share content.taxonomies (DECISION AA), so the two counts must be
+        // told apart by taxonomy_type — a count of the TABLE would report 3 categories here.
+        $this->insertTaxonomyTerm('category', 'news', deleted: false);
+        $this->insertTaxonomyTerm('post_tag', 'news', deleted: false); // same slug, other taxonomy
+        $this->insertTaxonomyTerm('post_tag', 'php', deleted: false);
+        $this->insertTaxonomyTerm('category', 'gone', deleted: true);  // tombstone excluded
+
         $samples = (new ContentMetricsProvider($this->db))->samples();
         $by = [];
         foreach ($samples as $s) {
@@ -211,7 +219,8 @@ final class OperationsProvidersIntegrationTest extends TestCase
 
         self::assertSame(2, $by['content_pages'], 'soft-deleted rows are excluded');
         self::assertSame(0, $by['content_posts']);
-        self::assertSame(0, $by['content_categories']);
+        self::assertSame(1, $by['content_categories'], 'tags must not be counted as categories');
+        self::assertSame(2, $by['content_tags']);
     }
 
     // =========================================================================
@@ -406,6 +415,26 @@ final class OperationsProvidersIntegrationTest extends TestCase
         );
     }
 
+    private function insertTaxonomyTerm(string $taxonomyType, string $slug, bool $deleted): void
+    {
+        pg_query_params(
+            $this->pgConn,
+            "INSERT INTO content.taxonomies
+                 (id, source_term_id, taxonomy_type, slug, name, description, parent_id, post_count,
+                  deleted_at, checksum, created_at, updated_at, synced_at)
+             VALUES ($1::uuid, $2, $3, $4, 'T', '', 0, 0,
+                     CASE WHEN $5::boolean THEN NOW() ELSE NULL END, $6, NOW(), NOW(), NOW())",
+            [
+                $this->newUuid(),
+                random_int(1, 2_000_000_000),
+                $taxonomyType,
+                $slug,
+                $deleted ? 't' : 'f',
+                str_repeat('b', 64),
+            ],
+        );
+    }
+
     // =========================================================================
     // Helpers — reads / misc
     // =========================================================================
@@ -580,10 +609,9 @@ final class OperationsProvidersIntegrationTest extends TestCase
             )
         ");
 
-        pg_query($this->pgConn, "
-            CREATE TABLE content.taxonomies (
-                id UUID NOT NULL PRIMARY KEY, deleted_at TIMESTAMPTZ NULL
-            )
-        ");
+        // The REAL taxonomy DDL, not a two-column stand-in: the content metrics provider counts
+        // per taxonomy_type (DECISION AA), so a hand-rolled table without the discriminator
+        // would only prove the copy matches itself.
+        ContentSchema::ensureTaxonomySupport($this->pgConn);
     }
 }

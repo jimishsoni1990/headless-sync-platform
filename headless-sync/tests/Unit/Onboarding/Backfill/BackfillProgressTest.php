@@ -100,6 +100,31 @@ final class BackfillProgressTest extends TestCase
         self::assertSame(0, $snap['projected_total']);
     }
 
+    /**
+     * Categories and tags share content.taxonomies (DECISION AA), while the WordPress-side
+     * expected count is categories alone. Counting the whole table therefore inflated the
+     * projected side by every tag — enough to declare the backfill converged while categories
+     * were still missing.
+     */
+    public function test_taxonomy_projection_count_is_scoped_to_categories(): void
+    {
+        $conn = new ScriptedConnection();
+        $conn->on('behind', [['c' => 0]]);
+        $conn->on("taxonomy_type = 'category'", [['c' => 2]]);
+
+        $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+
+        self::assertSame(2, $reader->liveProjectionCounts()['category']);
+
+        $taxonomyQueries = array_values(array_filter(
+            $conn->queries,
+            static fn (string $sql): bool => str_contains($sql, 'content.taxonomies')
+        ));
+
+        self::assertCount(1, $taxonomyQueries);
+        self::assertStringContainsString("taxonomy_type = 'category'", $taxonomyQueries[0]);
+    }
+
     // --- helpers ------------------------------------------------------------
 
     /**

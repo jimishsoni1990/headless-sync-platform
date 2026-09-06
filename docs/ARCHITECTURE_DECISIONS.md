@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.32  
+Version: 1.33  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.33 | 2026-09-06 | **DECISION AA — shared taxonomy projection per owning domain (FLAG-TAXSCHEMA-1 settled; architect ruling 2026-09-06).** Taxonomies project into **one shared table per owning domain**, told apart by a `taxonomy_type` discriminator — `content.taxonomies` + `content.entity_taxonomies` carry `category`, `post_tag` and every future **Content** taxonomy. **Not** table-per-taxonomy; **not** one platform-wide taxonomy table (Commerce gets its own `commerce.*` projection model, designed with the Commerce module). A new Content taxonomy is **new data, not a migration**. The shipped Phase 1B implementation **already matched this model and is preserved** — no rewrite. What the ruling changed: (1) a **query rule** — every read of the shared table must identify BOTH taxonomy type and term identity (a read keyed on the globally-unique `source_term_id` is exempt), now enforced by `tests/Unit/Content/TaxonomyQueryRuleTest.php`; (2) **index shapes aligned to the real delivery query paths** — migration `0008_align_content_taxonomy_indexes` replaces `(slug)` and `(taxonomy_type)` with `(taxonomy_type, slug)` and widens the entity-join reverse index to `(taxonomy_id, entity_id)`; `(taxonomy_type, parent_id)` is deliberately deferred until a query path needs it. The P1A-S4 pure-join ruling on `content.entity_taxonomies` is **upheld**. No column, key, constraint, contract, event, handle or persistence change. |
 | 1.32 | 2026-09-05 | **DECISION Y — PostgreSQL full-text search deferred from Phase 1B to Phase 5 (P1B-S0, docs-only; product decision 2026-09-05).** Phase 1B — Content Enhancement is **featured images, media synchronization, tags, basic ACF, pagination**; **search is NOT a Phase 1B deliverable** and lands in **Phase 5 — Search Expansion** (Doc 11 §14), which already states PostgreSQL Search remains supported. **Doc 11 → v1.2**: the "PostgreSQL Search" deliverable and the "Search Queries" validation item in §7 are retained under an explicit DECISION Y banner (superseded text is bannered, never deleted — DOC-RECON-S1 precedent). **§17 Search Roadmap ordering is unchanged** (PostgreSQL Search still precedes the provider contract and OpenSearch/Typesense — only the phase placement moved), and **Doc 9 §14/§15, Doc 3 §27 and the Doc 5/6/7 search-projection references are untouched** — all Phase 5+ material. No Phase 1B session may introduce a `tsvector` column, full-text index, or search endpoint. No schema change, no contract change, no code change. |
 | 1.31 | 2026-09-05 | **DECISION Z — lazy PostgreSQL connections at the container boundary (LAZYPG-S1, interstitial before P1B-S0).** Resolves the ONB-S1b "lazy-connection ruling pre-Phase-1B" carry-forward. All four runtime PG handles (delivery, relay, queue-claim, dispatcher) previously called `pg_connect()` **inside their singleton factory**, so merely RESOLVING a binding threw a raw `\RuntimeException` when PostgreSQL was unreachable or unconfigured; because `rest_api_init` fires on **every REST request to the site** (`wp/v2` and the block editor included) and building the content registrar resolves the query providers, an unreachable PostgreSQL fatalled **every REST request**, not just `hsp/v1`. Each factory now hands a **connector `\Closure`** to its wrapper; `PostgresDatabaseConnection` accepts a handle **or** a connector, invokes it at most once on first real use, memoizes it, and translates connect failure to `DatabaseException` at that boundary (onward translation to `OutboxWriteException`/`QueueException` unchanged — DECISION E v1.6); `rollback()` on a never-opened connection is a no-op. Mirrors the existing `MysqliOutboxConnection` connector hotfix on the capture path. **Still four handles with their existing flags** — FORCE_NEW on delivery/queue/dispatcher, none on relay: DECISION K isolation and DECISION L Ruling 0 topology untouched. No fifth handle, no new `pg_*` wrapper, no persistence, no schema change, no contract change. DECISION **Y** is reserved for the P1B-S0 Phase-1B search deferral. |
 | 1.30 | 2026-09-05 | **ADR-054 sibling-document reconciliation applied (DOC-RECON-S1, docs-only) — closes FLAG-DOC8V2-1. No new ruling, no ADR re-opened.** The already-ratified ADR-054 wording was propagated into the sibling frozen docs that still asserted the superseded daemon/CLI-worker execution model: **Doc 4 → v1.1** (§19 heartbeat = cycle freshness; §20 ADR-024 status → **SUPERSEDED by ADR-054**, original text retained verbatim as history; §29 scaling = overlapping cycles; §30 checklist), **Doc 10 → v1.1** (§4/§5 topologies, §7 rewritten WP-Cron-only, §20 `uptime` removed, §23 "Worker Offline" → "Processing Stalled", §24 availability target → processing freshness, §26 runbook rename, §27 systemd/Supervisor/worker-launch assets removed, §28 shared hosting without CLI/process supervision promoted to first-class supported), **Doc 11 → v1.1** (Doc-8 title, Scalability "Multiple Worker Processes" → concurrent claimants, "Restart Workers" note). CLAUDE.md was already clean (2026-07-20 rewrite). Superseded text is retained under explicit banners, never deleted; ADR-054 remains the single authority. See the APPLIED note under the ADR-054 Conflict Report. |
@@ -1410,6 +1411,70 @@ ruling landed first and took the next free letter after it.
 
 ---
 
+### DECISION AA — Shared Taxonomy Projection Per Owning Domain (FLAG-TAXSCHEMA-1)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-09-06 |
+| **Session** | FLAG-TAXSCHEMA-1 (interstitial, after P1B-S5 / before Phase 2) |
+| **Authority** | Architect ruling 2026-09-06 answering FLAG-TAXSCHEMA-1 (raised P1B-S3 closeout); Rule 2 (transform before persist); Rule 5 (module isolation); P1A-S4 ruling on `content.entity_taxonomies` (pure join table) |
+| **Resolves** | FLAG-TAXSCHEMA-1 — one shared `content.taxonomies` table with a `taxonomy_type` discriminator, or a table per taxonomy? |
+| **Amends** | Nothing frozen. The P1A-S4 pure-join ruling on `content.entity_taxonomies` is **upheld, not amended** (splitting the term table would have forced it open — that is precisely the cost this ruling declines to pay). No contract, event, handle or column changes; index shapes only |
+
+**Ruling.** Taxonomies project into **one shared table per owning domain/module**, told apart by
+a `taxonomy_type` discriminator. For the Content module that is `content.taxonomies` +
+`content.entity_taxonomies`, carrying `category`, `post_tag` and any future Content taxonomy
+(`genre`, `topic`, `location`, …). **Not** one physical table per taxonomy. **Not** one
+platform-wide taxonomy table shared across domains.
+
+A new Content taxonomy is therefore **new data, not a new table and not a migration**.
+
+**Domain boundary.** The shared model is **per domain**, never platform-wide. Future WooCommerce
+concepts do **not** belong in `content.taxonomies` merely because WordPress happens to store them
+through the taxonomy API; Commerce gets its own projection model (`commerce.*`), designed when the
+Commerce module is designed and **not invented during Content work**. The governing rule:
+
+> Same domain + genuinely equivalent taxonomy semantics = shared taxonomy table.
+> Different domain or meaningfully different business semantics = domain-specific projection.
+
+**Query rule (the cost of the shared table, and the thing that must be enforced).** When the
+taxonomy type matters, a query must identify **both the taxonomy type and the term identity** —
+`WHERE taxonomy_type = 'category' AND slug = 'technology'`. A read keyed on the globally-unique
+`source_term_id` is already unambiguous and needs no discriminator; **every other read of the
+shared table needs one**. This is not bookkeeping: the same forgotten predicate has produced five
+defects — three in P1B-S3 (`?category=` matching a tag, `/categories/{slug}` resolving a tag, and
+the sibling class still open as FLAG-PAGESLUG-1) and two found while applying this ruling (the
+operations console counting tags as categories; the onboarding backfill counting tags toward the
+projected category total, which could declare convergence while categories were still missing).
+`tests/Unit/Content/TaxonomyQueryRuleTest.php` enforces the rule statically so the class is
+**detectable** rather than merely known.
+
+**Index shapes.** Indexes are designed around the **actual delivery query paths**:
+`content.taxonomies (taxonomy_type, slug)`; `content.entity_taxonomies (entity_id, taxonomy_id)`
+(the existing PK) and `(taxonomy_id, entity_id)`. The pre-existing single-column
+`(slug)` and `(taxonomy_type)` indexes are **dropped** — no query looks a term up by slug alone,
+and `(taxonomy_type)` is a strict prefix of the composite. `(taxonomy_type, parent_id)` is named
+in the ruling but **deliberately not created**: no delivery query filters, orders or joins
+taxonomies by parent today, so it would be an index nothing reads, paid for on every write. It
+ships with the first endpoint that walks the term tree.
+
+**Explicitly rejected, and why.** *Table per taxonomy* was rejected on architectural scalability,
+not runtime: with the right indexes PostgreSQL resolves a taxonomy type + slug without scanning
+every taxonomy row, whereas each new taxonomy would otherwise cost a migration, a table, adapter
+and query-provider logic, and — because `taxonomy_id` would no longer identify which table it
+points into — either a **second** table per taxonomy for the join or a discriminator on the join
+table, reintroducing the rejected pattern one level down and reopening the frozen P1A-S4 ruling.
+**No partitioning and no table-per-taxonomy optimisation** without profiling that demonstrates a
+real problem plus a future ruling authorising it.
+
+**Explicitly unchanged.** `content.taxonomies` and `content.entity_taxonomies` keep their columns,
+keys and constraints; `content.entity_taxonomies` remains a **pure join table** (composite PK only,
+no timestamps, no checksum, no metadata — P1A-S4). No new handle (DECISION L Ruling 0), no new
+`pg_*` wrapper (DECISION E), no event or contract change, no persistence added.
+
+---
+
 ## Implications Carried into Schema
 
 > **This table is ADDITIVE: it lists only deltas from Doc 3. Base table DDL remains governed by Doc 3 §4/§20–24. Migrations must compose Doc 3 base + these deltas; freeze checks verify both.**
@@ -1502,3 +1567,4 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `core/Contracts/Operations/EndpointDescriptor` + `EndpointProviderInterface` (additive enrichment) | Descriptor **additively enriched** (no field removed; existing five fields method/route/namespace/displayGroup/description retained) to carry OpenAPI 3.1 Operation metadata: **parameters** (path + query, incl. DECISION F filters + cursor), **request/response schema** (Rule 6 published shapes — not internal `content.*`/canonical), **auth requirement** (public/authenticated — Doc 9 §22), **cursor-pagination envelope** (`data`+`next_cursor` — Doc 9 §13 / DECISION F `CursorPage`), **deprecation status** (Doc 9 §26 → OpenAPI `deprecated`), **version** (Doc 9 §7), **module owner** (Doc 9 §6). Core owns the contract (`core/Contracts/`, Rule 5); modules populate their own descriptors (`modules/*/Operations/`, e.g. `ContentEndpointProvider`) depending on `core/Contracts/` only. | ADR-055 (v1.26); Doc 12 §15; Doc 9 §6/§7/§13/§22/§26 |
 | OpenAPI generator (`core/`) + `GET /hsp/v1/openapi.json` | New core generator produces an **OpenAPI 3.1** document **from the endpoint registry** (`EndpointProviderInterface`) — **never hand-authored, never reflection/scan-derived** from WP routes (explicit-registration idiom, ADR-048/052). Single source of truth = the registrations; the served spec **auto-updates** because it is derived at request time. Route `GET /hsp/v1/openapi.json` registered on the `hsp/v1` namespace (DECISION N) at the normal REST boundary (WPCS per DECISION V (b)/W (a)); versioned per Doc 9 §7 (the v1 doc describes v1). **Scoped to PUBLIC endpoints only** (Doc 9 §22 — FLAG-OAPI-1 resolved v1.27): endpoints requiring auth/capabilities are **excluded from the generated document**, exclusion driven by the metadata **auth field** (not route inspection); the generator endpoint itself stays **public + stateless** (no capability check inside generation — consistent with ADR-055 (e)). **Request-time + stateless:** NO persistence, NO PG read, NO new handle (DECISION L Ruling 0), NO `pg_*` wrapper (DECISION E), **NOT part of the ADR-054 cron cycle**. No schema change; no new event contract. | ADR-055 (v1.26; scoping v1.27); ADR-050; DECISION N/F; Doc 9 §7/§22; DECISION E; DECISION L Ruling 0; ADR-054 |
 | OpenAPI drift guard (CI test) | A test asserts **(1)** every **non-exempted** registered `hsp/v1` REST route has a **complete** endpoint-metadata entry — enumeration reads the **full live `hsp/v1` REST index** (external ground truth, never the registry — non-circular), **subtracts the one frozen structural exemption `hsp/v1/onboarding/`** (DECISION W (e) — first-run admin surface, outside the published contract; further exempt prefixes need an architect ruling; guard hardcodes this prefix with an ADR-055 (f) citation), then requires a complete descriptor per remaining route — a non-exempted route without metadata **fails CI** (net today 13 − 6 = **7** guarded routes); route enumeration permitted here ONLY as a completeness assertion, never as the generation source; **(2)** the generated document **validates against the pinned OpenAPI 3.1 meta-schema** — the gate runs via **ajv (Node toolchain, `tools/openapi-validator/`)** layered over a PHP structural pre-check (ruling D, v1.29 — `opis/json-schema` removed for two reproduced 2020-12 defects; no conformant PHP validator; Node is a sanctioned dev/CI dep per DECISION W (a)); node-missing SKIPs unless `HSP_REQUIRE_NODE_GATE=1` (then FAILs); **(3)** (exclusion test, v1.27) **no endpoint whose metadata marks it non-public appears in the generated document** — public-only scoping (ADR-055 (d)) asserted positively; **(4)** (non-circularity, v1.28) a fixture `hsp/v1` route **outside** the exempted prefix **without** a descriptor **fails the guard**. | ADR-055 (v1.26 — clause (f); scoping v1.27; enumeration v1.28; ajv gate v1.29); ADR-048/052; DECISION W (a)/(e) |
+| `content.taxonomies` + `content.entity_taxonomies` (shared taxonomy projection) | **One shared taxonomy projection per owning DOMAIN**, told apart by `taxonomy_type` — `category`, `post_tag` and every future **Content** taxonomy live in `content.taxonomies`; a new Content taxonomy is **new data, not a new table and not a migration**. **No table-per-taxonomy** and **no platform-wide taxonomy table** (Commerce gets its own `commerce.*` projection model, designed with the Commerce module — never `content.taxonomies` merely because WordPress stores it via the taxonomy API). `content.entity_taxonomies` stays a **pure join table** (composite PK only — P1A-S4 upheld, not amended). **Query rule:** every read of the shared table identifies BOTH taxonomy type and term identity; a read keyed on the globally-unique `source_term_id` is exempt. Enforced by `tests/Unit/Content/TaxonomyQueryRuleTest.php`. **Index deltas (migration `0008_align_content_taxonomy_indexes`):** `+ (taxonomy_type, slug)`, `+ entity_taxonomies (taxonomy_id, entity_id)`, `− (slug)`, `− (taxonomy_type)`, `− entity_taxonomies (taxonomy_id)`; `(taxonomy_type, parent_id)` deliberately **deferred** until a delivery query predicates on parent. **No column, key, constraint, contract, event, handle or persistence change.** No partitioning or table-per-taxonomy optimisation without profiling plus a future ruling. | DECISION AA (v1.33); FLAG-TAXSCHEMA-1; P1A-S4 join-table ruling; Rule 2 / Rule 5 |

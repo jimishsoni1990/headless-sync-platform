@@ -21,6 +21,9 @@ final class ScriptedConnection implements DatabaseConnectionInterface
 
     public int $writeAttempts = 0;
 
+    /** @var list<string> every SQL passed to query(), for assertions. */
+    public array $queries = [];
+
     /** Script a query: any SQL containing $needle returns $rows. */
     public function on(string $needle, array $rows): self
     {
@@ -31,6 +34,8 @@ final class ScriptedConnection implements DatabaseConnectionInterface
 
     public function query(string $sql, array $params = []): array
     {
+        $this->queries[] = $sql;
+
         foreach ($this->scripted as $needle => $rows) {
             if (str_contains($sql, $needle)) {
                 return $rows;

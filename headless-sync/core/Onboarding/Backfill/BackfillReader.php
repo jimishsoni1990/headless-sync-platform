@@ -26,11 +26,19 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  */
 final class BackfillReader
 {
-    /** Live projection table + soft-delete-aware count per in-scope aggregate type. */
+    /**
+     * Live projection table per in-scope aggregate type, plus the taxonomy discriminator where
+     * the table is SHARED.
+     *
+     * Categories and tags live in one content.taxonomies table (DECISION AA), so counting the
+     * table reports "categories" as categories + tags. That inflated the projected count against
+     * a WordPress-side expected count of categories alone, which could declare the backfill
+     * converged while categories were still missing.
+     */
     private const PROJECTION = [
-        'page'     => 'content.pages',
-        'post'     => 'content.posts',
-        'category' => 'content.taxonomies',
+        'page'     => ['table' => 'content.pages',      'type' => null],
+        'post'     => ['table' => 'content.posts',      'type' => null],
+        'category' => ['table' => 'content.taxonomies', 'type' => 'category'],
     ];
 
     /** @var callable(): DatabaseConnectionInterface */
@@ -77,8 +85,8 @@ final class BackfillReader
     public function liveProjectionCounts(): array
     {
         $counts = [];
-        foreach (self::PROJECTION as $type => $table) {
-            $counts[$type] = $this->countLive($table);
+        foreach (self::PROJECTION as $type => $meta) {
+            $counts[$type] = $this->countLive($meta['table'], $meta['type']);
         }
 
         return $counts;
@@ -113,11 +121,14 @@ final class BackfillReader
         return (int) ($rows[0]['c'] ?? 0);
     }
 
-    private function countLive(string $table): int
+    private function countLive(string $table, ?string $taxonomyType): int
     {
+        // Fixed literals from PROJECTION above — never user input.
+        $scope = $taxonomyType === null ? '' : " AND taxonomy_type = '{$taxonomyType}'";
+
         try {
             $rows = $this->connection()->query(
-                "SELECT COUNT(*) AS c FROM {$table} WHERE deleted_at IS NULL"
+                "SELECT COUNT(*) AS c FROM {$table} WHERE deleted_at IS NULL{$scope}"
             );
         } catch (\Throwable) {
             return 0;

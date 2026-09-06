@@ -46,11 +46,18 @@ final class ReconciliationService
     public const MODE_INCREMENTAL = 'incremental';
     public const MODE_FULL        = 'full';
 
-    /** Projection table + id column per aggregate type. */
+    /**
+     * Projection table + id column per aggregate type, plus the taxonomy discriminator where the
+     * table is SHARED between aggregate types.
+     *
+     * Categories and tags project into one content.taxonomies table, told apart by taxonomy_type
+     * (DECISION AA). The orphan sweep lists rows BY TABLE, with no id to disambiguate them, so
+     * without the discriminator a 'category' pass claims every tag row as a category candidate.
+     */
     private const PROJECTION = [
         'page'     => ['table' => 'content.pages',      'id' => 'source_post_id'],
         'post'     => ['table' => 'content.posts',      'id' => 'source_post_id'],
-        'category' => ['table' => 'content.taxonomies', 'id' => 'source_term_id'],
+        'category' => ['table' => 'content.taxonomies', 'id' => 'source_term_id', 'type' => 'category'],
     ];
 
     public function __construct(
@@ -213,7 +220,7 @@ final class ReconciliationService
         $rows = $this->conn->query(
             "SELECT {$meta['id']} AS aggregate_id
              FROM   {$meta['table']}
-             WHERE  deleted_at IS NULL
+             WHERE  deleted_at IS NULL{$this->typeScope($type)}
              ORDER BY {$meta['id']}",
         );
 
@@ -230,11 +237,23 @@ final class ReconciliationService
         $rows = $this->conn->query(
             "SELECT checksum, updated_at, deleted_at
              FROM   {$meta['table']}
-             WHERE  {$meta['id']} = $1",
+             WHERE  {$meta['id']} = $1{$this->typeScope($type)}",
             [$id],
         );
 
         return $rows[0] ?? null;
+    }
+
+    /**
+     * The taxonomy_type predicate for aggregate types whose projection table is shared, or ''
+     * for the tables that are not (DECISION AA query rule: identify BOTH taxonomy type and term
+     * identity). The value is a fixed literal from PROJECTION above — never user input.
+     */
+    private function typeScope(string $type): string
+    {
+        $taxonomy = self::PROJECTION[$type]['type'] ?? null;
+
+        return $taxonomy === null ? '' : " AND taxonomy_type = '{$taxonomy}'";
     }
 
     // -------------------------------------------------------------------------

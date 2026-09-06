@@ -312,7 +312,7 @@ final class TagsIntegrationTest extends TestCase
              LIMIT 21"
         );
 
-        // term → entities rides idx_content_entity_taxonomies_taxonomy_id; the hop back to the
+        // term → entities rides idx_content_entity_taxonomies_taxonomy_entity; the hop back to the
         // term rides the taxonomies PK. Neither may degrade to a full scan.
         self::assertStringNotContainsString('Seq Scan on entity_taxonomies', $plan, "Plan:\n{$plan}");
         self::assertStringNotContainsString('Seq Scan on taxonomies', $plan, "Plan:\n{$plan}");
@@ -380,6 +380,9 @@ final class TagsIntegrationTest extends TestCase
             '0003_create_content_posts.sql',
             '0004_create_content_taxonomies.sql',
             '0005_create_content_entity_taxonomies.sql',
+            // The shipped index set (DECISION AA) — the EXPLAIN assertions below must be made
+            // against the indexes production actually has, not the pre-0008 pair.
+            '0008_align_content_taxonomy_indexes.sql',
         ] as $file) {
             $sql = file_get_contents(__DIR__ . '/../../../modules/Content/Migrations/' . $file);
             self::assertIsString($sql, "migration {$file} must be readable");

@@ -39,7 +39,8 @@ final class ContentMetricsProvider implements MetricsProviderInterface
         return [
             new MetricSample('content_pages', $this->liveCount('content.pages'), 'rows'),
             new MetricSample('content_posts', $this->liveCount('content.posts'), 'rows'),
-            new MetricSample('content_categories', $this->liveCount('content.taxonomies'), 'rows'),
+            new MetricSample('content_categories', $this->liveTaxonomyCount('category'), 'rows'),
+            new MetricSample('content_tags', $this->liveTaxonomyCount('post_tag'), 'rows'),
         ];
     }
 
@@ -51,6 +52,26 @@ final class ContentMetricsProvider implements MetricsProviderInterface
     {
         $rows = $this->conn->query(
             "SELECT COUNT(*) AS c FROM {$table} WHERE deleted_at IS NULL"
+        );
+
+        return (int) ($rows[0]['c'] ?? 0);
+    }
+
+    /**
+     * Count live rows of ONE taxonomy.
+     *
+     * The taxonomy_type predicate is load-bearing (DECISION AA query rule): categories and tags
+     * share content.taxonomies, so counting the table reports "categories" as categories + tags —
+     * which is what this metric did until FLAG-TAXSCHEMA-1 was settled.
+     *
+     * The type is a fixed literal from the closed set above (never user input), inlined the same
+     * way PostQueryProvider inlines its own taxonomy_type predicate.
+     */
+    private function liveTaxonomyCount(string $taxonomyType): int
+    {
+        $rows = $this->conn->query(
+            "SELECT COUNT(*) AS c FROM content.taxonomies
+             WHERE deleted_at IS NULL AND taxonomy_type = '{$taxonomyType}'"
         );
 
         return (int) ($rows[0]['c'] ?? 0);

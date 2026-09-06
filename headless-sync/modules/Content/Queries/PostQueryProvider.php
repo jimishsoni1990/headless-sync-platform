@@ -57,7 +57,7 @@ final class PostQueryProvider implements QueryProviderInterface
      *
      * A correlated subquery rather than a second fetch: it keeps a listing at ONE round-trip
      * whatever the page size (no N+1), and each row's lookup rides
-     * idx_content_entity_taxonomies_taxonomy_id / the taxonomies PK. Stitching the tags client
+     * the entity_taxonomies PK / the taxonomies PK. Stitching the tags client
      * side would mean a second query and reassembly in PHP for no gain.
      *
      * Ordered by slug so the published array is deterministic — an unstable order would make

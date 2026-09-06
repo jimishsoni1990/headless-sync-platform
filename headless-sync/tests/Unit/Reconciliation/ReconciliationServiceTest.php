@@ -298,4 +298,54 @@ final class ReconciliationServiceTest extends TestCase
         self::assertSame(3, $result->scanned, 'all three aggregates scanned across pages');
         self::assertSame(0, $result->repairedCount());
     }
+
+    // ---- shared taxonomy projection (DECISION AA) ----
+
+    /**
+     * Categories and tags share content.taxonomies. The orphan sweep lists rows BY TABLE with no
+     * id to tell them apart, so without the taxonomy_type predicate a 'category' full pass claims
+     * every tag row as a category candidate — and each one resolves through the category path.
+     */
+    public function testTaxonomyReadsCarryTheTaxonomyTypePredicate(): void
+    {
+        $this->source->withType('category');
+        $this->source->addLive('category', '7', true, null);
+        $this->conn->projectionRows['category:7'] = [
+            'checksum' => str_repeat('a', 64), 'updated_at' => '2026-07-01 00:00:00+00', 'deleted_at' => null,
+        ];
+
+        $this->service()->reconcile(ReconciliationService::MODE_FULL);
+
+        $taxonomyQueries = array_values(array_filter(
+            $this->conn->log,
+            static fn (array $e): bool => str_contains($e['sql'], 'content.taxonomies')
+        ));
+
+        self::assertNotEmpty($taxonomyQueries, 'the category pass must read content.taxonomies');
+        foreach ($taxonomyQueries as $entry) {
+            self::assertStringContainsString(
+                "taxonomy_type = 'category'",
+                $entry['sql'],
+                "unscoped read of the shared taxonomy table:\n{$entry['sql']}"
+            );
+        }
+    }
+
+    /** Tables that are NOT shared must not grow a spurious taxonomy predicate. */
+    public function testNonSharedProjectionsCarryNoTaxonomyPredicate(): void
+    {
+        $this->source->withType('post');
+        $this->source->addLive('post', '10', true, $this->ts('2026-07-01T00:00:00Z'));
+        $this->conn->projectionRows['post:10'] = [
+            'checksum' => str_repeat('a', 64), 'updated_at' => '2026-07-01 00:00:00+00', 'deleted_at' => null,
+        ];
+
+        $this->service()->reconcile(ReconciliationService::MODE_FULL);
+
+        foreach ($this->conn->log as $entry) {
+            if (str_contains($entry['sql'], 'content.posts')) {
+                self::assertStringNotContainsString('taxonomy_type', $entry['sql']);
+            }
+        }
+    }
 }

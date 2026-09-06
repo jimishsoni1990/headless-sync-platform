@@ -60,6 +60,9 @@ final class ContentSchema
 
         self::apply($conn, '0004_create_content_taxonomies.sql');
         self::apply($conn, '0005_create_content_entity_taxonomies.sql');
+
+        // 0008 only reshapes indexes on the two tables above (DECISION AA), so it must follow them.
+        self::apply($conn, '0008_align_content_taxonomy_indexes.sql');
     }
 
     /**
