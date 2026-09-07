@@ -415,7 +415,16 @@ final class ProductProjectionIntegrationTest extends TestCase
         // The REAL migration files — so these tests prove the migration and its indexes too.
         $dir = \dirname(__DIR__, 3) . '/modules/Commerce/Migrations';
 
-        foreach (['0001_create_commerce_schema.sql', '0002_create_commerce_products.sql'] as $file) {
+        // The product adapter also rewrites commerce.entity_taxonomies, so the taxonomy
+        // migrations belong here too — the whole point of building schema from the REAL files
+        // is that a missing one surfaces as a failure rather than a passing test on a shape
+        // production does not have.
+        foreach ([
+            '0001_create_commerce_schema.sql',
+            '0002_create_commerce_products.sql',
+            '0003_create_commerce_taxonomies.sql',
+            '0004_create_commerce_entity_taxonomies.sql',
+        ] as $file) {
             $sql = file_get_contents($dir . '/' . $file);
             self::assertIsString($sql, "missing migration {$file}");
             pg_query($this->pgConn, $sql);

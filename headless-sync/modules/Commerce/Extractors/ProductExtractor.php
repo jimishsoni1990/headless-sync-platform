@@ -44,6 +44,7 @@ final class ProductExtractor
             publishedAt:       $this->utc($raw['published_at'] ?? null),
             modifiedAt:        $this->utc($raw['modified_at'] ?? null),
             meta:              is_array($raw['meta'] ?? null) ? $raw['meta'] : [],
+            categoryIds:       $this->intList($raw['category_ids'] ?? []),
         );
 
         $this->validator->validate($product);

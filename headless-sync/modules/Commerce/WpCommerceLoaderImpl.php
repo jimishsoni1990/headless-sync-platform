@@ -56,6 +56,7 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
             'published_at'       => $post->post_date_gmt ?? null,
             'modified_at'        => $post->post_modified_gmt ?? null,
             'meta'               => $this->publicMeta($productId),
+            'category_ids'       => $this->termIds($productId, CommerceTaxonomies::PRODUCT_CAT),
         ];
     }
 
@@ -186,6 +187,26 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
 
         /** @var WooProductAccess|null $product */
         return is_object($product) ? $product : null;
+    }
+
+    /**
+     * The TERM ids this product carries in one taxonomy.
+     *
+     * @return list<int>
+     */
+    private function termIds(int $productId, string $taxonomy): array
+    {
+        if (! function_exists('wp_get_object_terms')) {
+            return [];
+        }
+
+        $ids = wp_get_object_terms($productId, $taxonomy, ['fields' => 'ids']);
+
+        if (! is_array($ids)) {
+            return [];
+        }
+
+        return array_values(array_map('intval', array_filter($ids, 'is_scalar')));
     }
 
     /** WooCommerce returns '' for "no price set", which must stay distinct from 0. */

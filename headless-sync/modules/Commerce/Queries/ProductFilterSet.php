@@ -31,6 +31,9 @@ final class ProductFilterSet implements QueryFilterInterface
      *                                   product the store owner excluded from the catalog,
      *                                   and defaulting the other way would make the unsafe
      *                                   behaviour the accidental one.
+     * @param string|null $categorySlug  Product-category slug. A bare slug is safe here:
+     *                                   wp_unique_term_slug() makes product_cat slugs unique
+     *                                   within the taxonomy, verified at the P2-S3 preflight.
      * @param string|null $cursor
      * @param int|null    $limit
      */
@@ -42,6 +45,7 @@ final class ProductFilterSet implements QueryFilterInterface
         public readonly ?string $minPrice = null,
         public readonly ?string $maxPrice = null,
         public readonly bool $catalogOnly = true,
+        public readonly ?string $categorySlug = null,
         public readonly ?string $cursor = null,
         public readonly ?int $limit = null,
     ) {

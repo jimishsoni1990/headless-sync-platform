@@ -130,6 +130,7 @@ final class ModuleIndependenceTest extends TestCase
             publishedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
             updatedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
             meta: [],
+            categoryIds: [],
         );
 
         self::assertSame(7, $model->featuredMediaId);

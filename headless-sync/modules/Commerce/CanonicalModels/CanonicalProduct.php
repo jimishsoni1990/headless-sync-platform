@@ -40,6 +40,7 @@ final class CanonicalProduct implements CanonicalModelInterface
      * @param \DateTimeImmutable  $publishedAt
      * @param \DateTimeImmutable  $updatedAt
      * @param array<string,mixed> $meta
+     * @param list<int>           $categoryIds       product_cat term ids (soft references)
      */
     public function __construct(
         public readonly int $sourceProductId,
@@ -60,6 +61,7 @@ final class CanonicalProduct implements CanonicalModelInterface
         public readonly \DateTimeImmutable $publishedAt,
         public readonly \DateTimeImmutable $updatedAt,
         public readonly array $meta,
+        public readonly array $categoryIds,
     ) {
     }
 
@@ -102,6 +104,11 @@ final class CanonicalProduct implements CanonicalModelInterface
             implode(',', $this->galleryMediaIds),
             $this->publishedAt->format(\DateTimeInterface::ATOM),
             (string) json_encode($meta),
+            // Category membership is STORED (in commerce.entity_taxonomies), so it must be in
+            // the digest. Without it, changing only a product's categories leaves the checksum
+            // unmoved, DECISION 3 suppresses the write, and the join rewrite never runs — the
+            // exact bug P1B-S3 shipped for tags and had to fix in a follow-up.
+            implode(',', $this->categoryIds),
         ];
 
         return hash('sha256', implode('|', $parts));

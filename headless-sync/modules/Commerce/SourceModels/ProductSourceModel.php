@@ -42,6 +42,7 @@ final class ProductSourceModel
      * @param \DateTimeImmutable  $publishedAt       post_date_gmt as a UTC instant
      * @param \DateTimeImmutable  $modifiedAt        post_modified_gmt as a UTC instant
      * @param array<string,mixed> $meta              published-safe meta (protected keys stripped)
+     * @param list<int>           $categoryIds       product_cat TERM ids this product carries
      */
     public function __construct(
         public readonly int $productId,
@@ -62,6 +63,7 @@ final class ProductSourceModel
         public readonly \DateTimeImmutable $publishedAt,
         public readonly \DateTimeImmutable $modifiedAt,
         public readonly array $meta,
+        public readonly array $categoryIds,
     ) {
     }
 }

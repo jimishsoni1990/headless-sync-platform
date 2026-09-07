@@ -8,6 +8,7 @@ use HSP\Core\Contracts\CursorPage;
 use HSP\Core\Contracts\QueryFilterInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
+use HSP\Modules\Commerce\CommerceTaxonomies;
 
 /**
  * Reads commerce.products for the Delivery API.
@@ -93,6 +94,11 @@ final class ProductQueryProvider implements QueryProviderInterface
             $where[]  = 'price <= $' . count($params) . '::numeric';
         }
 
+        if ($filters->categorySlug !== null) {
+            $params[] = $filters->categorySlug;
+            $where[]  = $this->categoryFilter(count($params));
+        }
+
         $cursor = $filters->cursor !== null ? $this->decodeCursor($filters->cursor) : null;
         if ($cursor !== null) {
             $params[] = $cursor['s'];
@@ -152,6 +158,35 @@ final class ProductQueryProvider implements QueryProviderInterface
         );
 
         return $rows[0] ?? null;
+    }
+
+    /**
+     * "This product carries a term with the given slug, in the product_cat taxonomy."
+     *
+     * EXISTS rather than a JOIN, deliberately: a join would multiply rows when a product sits
+     * in several matching categories, and the fix for that (DISTINCT) would then break the
+     * cursor. EXISTS asks the question without changing the row count.
+     *
+     * The taxonomy_type predicate is load-bearing, not decoration — commerce.taxonomies is
+     * shared, so without it a pa_* attribute term with the same slug would match (DECISION AA).
+     */
+    private function categoryFilter(int $slugParam): string
+    {
+        return sprintf(
+            'EXISTS (
+                SELECT 1
+                FROM commerce.entity_taxonomies et
+                JOIN commerce.taxonomies t ON t.source_term_id = et.source_term_id
+                WHERE et.entity_id = commerce.products.id
+                  AND t.slug = $%d
+                  AND t.taxonomy_type = %s
+                  AND t.deleted_at IS NULL
+            )',
+            $slugParam,
+            // A fixed module-owned literal, never request input — but quoted through a single
+            // place so the predicate cannot be dropped or misspelled at a call site.
+            "'" . CommerceTaxonomies::PRODUCT_CAT . "'",
+        );
     }
 
     private function encodeCursor(string $publishedAt, string $id): string

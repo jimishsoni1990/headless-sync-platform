@@ -69,6 +69,7 @@ final class ProductAdapter implements AdapterInterface
 
             if (! $suppressProjection) {
                 $this->upsertProduct($model, $id, $checksum, $now);
+                $this->rewriteEntityTaxonomies($id, $model->categoryIds);
             }
 
             $this->insertProcessedEvent($event, $checksum, $now);
@@ -220,6 +221,56 @@ final class ProductAdapter implements AdapterInterface
                 $now,
                 $now,
             ],
+        );
+    }
+
+    /**
+     * Replace this product's term membership wholesale.
+     *
+     * A FULL REPLACE — delete every row for the product, then re-insert from the model. The
+     * caller must therefore supply the product's COMPLETE term set, not a delta: anything
+     * omitted is removed. That is stated here because P1B-S3 shipped exactly this shape for
+     * Content and then handed it only the category ids, so post→tag links were silently wiped
+     * on every update and no post ever carried a tag.
+     *
+     * Links are stored by the term's SOURCE id, so they do not depend on the term having
+     * projected yet (AG-7). Resolving the term's projection UUID here instead would make a
+     * product that arrives before its categories link to nothing — and, crucially, that could
+     * never be repaired: re-projecting the product later changes none of its own state, so the
+     * checksum does not move, DECISION 3 suppresses the write, and reconciliation (which
+     * compares those same checksums) never sees a gap. Keyed by source id, the row is a pure
+     * function of the product's own state and is correct in any arrival order.
+     *
+     * Runs INSIDE the caller's transaction, so membership and the product row commit together.
+     *
+     * @param list<int> $categoryIds
+     */
+    private function rewriteEntityTaxonomies(string $productId, array $categoryIds): void
+    {
+        $this->db->execute(
+            'DELETE FROM commerce.entity_taxonomies WHERE entity_id = $1::uuid',
+            [$productId],
+        );
+
+        if ($categoryIds === []) {
+            return;
+        }
+
+        // One multi-row INSERT rather than a loop: a product in twenty categories should not
+        // cost twenty round trips inside the transaction.
+        $rows   = [];
+        $params = [$productId];
+
+        foreach (array_unique($categoryIds) as $termId) {
+            $params[] = $termId;
+            $rows[]   = '($1::uuid, $' . count($params) . ')';
+        }
+
+        $this->db->execute(
+            'INSERT INTO commerce.entity_taxonomies (entity_id, source_term_id)
+             VALUES ' . implode(', ', $rows) . '
+             ON CONFLICT DO NOTHING',
+            $params,
         );
     }
 

@@ -64,6 +64,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 self::query('featured', 'boolean', 'Featured products only.'),
                 self::query('min_price', 'string', 'Inclusive lower price bound, exact decimal string.'),
                 self::query('max_price', 'string', 'Inclusive upper price bound, exact decimal string.'),
+                self::query('category', 'string', 'Product-category slug.'),
             ],
             responseSchema: $this->productSchema()->asCursorPage(),
             requestSchema: null,

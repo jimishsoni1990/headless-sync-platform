@@ -130,6 +130,7 @@ final class CommerceRestRegistrar
             // excludes from the catalog, and that must not be defeatable by a query parameter
             // (Requirement B).
             catalogOnly: true,
+            categorySlug: $this->param($request, 'category'),
             cursor:      $this->param($request, 'cursor'),
             limit:       $this->intParam($request, 'limit'),
         );
@@ -163,6 +164,7 @@ final class CommerceRestRegistrar
             'featured'  => ['type' => 'boolean'],
             'min_price' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
             'max_price' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
+            'category'  => ['type' => 'string',  'sanitize_callback' => 'sanitize_title'],
         ];
     }
 
