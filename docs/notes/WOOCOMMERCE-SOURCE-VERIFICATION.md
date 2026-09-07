@@ -23,20 +23,39 @@
 | `woocommerce_delete_product_variation` | `($variation_id)` | `includes/data-stores/class-wc-product-variable-data-store-cpt.php:1030` |
 | `woocommerce_trash_product_variation` | `($variation_id)` | `includes/data-stores/class-wc-product-variable-data-store-cpt.php:1041` |
 
-### FINDING — there is no `woocommerce_delete_product` or `woocommerce_trash_product` hook
+### FINDING — the delete/trash hook names are built DYNAMICALLY, and the P2-S2 note was wrong
 
-Grepped across `includes/`: **no such `do_action` exists**. Variations have dedicated delete and
-trash hooks; **whole products do not**.
+**Corrected at the P2-S5 preflight.** The P2-S2 entry recorded that no `woocommerce_delete_product`
+hook exists, on the strength of a grep across `includes/` finding no matching `do_action`. The grep
+was accurate; the conclusion was not.
 
-Consequence for capture: product **deletion and trashing must be captured through WordPress's own
-post hooks** (`wp_trash_post` / `after_delete_post` / `transition_post_status`), filtered to
-`post_type === 'product'` — while **creation and update** are captured through the WooCommerce CRUD
-hooks above, which fire from the data store and carry the hydrated `WC_Product`.
+`WC_Product_Data_Store_CPT::delete()`
+(`includes/data-stores/class-wc-product-data-store-cpt.php:407-432`) composes the hook name at
+runtime from the post type:
 
-This asymmetry is exactly the kind of assumption that would have been wrong if inferred by symmetry
-with the variation hooks. It also means the Commerce module wires **both** hook families, and needs
-the same per-request first-emit-wins guard Content uses: a single product save fires
-`woocommerce_update_product` **and** `save_post`, and a delete fires WordPress transitions.
+```php
+$post_type = $product->is_type( ProductType::VARIATION ) ? 'product_variation' : 'product';
+do_action( 'woocommerce_before_delete_' . $post_type, $id );
+do_action( 'woocommerce_delete_' . $post_type, $id );   // or woocommerce_trash_{$post_type}
+```
+
+So `woocommerce_delete_product`, `woocommerce_trash_product`, `woocommerce_delete_product_variation`
+and `woocommerce_trash_product_variation` **all fire**, and none of them is greppable as a literal.
+The two variation hooks listed above are real but come from a *second* site
+(`class-wc-product-variable-data-store-cpt.php`, which clears a parent's variations) — finding those
+and not the product ones is precisely what made the asymmetry look genuine.
+
+**The capture wiring built on the wrong conclusion is nevertheless correct, and stays.** Deletion and
+trashing are captured through WordPress's own post hooks (`wp_trash_post` / `after_delete_post` /
+`transition_post_status`) filtered by post type, because those fire for **every** deletion path —
+including `wp_delete_post()` called directly, a WP-CLI delete, or another plugin removing the row,
+none of which go through the WooCommerce data store and none of which would emit the WooCommerce
+hook. Creation and update are captured through the WooCommerce CRUD hooks, which carry the hydrated
+`WC_Product`. Same wiring, sounder reason.
+
+It also means the Commerce module wires **both** hook families, and needs the same per-request
+first-emit-wins guard Content uses: a single product save fires `woocommerce_update_product` **and**
+`save_post`, and a delete fires WordPress transitions.
 
 ---
 
@@ -230,3 +249,72 @@ name a single discriminator VALUE the way `product_cat` does — it needs prefix
 `ProjectionDescriptor` does not currently express. That is an infrastructure gap P2-S4 must
 close in core (AG-3 puts projection read metadata in the descriptor), not something to work
 around in the module.
+
+---
+
+## 9. P2-S5 preflight — product variations
+
+Verified against WooCommerce 11.1.0 before the migration was written.
+
+### 9.1 Lifecycle hooks
+
+| Hook | Signature | Source |
+|---|---|---|
+| `woocommerce_new_product_variation` | `($id, $variation)` | `class-wc-product-variation-data-store-cpt.php:174` |
+| `woocommerce_update_product_variation` | `($id, $variation)` | `class-wc-product-variation-data-store-cpt.php:279` |
+| `woocommerce_delete_product_variation` | `($variation_id)` | composed at `class-wc-product-data-store-cpt.php:426`, and again at `class-wc-product-variable-data-store-cpt.php:1030` |
+| `woocommerce_trash_product_variation` | `($variation_id)` | composed at `class-wc-product-data-store-cpt.php:430`, and again at `class-wc-product-variable-data-store-cpt.php:1041` |
+
+Two separate delete sites, which is why section 1's correction matters: deleting one variation
+runs the generic data-store `delete()`, while clearing a parent's variations runs the variable
+data store's own loop. Both emit the same hook name. Capture nevertheless keys on the WordPress
+post hooks filtered to `post_type === 'product_variation'`, for the same reason as products —
+those fire for every deletion path, including ones that never reach a WooCommerce data store.
+
+### 9.2 Selected attribute values are (taxonomy → slug) pairs, not term ids
+
+`WC_Product_Variation::get_attributes()` returns a map whose KEYS are taxonomy names without the
+`attribute_` prefix (`pa_colour`) and whose VALUES are term **slugs** (`blue`). The prefixed form
+is produced only by `get_variation_attributes()`, which is a presentation helper.
+
+Source: `wc_get_product_variation_attributes()`, `includes/wc-product-functions.php:1194-1240`.
+
+### 9.3 FINDING — an empty value means "any", and is not the same as absent
+
+`wc-product-functions.php:1208`:
+
+```php
+$variation_attributes[ $attribute ] = ''; // Add it - 'any' will be assumed.
+```
+
+A variation participating in an attribute but matching **every** value of it carries that
+taxonomy with an empty string. That is a third state alongside "has this value" and "does not
+use this attribute at all", and it is genuinely meaningful: a variation `Blue / Any size` is one
+row that answers for every size.
+
+Consequence for the projection: the selected-values map must be stored **as it is**, including
+the empty entries, because dropping them loses the distinction between "any size" and "no size
+dimension". Link rows are written only for entries that resolve to a term — an "any" entry has no
+term to link — so the JSONB map and the join rows deliberately do not carry the same information,
+and the map is the authoritative one.
+
+### 9.4 Parent relationship
+
+`get_parent_id()` returns the parent product's post id. The projection stores that **source** id,
+not the parent's projection UUID — the same reasoning migration 0004 records for terms: a
+variation may legitimately project before its parent under at-least-once, non-FIFO delivery, and
+a UUID reference would match nothing with no way to repair it afterwards (the variation's own
+state has not changed, so its checksum has not moved and DECISION 3 suppresses the rewrite).
+
+### 9.5 Variations have no independent public URL
+
+WooCommerce addresses a variation through its parent's page (`?attribute_pa_colour=blue`) or by
+`variation_id` in the add-to-cart form; there is no permalink base for `product_variation`. So
+Requirement A raises nothing new here, and the delivery surface nests variations under the parent
+product rather than inventing a slug they do not have.
+
+### 9.6 Not verified here
+
+Variation **stock** is deliberately out of scope for this session and belongs to P2-S6 with the
+rest of AG-14 — including how a variation signals that stock is managed at the parent instead.
+This session projects a variation's identity, pricing and selected attribute values only.
