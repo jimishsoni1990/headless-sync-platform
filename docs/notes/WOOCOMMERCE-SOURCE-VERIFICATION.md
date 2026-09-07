@@ -124,3 +124,54 @@ Deliberately not verified yet — each belongs to the session that needs it, per
 - **P2-S6:** the five AG-14 inventory-ownership questions — simple-product stock, variable-parent
   stock, variation-managed stock, how a variation signals inherited stock, and the hooks for each.
 - **HPOS:** only far enough to confirm orders stay irrelevant to Phase 2.
+
+---
+
+## 7. P2-S3 preflight — `product_cat` hierarchy and slug uniqueness
+
+**Verified:** 2026-09-08, against WordPress core (`wp-includes/taxonomy.php`) and WooCommerce
+11.1.0 (`includes/class-wc-post-types.php`).
+
+### `product_cat` IS hierarchical
+
+Registered with `'hierarchical' => true`, so categories nest and a `parent` relationship exists.
+
+### But leaf slugs CANNOT repeat under different parents
+
+`wp_unique_term_slug()` (`wp-includes/taxonomy.php:3136`) enforces uniqueness **per taxonomy**,
+not per parent:
+
+1. If no term with that slug exists **in this taxonomy**, the slug is used as-is
+   (`:3143` — "duplicate slugs are allowed as long as they're in different taxonomies").
+2. Otherwise, for a hierarchical taxonomy with a parent, ancestor slugs are appended until the
+   result is unique — `shirts` under `men` becomes **`shirts-men`** (`:3151-3168`).
+3. If that still collides, a numeric suffix is appended — `shirts-2` (`:3193-3200`).
+
+**This is the OPPOSITE of the WordPress Pages case.** Page `post_name` uniqueness is scoped per
+PARENT, which is exactly why two pages could both be `team` and why FLAG-PAGESLUG-1 existed at
+all. Terms do not behave that way.
+
+### Consequences for P2-S3
+
+**Addressing:** a bare `product_cat` slug is unambiguous, so `/categories/{slug}`-style flat
+addressing is correct and sufficient. The DECISION AD full-ancestor-path model is **not needed
+here** — the architect's instruction routed to it only *"if hierarchical leaf slugs can be
+ambiguous"*, and verification shows they cannot. Reusing `HierarchicalQueryProviderInterface`
+would add a second addressing model for a problem this taxonomy does not have.
+
+**Filtering:** a product-category filter may safely use a bare slug as its canonical key. The
+ambiguity that would have forced an exact path (or a term id) does not arise.
+
+**Constraint: index, NOT unique.** Uniqueness is enforced by WordPress at WRITE time, not as a
+storage invariant, and it is defeasible — the `wp_unique_term_slug_is_bad_slug` filter
+(`:3182`) lets a plugin override the decision, direct database inserts bypass it entirely, and
+imported or legacy terms may predate it. A PostgreSQL `UNIQUE (taxonomy_type, slug)` would turn
+such a state into a **projection failure that dead-letters**, which is the same class of harm
+AG-7 rejected for foreign keys: a database constraint converting unusual-but-valid source state
+into a sync failure. So `(taxonomy_type, slug)` gets a **lookup index only** — matching what
+DECISION AA already concluded for `content.taxonomies`, where the composite shipped as an index
+and the unique constraint was explicitly declined.
+
+**Hierarchy still projects.** `parent_id` is carried so a consumer can reconstruct the tree, and
+because WooCommerce category URLs nest (`/product-category/clothing/men/`). Reconstructing those
+URLs is permalink work and stays under FLAG-COMMPERMA-1; it is not an addressing question.
