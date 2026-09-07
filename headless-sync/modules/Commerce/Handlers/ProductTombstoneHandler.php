@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce\Handlers;
 
 use HSP\Core\Contracts\EventInterface;
-use HSP\Modules\Commerce\Adapters\ProductAdapter;
+use HSP\Core\Contracts\AdapterInterface;
 
 /**
  * Soft-deletes a product's projection (DECISION I).
@@ -16,7 +16,7 @@ use HSP\Modules\Commerce\Adapters\ProductAdapter;
  */
 final class ProductTombstoneHandler
 {
-    public function __construct(private readonly ProductAdapter $adapter)
+    public function __construct(private readonly AdapterInterface $adapter)
     {
     }
 

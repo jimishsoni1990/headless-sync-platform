@@ -598,3 +598,34 @@ if (! function_exists('maybe_unserialize')) {
         return $value;
     }
 }
+
+// ---------------------------------------------------------------------------
+// WooCommerce product stub (P2-S2)
+//
+// The Commerce hook wiring asks WooCommerce for a product's type so it can filter
+// out-of-scope types at capture (DECISION AG AG-13). WooCommerce is not loaded in the unit
+// suite, so this stub answers from a global map that each test controls.
+//
+// It deliberately does NOT make the Commerce module "available": CommerceServiceProvider
+// probes for the WooCommerce main CLASS, not for this function, so a test stub cannot
+// silently flip a module into existence.
+// ---------------------------------------------------------------------------
+if (! function_exists('wc_get_product')) {
+    function wc_get_product(int $productId = 0): object|false
+    {
+        $types = $GLOBALS['_hsp_test_product_types'] ?? [];
+
+        if (! isset($types[$productId])) {
+            return false;
+        }
+
+        return new class ((string) $types[$productId]) {
+            public function __construct(private readonly string $type) {}
+
+            public function get_type(): string
+            {
+                return $this->type;
+            }
+        };
+    }
+}

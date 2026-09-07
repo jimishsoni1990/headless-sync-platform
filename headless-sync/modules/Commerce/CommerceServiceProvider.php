@@ -58,12 +58,18 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
      * Commerce is available only when WooCommerce is loaded.
      *
      * Cheap and side-effect free by contract — it runs during composition on every request,
-     * before any binding exists. `WooCommerce` is the plugin's main class; checking for it
-     * rather than for a function keeps the probe independent of load order within the plugin.
+     * before any binding exists.
+     *
+     * `WooCommerce` is the plugin's main class and is the single signal used, deliberately.
+     * Probing for a helper function as well (`wc_get_product`) would conflate "WooCommerce is
+     * installed" with "some function of that name exists", which is exactly the kind of
+     * incidental coupling that makes a test stub silently flip a module into existence.
+     * `false` for the autoload argument keeps the probe from triggering an autoloader on a
+     * site that does not have WooCommerce at all.
      */
     public function isAvailable(): bool
     {
-        return class_exists(\WooCommerce::class, false) || function_exists('wc_get_product');
+        return class_exists(\WooCommerce::class, false);
     }
 
     public function register(object $container): void

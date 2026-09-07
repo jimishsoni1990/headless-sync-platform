@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce\Handlers;
 
 use HSP\Core\Contracts\EventInterface;
-use HSP\Modules\Commerce\Adapters\ProductAdapter;
+use HSP\Core\Contracts\AdapterInterface;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\ProductScope;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
@@ -33,7 +33,7 @@ final class ProductUpsertHandler
         private readonly WpCommerceLoader $loader,
         private readonly ProductExtractor $extractor,
         private readonly ProductTransformer $transformer,
-        private readonly ProductAdapter $adapter,
+        private readonly AdapterInterface $adapter,
     ) {
     }
 
