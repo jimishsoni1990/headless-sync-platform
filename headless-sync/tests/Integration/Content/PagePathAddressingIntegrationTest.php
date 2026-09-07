@@ -130,6 +130,35 @@ final class PagePathAddressingIntegrationTest extends TestCase
         self::assertNull($this->provider->findByPath('about'));
     }
 
+    /**
+     * A page whose ancestor has NO projection row at all — the parent was never published, so
+     * HookWiring never emitted for it (OPEN-10) — is not addressable by path (DECISION AE).
+     *
+     * This is WordPress parity, not a shortfall, and the reason is in WP core: `wp_insert_post()`
+     * skips slug generation for draft/pending/auto-draft, so a never-published page normally has an
+     * EMPTY `post_name`. Verified against live WordPress: with an empty-slug draft parent,
+     * `get_page_uri()` on the published child returns the LEAF ALONE (`team`, not `about/team`) and
+     * `get_page_by_path()` finds the child under neither address — WordPress advertises a permalink
+     * it then cannot route. There is no address for HSP to miss.
+     *
+     * The one case where WordPress CAN route such a child is a never-published parent carrying an
+     * explicitly-set slug, which stays a documented divergence pending an OPEN-10 ruling — see
+     * FLAG-PAGEPATH-ANCESTOR-1. This test pins today's behaviour so that ruling cannot land
+     * silently.
+     */
+    public function test_a_page_under_an_unprojected_ancestor_is_not_addressable_by_path(): void
+    {
+        // No row for source_post_id 3 — the parent was never published, so it was never captured.
+        $orphanedChild = $this->seedPage(10, 'team', parentId: 3);
+
+        self::assertNull($this->provider->findByPath('about/team'), 'the ancestor slug is unknown');
+        self::assertNull($this->provider->findByPath('team'), 'the child is not top-level');
+
+        // The DEPRECATED leaf fallback still reaches it, which makes HSP briefly MORE permissive
+        // than WordPress here — retiring that fallback brings this case to exact parity.
+        self::assertSame($orphanedChild, $this->provider->findBySlug('team')['id']);
+    }
+
     public function test_the_requested_page_still_requires_publish_and_not_deleted(): void
     {
         $this->seedPage(3, 'about', parentId: 0);

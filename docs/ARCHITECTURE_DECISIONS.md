@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.36  
+Version: 1.37  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.37 | 2026-09-07 | **DECISION AE — unprojected page ancestors are a documented limit, not a defect (FLAG-PAGEPATH-ANCESTOR-1 settled; scope-owner directive 2026-09-07, resolved on empirical evidence).** Option **(a) accept and document**; (b) deferred to a future OPEN-10 ruling; (c) prohibited by ADR-040. **The flag as raised over-stated the problem, and the correction is the substance.** Verified against live WordPress: `wp_insert_post()` skips slug generation for `draft`/`pending`/`auto-draft`, so a never-published parent normally has an **empty `post_name`** — `get_page_uri()` on the published child then returns the **leaf alone** (`team`, not `about/team`) and `get_page_by_path()` resolves it under **neither** address. WordPress advertises a permalink it cannot route, so in the normal draft case **HSP is at parity — there is no address to miss.** The real divergence is one narrow sub-case: a parent that has **never been published yet carries an explicitly-set slug** (permalink edited on a draft, or an import setting `post_name`), which WordPress *does* resolve and HSP cannot, because the parent has no projection row. The already-published-then-unpublished case was never affected — rows are soft-deleted, never removed, so the slug survives and the path resolves (asserted). **(1)** The limit is accepted and documented. **(2)** It is **pinned by test**, not merely described, so a future OPEN-10 change cannot alter it silently. **(3)** The deprecated one-segment leaf fallback (AD ruling 2) is currently **more permissive than WordPress** here — it returns a child WordPress itself 404s — so retiring it at the Doc 9 §26 transition brings this case to exact parity, a fix rather than a regression. **(b) was not taken** because it changes what the pipeline captures (**OPEN-10**, frozen) and would place never-public content in the delivery store: today the projection holds non-public rows only for content that was public at least once, and widening that turns any future query-predicate slip into a leak of unpublished material — a bug class this codebase has already hit three times. If WordPress fidelity in that sub-case is later judged worth it, **it is an OPEN-10 ruling and must be taken as one**; this decision does not pre-empt it. No schema, migration, persistence, capture-model, contract or code change — one integration test added. |
 | 1.36 | 2026-09-07 | **DECISION AD — hierarchical page addressing by full ancestor path (FLAG-PAGESLUG-1 settled; architect ruling 2026-09-07).** WordPress scopes page slug uniqueness per PARENT, so `/about/team` and `/services/team` both project with `slug='team'` and a bare-slug lookup could not address either one on purpose. **(1)** The canonical page identity becomes the **full ancestor path**: `GET /hsp/v1/pages/{path}` — `/pages/about/team` resolves that exact hierarchy and **`/pages/wrong-parent/team` is a 404 even when `/about/team` exists**. A **widening of the same endpoint** (parameter `slug` → `path` in route and descriptor together); ADR-055 route count unchanged; no second page-addressing API. **(2)** A one-segment request canonically means the **top-level** page. Because leaf lookup is currently supported and Doc 9 §26 forbids direct removal, `hsp/v1` tries the exact path first, **never** leaf-falls-back for a multi-segment miss, and falls back to the deterministic leaf lookup **only** for a one-segment miss — explicitly **deprecated** behaviour, removed at a formal contract transition, not here. **(3) Read-time resolution: no `path`/`uri`/`permalink` column, no migration, no cache, no descendant fan-out.** A stored path duplicates hierarchical state — a parent rename changes every descendant URI although no descendant was edited and WordPress emits no event for them, so it would need invalidation machinery and still leave a stale window (hourly drift is timestamp-only and would not see it; repair would wait for nightly incremental). OPEN-11's "no precomputed URIs" exclusion is **upheld, not waived**. **(4)** One query: a **recursive CTE walking up** from leaf candidates, index-backed on `idx_content_pages_slug` + `uq_content_pages_source_post_id`, no N+1, no WP read (ADR-040); `MAX_ANCESTOR_DEPTH` is a defensive cycle/corruption bound, not a hierarchy limit. **(5)** The public-set predicate applies to the **requested page only** — ancestors are structural, so a published child under an unpublished or soft-deleted parent stays addressable while that parent stays unretrievable through its own address. **(6)** Sanitization is **per segment** (`sanitize_title()` strips `/` and would collapse `about/team` into `aboutteam`); leading/trailing separators trimmed; malformed paths **400** before any lookup; traversal blocked by both the route character class and the sanitizer. **(7)** New **additive** core capability `HierarchicalQueryProviderInterface::findByPath()`; `QueryProviderInterface::findBySlug()` is **unchanged** and still correct for the flat resources; the registrar's page slot is typed as the intersection so the compatibility arm is visible in the signature. Rule 5 unchanged. **(8)** **No `?parent=`** in either form — by id it would make WP post IDs the public addressing contract (Rule 6); by slug it is ambiguous the moment the parent is nested. Scope is **Pages only**. **New flag FLAG-PAGEPATH-ANCESTOR-1:** a **never-published** ancestor has no projection row at all (OPEN-10), so a published descendant beneath it cannot have its path reconstructed — a projection-coverage question, flagged rather than worked around. Also recorded: `PlaygroundRequestExecutor` now encodes path parameters **per segment** (`rawurlencode()` on the whole value would have produced `about%2Fteam` and 404'd the console playground; byte-identical for every single-slug route). No schema, migration, persistence, handle (L Ruling 0) or `pg_*` wrapper (E) change. |
 | 1.35 | 2026-09-07 | **DECISION AC — reconciliation and backfill cover every supported aggregate (FLAG-RECON-COVERAGE-1 settled; scope-owner directive 2026-09-07).** Options **(a) + (c) together**; (b) rejected. `media` and `tag` were implemented end-to-end in `WpReconciliationSource` and `ContentReplayEmitter` but missing from the three CONSUMING lists, and `ReconciliationService::reconcile()` `continue`s past a supported type with no projection entry **silently** — so no reconcile mode ever touched them and, since the onboarding backfill IS `reconcileFull()` (DECISION W (b)), **a fresh install never backfilled them** and could be declared **converged with zero media and zero tags projected**. **(1)** Both types added to `ReconciliationService::PROJECTION` (`media` → `content.media`/`source_post_id`; `tag` → `content.taxonomies`/`source_term_id` scoped `taxonomy_type = 'post_tag'`), `BackfillReader::PROJECTION` and `BackfillProgress::TYPES` — three list entries, **no new mechanism**: worker, adapter, extractor, transformer, event, migration and repair path are all untouched. The DECISION AA taxonomy scoping is the **prerequisite** that makes the `tag` entry safe. **(2)** Convergence semantics change in the strict direction: onboarding now scores media and tags, so a site stays **in progress** until they land — a site that previously reported complete with unprojected media was reporting a state that was never true. **(3)** The seam is **guarded**: `tests/Unit/Reconciliation/AggregateCoverageTest.php` asserts every `WpReconciliationSource::AGGREGATE_TYPES` entry appears in all three consuming lists and is re-emittable. A **unit** test on purpose — `Phase1BValidationTest`'s producing-side assertion is integration-only and self-skips without a live DB, exactly when a new aggregate gets added. A runtime throw was rejected: core owns the map, modules own the supported list, so a module ahead of core would fatal every cron cycle instead of failing a build. **Rejected: (b)** scope the backfill to page/post/category — that makes two thirds of Phase 1B's aggregates permanently hook-only and never repaired, contradicting Rule 1, to save three list entries. No schema, no migration, no new persistence (DECISION Q holds), no contract change, no new PG handle (L Ruling 0), no `pg_*` wrapper (E), no second repair path (DECISION T holds). |
 | 1.34 | 2026-09-06 | **DECISION AB — sync-latency SLA: 20s shipped cadence + out-of-band trigger obligation (FLAG-P1BS0-1 settled; product/architect ruling 2026-09-06).** Options **(a) + (c) together**; (b) and (d) rejected. The P1B-S5 measurement made the ruling cheap: the pipeline costs **0.06s** for one edit (~6–9s for a saturated 200-batch) — **~0.2% of sync latency against the cadence's ~99.8%** — so cadence was the entire problem. **(1)** `config/worker.php` → `processing.interval_seconds` **60 → 20** (with `ProcessingCronRegistrar::DEFAULT_INTERVAL_SECONDS` tracking it), putting the worst case at **≈20.1s** (≈26–29s at a saturated 200-batch — the burst regime, where batch size is the other lever) inside the PRD <30s SLA; propagates on the next firing (`wp_reschedule_event()` resolves the interval by schedule name) — **no migration, no re-scheduling**. **(2)** The interval **alone is insufficient**: `spawn_cron()` enforces `WP_CRON_LOCK_TIMEOUT` (**60s** core default), so request-triggered WP-Cron is floored at 60s regardless of the schedule. The SLA therefore **requires** an out-of-band trigger running `wp cron event run --due-now` at **≤20s** (WP-CLI defines `DOING_CRON` and bypasses the lock) — a **trigger, not a daemon**; ADR-054 is not reopened. **(3)** The <30s SLA is consequently a supported **deployment property**, not an unconditional guarantee — without the trigger the platform still runs with zero configuration (Principle 8) and only the SLA is unmet. **(4)** `ProcessingCycleIntegrationTest::test_end_to_end_sync_latency_through_one_cycle` now reads the interval **from the shipped config** (never restated) and **asserts** the worst case < 30s. **Rejected: (b)** restating the SLA's basis — nothing left to concede once measured; **(d)** `spawn_cron()` on capture — the same 60s lock makes it ineffective for sub-60s cadence while adding a loopback request per save and edging toward the in-request drain DECISION W (c) forbids. No schema, no migration, no persistence, no contract change, no new PG handle (L Ruling 0) or `pg_*` wrapper (E); batch sizes, `cycle_time_budget_seconds` and `heartbeat.offline_after_seconds` untouched. Doc 10 §7 "Reliable Cadence (optional, recommended)" is **narrowed in effect, not contradicted** (optional for function, required for the SLA). |
@@ -1706,6 +1707,70 @@ pagination. One behaviour outside the ruling's letter did change and is recorded
 `PlaygroundRequestExecutor` encoded the whole path-parameter value with `rawurlencode()`, which
 would have turned `about/team` into `about%2Fteam` and 404'd in the Operations Console playground;
 encoding is now applied per segment, which is byte-identical for every single-slug route.
+
+---
+
+### DECISION AE — Unprojected Page Ancestors Are a Documented Limit, Not a Defect (FLAG-PAGEPATH-ANCESTOR-1)
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-09-07 |
+| **Session** | FLAG-PAGEPATH-ANCESTOR-1 (interstitial, immediately after DECISION AD) |
+| **Authority** | Scope-owner directive 2026-09-07 to resolve FLAG-PAGEPATH-ANCESTOR-1; **empirical verification against live WordPress** (see Evidence); DECISION AD ruling 5 (ancestors are structural); OPEN-10 (public set / capture model); ADR-040 (no WordPress read on the consumer path) |
+| **Resolves** | FLAG-PAGEPATH-ANCESTOR-1 — a published page whose ancestor has no `content.pages` row cannot have its path reconstructed |
+| **Amends** | Nothing. OPEN-10 is **upheld** — this ruling exists precisely to avoid changing it. DECISION AD is unchanged; ruling 5 is confirmed correct as implemented |
+
+**Ruling — option (a), accept and document. (b) is deferred to a future OPEN-10 ruling; (c) was
+never viable.** The flag as raised over-stated the problem, and the correction is the substance of
+this decision.
+
+**Evidence — what WordPress actually does.** The flag assumed a published child under a
+never-published parent has a real address (`/about/team`) that HSP fails to serve. Verified against
+live WordPress, that is true in only one narrow sub-case:
+
+| Sub-case | WordPress | HSP |
+|---|---|---|
+| Draft parent, **no explicit slug** (the normal case) | `post_name` is **empty** — `wp_insert_post()` skips slug generation for `draft`/`pending`/`auto-draft`. `get_page_uri()` on the child returns the **leaf alone** (`team`, not `about/team`), and `get_page_by_path()` resolves the child under **neither** address: WordPress advertises a permalink it cannot route. | Also unaddressable by path. **Parity — there is no address to miss.** |
+| Draft parent **with an explicitly-set slug** | `post_name` is set, `get_page_uri()` = `services/crew`, and `get_page_by_path('services/crew')` **resolves**. WordPress serves the child. | Unaddressable — the parent has no projection row, so its slug is unknown. **Real divergence.** |
+| Parent published, then unpublished / trashed | Keeps the `post_name` assigned at publish; resolves. | Row is **soft-deleted, never removed**, so the slug survives and the path resolves. **Parity** (asserted). |
+
+The defect surface is therefore one row of that table, not the whole flag: a parent that has **never
+been published yet carries a slug** — reachable by editing the permalink field on a draft, or by an
+import that sets `post_name` directly.
+
+**(1) The limit is accepted and documented.** `findByPath()` resolves only through ancestors the
+projection knows about. In the normal draft case that matches WordPress exactly; in the
+slugged-draft case HSP serves less than WordPress does, and that is recorded rather than fixed.
+
+**(2) The behaviour is PINNED, not merely described.**
+`PagePathAddressingIntegrationTest::test_a_page_under_an_unprojected_ancestor_is_not_addressable_by_path()`
+asserts today's outcome, so a future OPEN-10 change cannot alter it silently — the test has to be
+updated deliberately, with the ruling in hand.
+
+**(3) The fallback is currently MORE permissive than WordPress, and retiring it fixes that.** The
+deprecated one-segment leaf lookup (DECISION AD ruling 2) matches on slug alone, so it *does* return
+a child whose ancestor is unprojected — a page WordPress itself 404s. Removing the fallback at the
+Doc 9 §26 lifecycle transition therefore brings this case to exact parity. Noted here so that
+retirement is understood as a fix, not a regression.
+
+**Why (b) — projecting structural rows for unpublished ancestors — was NOT taken.** It requires
+changing what the pipeline captures, which is **OPEN-10**, frozen. It would put content that has
+never been public into the delivery database: today the projection holds non-public rows only for
+content that was public at least once (soft-deleted tombstones), and widening that turns any future
+query-predicate slip into a leak of unpublished material — a bug class this codebase has already hit
+three times (the `?category=` slug collision, the console metrics count, the backfill projected
+count). The cost is a capture-model change, new hook coverage for drafts, adapter and checksum work,
+and reconciliation/orphan-sweep handling, weighed against a state an ordinary publishing workflow
+does not produce. **If WordPress fidelity in that sub-case is later judged to be worth it, it is an
+OPEN-10 ruling and must be taken as one** — this decision does not pre-empt it.
+
+**(c) — resolving the missing segment from WordPress at request time — is prohibited** by ADR-040
+(no WordPress read on the consumer path) and was never a candidate.
+
+**Explicitly unchanged.** No schema, no migration, no new persistence, no capture-model change, no
+contract change, no code change to `PageQueryProvider` or the REST boundary. One integration test
+was added; nothing else moved.
 
 ---
 
