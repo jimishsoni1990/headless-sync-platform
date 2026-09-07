@@ -37,10 +37,11 @@ final class ContentRestRegistrar
     private const PUBLIC_STATUSES = ['publish'];
 
     public function __construct(
-        // Pages are hierarchical, so the page provider must offer BOTH capabilities during the
-        // v1 compatibility period: findByPath() is canonical, findBySlug() is the deprecated
-        // one-segment fallback (DECISION AD). When the fallback is retired the intersection
-        // narrows to HierarchicalQueryProviderInterface alone.
+        // Pages are hierarchical: findByPath() serves the single-page route. The intersection
+        // stays after the DECISION AF fallback removal — not for findBySlug(), which this class no
+        // longer calls for pages, but because the /pages LISTING still needs list(). (DECISION AD
+        // ruling 7 anticipated the type narrowing to the hierarchical contract alone; that was
+        // imprecise, and DECISION AF records the correction.)
         private readonly QueryProviderInterface&HierarchicalQueryProviderInterface $pageQueryProvider,
         private readonly QueryProviderInterface $postQueryProvider,
         private readonly QueryProviderInterface $categoryQueryProvider,
@@ -203,16 +204,15 @@ final class ContentRestRegistrar
     /**
      * Fetch one page by its full ancestor path (DECISION AD).
      *
-     * Resolution order:
-     *   1. Exact path lookup — the canonical semantic. `/pages/about/team` resolves the page whose
-     *      hierarchy IS about → team, and nothing else.
-     *   2. A MULTI-segment miss is a 404, full stop. Never fall back to a leaf, or
-     *      `/pages/wrong-parent/team` would happily return `/about/team`.
-     *   3. A ONE-segment miss falls back to the DEPRECATED leaf lookup. This is the `hsp/v1`
-     *      compatibility arm and the only reason it exists: before this ruling `/pages/team`
-     *      returned a nested `team` page, and Doc 9 §26 forbids removing supported behaviour
-     *      outright. A top-level exact match always wins first, so the fallback is only ever
-     *      reached where the canonical answer does not exist. Removal is a lifecycle decision.
+     * Exact path lookup, and nothing else (DECISION AF completed the DECISION AD lifecycle).
+     * `/pages/about/team` resolves the page whose hierarchy IS about → team; every miss is a 404,
+     * at any depth. There is no leaf fallback at either arm any more — `/pages/wrong-parent/team`
+     * never returns `/about/team`, and `/pages/team` never returns a nested namesake.
+     *
+     * The one-segment leaf fallback that DECISION AD ruling 2 kept as the `hsp/v1` compatibility
+     * arm reached Removed on 2026-09-07 (Doc 9 §26: Supported → Deprecated → Removed). Its
+     * absence is also what brings the FLAG-PAGEPATH-ANCESTOR-1 case to WordPress parity: the
+     * fallback used to serve a child whose ancestor is unprojected, which WordPress itself 404s.
      */
     public function handlePageSingle(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
@@ -227,11 +227,6 @@ final class ContentRestRegistrar
         }
 
         $row = $this->pageQueryProvider->findByPath($path);
-
-        // DEPRECATED (DECISION AD ruling 2) — one-segment compatibility fallback only.
-        if ($row === null && ! str_contains($path, '/')) {
-            $row = $this->pageQueryProvider->findBySlug($path);
-        }
 
         if ($row === null) {
             return new \WP_Error(

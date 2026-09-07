@@ -150,39 +150,24 @@ final class PageQueryProvider implements QueryProviderInterface, HierarchicalQue
     }
 
     /**
-     * Resolve a single published page by bare leaf slug.
+     * Resolve a single published page by slug — which, for a hierarchical resource, means the
+     * TOP-LEVEL page of that name. Exactly `findByPath($slug)` on a one-segment path.
      *
-     * DEPRECATED as page addressing (DECISION AD ruling 2). {@see findByPath()} is the canonical
-     * page lookup; this survives ONLY as the `hsp/v1` compatibility fallback the REST boundary
-     * reaches for when a ONE-segment request finds no top-level page of that name, so a call that
-     * returns 200 today does not become a 404 the day path lookup ships. Removal follows the Doc 9
-     * §26 lifecycle (Supported → Deprecated → Removed) at a formal contract transition, not here.
+     * The old body — a bare `WHERE slug = $1` with `ORDER BY parent_id, id` to make the ambiguity
+     * at least deterministic — was the FLAG-PAGESLUG-1 mitigation, kept by DECISION AD ruling 2 as
+     * the `hsp/v1` compatibility fallback and **removed by DECISION AF** on completing that
+     * lifecycle. It is not merely uncalled now, it is gone: leaving a method that hands back an
+     * arbitrary nested page for a bare slug would be a loaded footgun for the next caller, and the
+     * mitigation existed only because the canonical lookup did not yet exist.
      *
-     * Why it cannot be the permanent model: WordPress enforces page slug uniqueness WITHIN a
-     * parent, not globally, so `/about/team` and `/services/team` are both legal and both land
-     * here as slug='team'. Without an ORDER BY, `LIMIT 1` returned whichever row PostgreSQL
-     * happened to produce — potentially a DIFFERENT page between requests, the worst version of
-     * the bug because it cannot be reproduced or reported. `ORDER BY p.parent_id, p.id` makes the
-     * answer deterministic and picks the least surprising one (parent_id 0 first, so a top-level
-     * page wins over a nested namesake), but deterministic is not the same as addressable: this
-     * method still cannot name a specific nested page. That is what findByPath() is for.
+     * The method itself has to stay — {@see QueryProviderInterface} requires it, and pages need
+     * that interface for the listing endpoint's list(). Delegating gives it the one meaning
+     * DECISION AD ruling 2 defines for a one-segment page address, and makes it impossible for the
+     * two to drift apart.
      */
     public function findBySlug(string $slug): ?array
     {
-        $rows = $this->db->query(
-            sprintf(
-                "SELECT %s
-             FROM content.pages p
-             %s
-             WHERE p.slug = \$1 AND p.deleted_at IS NULL AND p.status = 'publish'
-             ORDER BY p.parent_id, p.id
-             LIMIT 1",
-                self::COLUMNS,
-                self::FEATURED_MEDIA_JOIN,
-            ),
-            [$slug]
-        );
-        return $rows[0] ?? null;
+        return $this->findByPath($slug);
     }
 
     /**

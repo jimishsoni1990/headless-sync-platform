@@ -338,11 +338,12 @@ final class ContentRestRegistrarTest extends TestCase
     }
 
     /**
-     * DEPRECATED v1 compatibility (DECISION AD ruling 2): a ONE-segment request that finds no
-     * top-level page falls back to the deterministic leaf lookup, so a call returning 200 before
-     * path addressing shipped does not become a 404.
+     * The one-segment leaf fallback DECISION AD ruling 2 kept for `hsp/v1` compatibility reached
+     * Removed in DECISION AF: a one-segment miss is now a plain 404, and the leaf lookup is not
+     * consulted at ANY depth. singleRow is deliberately non-null — a fallback WOULD find something
+     * if one still existed.
      */
-    public function test_page_single_falls_back_to_the_leaf_lookup_for_a_one_segment_miss(): void
+    public function test_page_single_no_longer_falls_back_for_a_one_segment_miss(): void
     {
         $provider  = new FakeQueryProvider(
             listResult: new CursorPage([], null),
@@ -353,10 +354,10 @@ final class ContentRestRegistrarTest extends TestCase
 
         $result = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'team']));
 
-        self::assertInstanceOf(\WP_REST_Response::class, $result);
-        self::assertSame(200, $result->status);
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame(404, $result->data['status']);
         self::assertSame(['team'], $provider->pathCalls);
-        self::assertSame(['team'], $provider->slugCalls);
+        self::assertSame([], $provider->slugCalls, 'the retired fallback must not be consulted');
     }
 
     /**

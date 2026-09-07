@@ -149,14 +149,16 @@ final class PagePathAddressingIntegrationTest extends TestCase
     public function test_a_page_under_an_unprojected_ancestor_is_not_addressable_by_path(): void
     {
         // No row for source_post_id 3 — the parent was never published, so it was never captured.
-        $orphanedChild = $this->seedPage(10, 'team', parentId: 3);
+        $this->seedPage(10, 'team', parentId: 3);
 
         self::assertNull($this->provider->findByPath('about/team'), 'the ancestor slug is unknown');
         self::assertNull($this->provider->findByPath('team'), 'the child is not top-level');
 
-        // The DEPRECATED leaf fallback still reaches it, which makes HSP briefly MORE permissive
-        // than WordPress here — retiring that fallback brings this case to exact parity.
-        self::assertSame($orphanedChild, $this->provider->findBySlug('team')['id']);
+        // PARITY REACHED (DECISION AF): while the deprecated leaf fallback existed it DID return
+        // this child — a page WordPress itself 404s, making HSP briefly more permissive than
+        // WordPress. DECISION AE predicted that retiring the fallback would close exactly this
+        // gap; it did.
+        self::assertNull($this->provider->findBySlug('team'), 'no bare-slug back door remains');
     }
 
     public function test_the_requested_page_still_requires_publish_and_not_deleted(): void
@@ -228,25 +230,33 @@ final class PagePathAddressingIntegrationTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // The deprecated v1 compatibility arm still behaves (ruling 2)
+    // The v1 compatibility arm is RETIRED (DECISION AF completes AD ruling 2)
     // -------------------------------------------------------------------------
 
     /**
-     * findBySlug() remains the deterministic leaf lookup the REST boundary falls back to for a
-     * one-segment miss. It must stay stable while it exists — an unstable fallback would be worse
-     * than none.
+     * findBySlug() now means "the top-level page of that name" — it delegates to findByPath() on a
+     * one-segment path. The old bare-slug lookup, which returned an arbitrary-but-deterministic
+     * nested namesake, is gone: two nested pages sharing a leaf slug resolve to NOTHING by bare
+     * slug, because neither is top-level. Each is still addressable by its own path.
      */
-    public function test_the_deprecated_leaf_lookup_is_still_deterministic(): void
+    public function test_a_bare_slug_no_longer_reaches_a_nested_page(): void
     {
-        $this->seedPage(10, 'team', parentId: 3);
+        $this->seedPage(3, 'about',    parentId: 0);
+        $this->seedPage(4, 'services', parentId: 0);
+        $aboutTeam = $this->seedPage(10, 'team', parentId: 3);
         $this->seedPage(11, 'team', parentId: 4);
 
-        $first = $this->provider->findBySlug('team');
-        self::assertNotNull($first);
+        self::assertNull($this->provider->findBySlug('team'), 'neither namesake is top-level');
+        self::assertSame($aboutTeam, $this->provider->findByPath('about/team')['id']);
+    }
 
-        for ($i = 0; $i < 5; $i++) {
-            self::assertSame($first['id'], $this->provider->findBySlug('team')['id']);
-        }
+    /** A top-level page is still reachable by its bare slug — that IS its one-segment path. */
+    public function test_a_bare_slug_still_reaches_a_top_level_page(): void
+    {
+        $contact = $this->seedPage(20, 'contact', parentId: 0);
+        $this->seedPage(21, 'contact', parentId: 20);
+
+        self::assertSame($contact, $this->provider->findBySlug('contact')['id']);
     }
 
     // -------------------------------------------------------------------------

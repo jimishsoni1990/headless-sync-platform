@@ -283,7 +283,27 @@ final class PageQueryProviderTest extends TestCase
         self::assertStringContainsString('deleted_at IS NULL', $sql);
         self::assertStringContainsString("status = 'publish'", $sql);
         self::assertStringContainsString('slug = $1', $sql);
-        self::assertSame(['about'], $this->db->paramsAt(0));
+    }
+
+    /**
+     * findBySlug() on a hierarchical resource means the TOP-LEVEL page of that name — it delegates
+     * to findByPath() on a one-segment path (DECISION AF). The old bare-slug body, which returned
+     * an arbitrary-but-deterministic nested namesake, was the FLAG-PAGESLUG-1 mitigation and is
+     * gone; leaving it callable would have been a footgun for the next caller.
+     */
+    public function test_find_by_slug_resolves_as_a_one_segment_path_not_a_bare_slug(): void
+    {
+        $this->db->queueResults([]);
+
+        $this->provider->findBySlug('about');
+
+        $sql = $this->db->sqlAt(0);
+        self::assertStringContainsString('WITH RECURSIVE', $sql, 'findBySlug must use the path resolver');
+        self::assertStringContainsString('next_parent = 0', $sql, 'a bare slug means TOP-LEVEL');
+        self::assertStringNotContainsString('ORDER BY p.parent_id', $sql, 'the mitigation is retired');
+
+        // Leaf segment and full path are the same string for a one-segment address.
+        self::assertSame(['about', 'about'], $this->db->paramsAt(0));
     }
 
     public function test_find_by_slug_returns_null_for_non_publish_row(): void
