@@ -825,6 +825,41 @@ check('DoD-8: module isolation — no cross-module imports, no service-locator i
     ! $isolViolation,
     $isolViolation ? implode('; ', $isolDetails) : 'clean');
 
+// Isolation runs BOTH ways (DECISION AG AG-1). The scan above walks only modules/, so it
+// could never see the inverse violation — and there was one: ContainerBuilder imported
+// ContentServiceProvider directly, making core depend on a concrete module while every
+// module→module check stayed green. Adding a second module to a core file is the exact
+// regression this catches.
+$coreRoots      = ['core', 'bootstrap', 'database'];
+$coreViolation  = false;
+$coreDetails    = [];
+
+foreach ($coreRoots as $root) {
+    $dir = dirname(__DIR__) . '/' . $root;
+    if (! is_dir($dir)) {
+        continue;
+    }
+
+    foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir)) as $f) {
+        if ($f->getExtension() !== 'php') {
+            continue;
+        }
+
+        $content = file_get_contents($f->getPathname());
+        // Only `use` statements — a docblock mentioning a module by name is documentation,
+        // not a compile-time dependency.
+        if (preg_match('/^\s*use\s+HSP\\\\Modules\\\\(\w+)/m', $content, $m)) {
+            $coreViolation = true;
+            $coreDetails[] = str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $f->getPathname())
+                . " imports HSP\\Modules\\{$m[1]}";
+        }
+    }
+}
+
+check('DoD-8: module isolation (inverse) — core/, bootstrap/ and database/ import no concrete module',
+    ! $coreViolation,
+    $coreViolation ? implode('; ', $coreDetails) : 'clean');
+
 $migrationsDir  = dirname(__DIR__) . '/modules/Content/Migrations';
 $canonViolation = false;
 $canonDetails   = [];

@@ -327,7 +327,7 @@ final class OperationalBaselineIntegrationTest extends TestCase
             100,
         );
         $dispatch    = new \HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy(
-            new \HSP\Core\Events\Dispatcher\EventDispatcher($this->db, $queue, 100),
+            new \HSP\Core\Events\Dispatcher\EventDispatcher($this->db, $queue, ContentProjections::router(), 100),
         );
         $projection  = new EventWorkerStrategy($queue, $registry, $this->db, ContentProjections::router(), retryLimit: 5, counters: $counters);
         $maintenance = new MaintenanceWorkerStrategy($queue, ['partitions' => ['content']]);

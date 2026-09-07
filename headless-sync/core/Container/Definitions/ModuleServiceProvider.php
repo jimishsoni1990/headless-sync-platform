@@ -6,10 +6,14 @@ namespace HSP\Core\Container\Definitions;
 
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
+use HSP\Core\Module\ModuleBootstrapState;
 use HSP\Core\Module\ModuleDiscovery;
+use HSP\Core\Module\ModuleLifecycleCoordinator;
 use HSP\Core\Module\ModuleLoader;
 use HSP\Core\Module\ModuleRegistrar;
 use HSP\Core\Module\ModuleRegistry;
+use HSP\Core\Module\ModuleVersionRecorder;
+use HSP\Core\Onboarding\OnboardingConnectionProbe;
 
 /**
  * Registers the module infrastructure (discovery, registry, registrar) in the DI container.
@@ -50,6 +54,59 @@ final class ModuleServiceProvider extends ServiceProvider
 
         $container->singleton('module.registrar', fn(Container $c) =>
             new ModuleRegistrar($c->get('module.registry'))
+        );
+
+        // ---------------------------------------------------------------------
+        // DECISION AG (AG-6, AG-12) — module readiness, version recording and the
+        // data-bootstrap lifecycle. This is the seam that lets WooCommerce be installed
+        // AFTER HSP and still converge its existing catalog with no reactivation, no manual
+        // migrate and no manual reconcile. It lives in core, never inside a module provider.
+        // ---------------------------------------------------------------------
+
+        $container->singleton(ModuleBootstrapState::class, fn() => new ModuleBootstrapState());
+
+        // Writes system.module_versions over the migration engine's own DDL connection: the
+        // write belongs to the migration lifecycle, so the four runtime handles stay untouched
+        // (DECISION L Ruling 0) and no new pg_* wrapper appears (DECISION E).
+        $container->singleton(ModuleVersionRecorder::class, fn(Container $c) =>
+            new ModuleVersionRecorder($c->get('migration.connection.pgsql'))
+        );
+
+        $container->singleton(ModuleLifecycleCoordinator::class, fn(Container $c) =>
+            new ModuleLifecycleCoordinator(
+                $c->get(ModuleBootstrapState::class),
+                // Readiness reads system.schema_versions — the AUTHORITATIVE migration-state
+                // record. AG-6 forbids inferring it from system.module_versions.
+                static function (string $moduleName) use ($c): bool {
+                    $module = $c->get('module.registry')->get($moduleName);
+                    if ($module === null) {
+                        return false;
+                    }
+
+                    $declared = [];
+                    foreach ($module->getMigrations() as $migration) {
+                        $declared[] = $migration->getName();
+                    }
+
+                    if ($declared === []) {
+                        return true; // a module owning no schema is ready as soon as it loads
+                    }
+
+                    $applied = $c->get(OnboardingConnectionProbe::class)->appliedMigrationNames();
+
+                    return array_diff($declared, $applied) === [];
+                },
+                static function (string $moduleName, string $schemaVersion) use ($c): void {
+                    // Never allowed to break a page load: an unreachable database is normal
+                    // on an unconfigured site (ADR-054 Principle 8).
+                    try {
+                        $c->get(ModuleVersionRecorder::class)->record($moduleName, $schemaVersion);
+                    } catch (\Throwable) {
+                        // Recording is metadata, not correctness — schema_versions remains
+                        // the authoritative record either way.
+                    }
+                },
+            )
         );
     }
 }

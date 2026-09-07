@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Core;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\EventRegistry;
@@ -173,7 +175,7 @@ final class DeliveryConnectionIsolationTest extends TestCase
 
         // Wire strategy with separate delivery and queue connections (DECISION K).
         [$deliveryConn, $queueProvider] = $this->makeDeliveryAndQueue();
-        $strategy = new EventWorkerStrategy($queueProvider, $registry, $deliveryConn);
+        $strategy = new EventWorkerStrategy($queueProvider, $registry, $deliveryConn, ContentProjections::router());
 
         $ctx = new WorkerExecutionContext(
             workerId:      $workerId,
@@ -264,7 +266,7 @@ final class DeliveryConnectionIsolationTest extends TestCase
             });
 
             [$deliveryConn, $queueProvider] = $this->makeDeliveryAndQueue();
-            $strategy = new EventWorkerStrategy($queueProvider, $registry, $deliveryConn);
+            $strategy = new EventWorkerStrategy($queueProvider, $registry, $deliveryConn, ContentProjections::router());
 
             $ctx = new WorkerExecutionContext(
                 workerId:      $workerId,
