@@ -72,9 +72,16 @@ final class FakeReconConnection implements DatabaseConnectionInterface
 
     private function typeFromTable(string $sql): string
     {
-        if (str_contains($sql, 'content.pages'))      { return 'page'; }
-        if (str_contains($sql, 'content.posts'))      { return 'post'; }
-        if (str_contains($sql, 'content.taxonomies')) { return 'category'; }
+        if (str_contains($sql, 'content.pages')) { return 'page'; }
+        if (str_contains($sql, 'content.posts')) { return 'post'; }
+        if (str_contains($sql, 'content.media')) { return 'media'; }
+
+        // Categories and tags share content.taxonomies — only the discriminator tells them
+        // apart, exactly as it must in the service under test (DECISION AA).
+        if (str_contains($sql, 'content.taxonomies')) {
+            return str_contains($sql, "taxonomy_type = 'post_tag'") ? 'tag' : 'category';
+        }
+
         return '';
     }
 }

@@ -106,34 +106,73 @@ final class BackfillProgressTest extends TestCase
      * projected side by every tag — enough to declare the backfill converged while categories
      * were still missing.
      */
-    public function test_taxonomy_projection_count_is_scoped_to_categories(): void
+    public function test_taxonomy_projection_counts_are_scoped_per_taxonomy(): void
     {
         $conn = new ScriptedConnection();
         $conn->on('behind', [['c' => 0]]);
         $conn->on("taxonomy_type = 'category'", [['c' => 2]]);
+        $conn->on("taxonomy_type = 'post_tag'", [['c' => 5]]);
 
         $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+        $counts = $reader->liveProjectionCounts();
 
-        self::assertSame(2, $reader->liveProjectionCounts()['category']);
+        self::assertSame(2, $counts['category']);
+        self::assertSame(5, $counts['tag']);
 
         $taxonomyQueries = array_values(array_filter(
             $conn->queries,
             static fn (string $sql): bool => str_contains($sql, 'content.taxonomies')
         ));
 
-        self::assertCount(1, $taxonomyQueries);
-        self::assertStringContainsString("taxonomy_type = 'category'", $taxonomyQueries[0]);
+        // One scoped read per taxonomy — never an unscoped count of the shared table.
+        self::assertCount(2, $taxonomyQueries);
+        foreach ($taxonomyQueries as $sql) {
+            self::assertMatchesRegularExpression("/taxonomy_type = '(category|post_tag)'/", $sql);
+        }
+    }
+
+    /**
+     * Media and tags are reconciled and re-emitted by the backfill (DECISION AC), so they must be
+     * counted by it too — otherwise the site converges with neither projected
+     * (FLAG-RECON-COVERAGE-1).
+     */
+    public function test_media_and_tags_block_convergence_until_projected(): void
+    {
+        $expected  = ['post' => 1, 'page' => 0, 'category' => 0, 'tag' => 3, 'media' => 2];
+        $projected = [
+            'content.posts'      => 1,
+            'content.pages'      => 0,
+            "taxonomy_type = 'category'" => 0,
+            "taxonomy_type = 'post_tag'" => 0,
+            'content.media'      => 0,
+        ];
+
+        $progress = $this->progress($expected, $projected, inFlight: 0);
+        $snap     = $progress->snapshot();
+
+        self::assertSame(6, $snap['expected_total'], 'tags and media count toward expected');
+        self::assertFalse($snap['converged'], 'unprojected tags and media must block convergence');
+        self::assertArrayHasKey('tag', $snap['projected']);
+        self::assertArrayHasKey('media', $snap['projected']);
+
+        // Once they land, convergence follows.
+        $projected["taxonomy_type = 'post_tag'"] = 3;
+        $projected['content.media']              = 2;
+
+        self::assertTrue($this->progress($expected, $projected, inFlight: 0)->isConverged());
     }
 
     // --- helpers ------------------------------------------------------------
 
     /**
      * @param array<string,int> $expected  aggregate type → expected count (scripts the WP source)
-     * @param array<string,int> $projected content.* table → live row count
+     * @param array<string,int> $projected SQL needle (table, or a taxonomy_type predicate where
+     *                                     the table is shared) → live row count
      */
     private function progress(array $expected, array $projected, int $inFlight): BackfillProgress
     {
-        $source = new FakeReconciliationSource();
+        $source        = new FakeReconciliationSource();
+        $source->types = array_keys($expected);
         foreach ($expected as $type => $count) {
             for ($i = 1; $i <= $count; $i++) {
                 // Distinct ascending numeric ids per type so listAggregateIds paging terminates.
@@ -142,8 +181,8 @@ final class BackfillProgressTest extends TestCase
         }
 
         $conn = new ScriptedConnection();
-        foreach ($projected as $table => $count) {
-            $conn->on("FROM {$table}", [['c' => $count]]);
+        foreach ($projected as $needle => $count) {
+            $conn->on($needle, [['c' => $count]]);
         }
         $conn->on('behind', [['c' => $inFlight]]);
 
@@ -159,6 +198,8 @@ final class BackfillProgressTest extends TestCase
             'post'     => 1000,
             'page'     => 2000,
             'category' => 3000,
+            'tag'      => 4000,
+            'media'    => 5000,
             default    => 9000,
         };
 

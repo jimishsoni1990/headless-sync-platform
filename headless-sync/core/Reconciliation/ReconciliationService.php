@@ -53,11 +53,19 @@ final class ReconciliationService
      * Categories and tags project into one content.taxonomies table, told apart by taxonomy_type
      * (DECISION AA). The orphan sweep lists rows BY TABLE, with no id to disambiguate them, so
      * without the discriminator a 'category' pass claims every tag row as a category candidate.
+     *
+     * THIS MAP IS THE CONSUMING SIDE OF THE AGGREGATE SEAM (FLAG-RECON-COVERAGE-1). reconcile()
+     * silently skips any supported aggregate type missing here, so an omission is invisible at
+     * runtime: it means that type is never reconciled AND — since the onboarding backfill IS
+     * reconcileFull() (DECISION W (b)) — never backfilled either. Guarded by
+     * ReconciliationServiceTest::testProjectionCoversEverySupportedAggregateType().
      */
     private const PROJECTION = [
         'page'     => ['table' => 'content.pages',      'id' => 'source_post_id'],
         'post'     => ['table' => 'content.posts',      'id' => 'source_post_id'],
         'category' => ['table' => 'content.taxonomies', 'id' => 'source_term_id', 'type' => 'category'],
+        'tag'      => ['table' => 'content.taxonomies', 'id' => 'source_term_id', 'type' => 'post_tag'],
+        'media'    => ['table' => 'content.media',      'id' => 'source_post_id'],
     ];
 
     public function __construct(

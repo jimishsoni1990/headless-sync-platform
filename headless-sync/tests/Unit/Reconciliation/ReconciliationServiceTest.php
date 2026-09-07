@@ -30,7 +30,7 @@ final class ReconciliationServiceTest extends TestCase
     {
         $this->conn    = new FakeReconConnection();
         $this->source  = new FakeReconciliationSource();
-        $this->emitter = new FakeReplayEmitter();
+        $this->emitter = new FakeReplayEmitter(['page', 'post', 'category', 'media', 'tag']);
         // Real ReplayService with a spyable emitter. Its own connection is unused by
         // entity replay (only date-range reads system.events), so a stub fake is fine.
         $this->replay  = new ReplayService(new FakeDbConnection(), [$this->emitter]);
@@ -328,6 +328,53 @@ final class ReconciliationServiceTest extends TestCase
                 $entry['sql'],
                 "unscoped read of the shared taxonomy table:\n{$entry['sql']}"
             );
+        }
+    }
+
+    /**
+     * Tags are the second occupant of content.taxonomies, so their reads must carry the OTHER
+     * discriminator — a tag pass reading with taxonomy_type = 'category' would find nothing and
+     * report every tag as a missed capture, forever (FLAG-RECON-COVERAGE-1, DECISION AC).
+     */
+    public function testTagReadsCarryThePostTagPredicate(): void
+    {
+        $this->source->withType('tag');
+        $this->source->addLive('tag', '7', true, null);
+        $this->conn->projectionRows['tag:7'] = [
+            'checksum' => str_repeat('a', 64), 'updated_at' => '2026-07-01 00:00:00+00', 'deleted_at' => null,
+        ];
+
+        $result = $this->service()->reconcile(ReconciliationService::MODE_FULL);
+
+        $taxonomyQueries = array_values(array_filter(
+            $this->conn->log,
+            static fn (array $e): bool => str_contains($e['sql'], 'content.taxonomies')
+        ));
+
+        self::assertNotEmpty($taxonomyQueries, 'the tag pass must read content.taxonomies');
+        foreach ($taxonomyQueries as $entry) {
+            self::assertStringContainsString("taxonomy_type = 'post_tag'", $entry['sql']);
+        }
+        self::assertSame([], $result->repaired, 'a consistent tag projection is not drift');
+    }
+
+    /** Media reconcile at all (they were skipped entirely before DECISION AC). */
+    public function testMediaMissedCaptureIsDetectedAndReEmitted(): void
+    {
+        $this->source->withType('media');
+        $this->source->addLive('media', '42', true, $this->ts('2026-07-01T00:00:00Z'));
+        // No projection row → missed capture.
+
+        $result = $this->service()->reconcile(ReconciliationService::MODE_DRIFT);
+
+        self::assertCount(1, $result->repaired);
+        self::assertSame('media', $result->repaired[0]['aggregate_type']);
+        self::assertSame('missed_capture', $result->repaired[0]['reason']);
+
+        foreach ($this->conn->log as $entry) {
+            if (str_contains($entry['sql'], 'content.media')) {
+                self::assertStringNotContainsString('taxonomy_type', $entry['sql']);
+            }
         }
     }
 

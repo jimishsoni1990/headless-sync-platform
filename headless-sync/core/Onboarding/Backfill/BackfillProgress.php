@@ -33,8 +33,14 @@ use HSP\Core\Contracts\WpReconciliationSourceInterface;
  */
 final class BackfillProgress
 {
-    /** In-scope aggregate types (Blog MVP), fixed by the pipeline's projection targets. */
-    private const TYPES = ['page', 'post', 'category'];
+    /**
+     * In-scope aggregate types (Blog MVP), fixed by the pipeline's projection targets.
+     *
+     * Must match the aggregate types the backfill actually re-emits (FLAG-RECON-COVERAGE-1) —
+     * a type omitted here is excluded from both progress and the convergence signal, so the site
+     * flips complete with none of it projected.
+     */
+    private const TYPES = ['page', 'post', 'category', 'tag', 'media'];
 
     public function __construct(
         private readonly WpReconciliationSourceInterface $source,

@@ -34,11 +34,17 @@ final class BackfillReader
      * table reports "categories" as categories + tags. That inflated the projected count against
      * a WordPress-side expected count of categories alone, which could declare the backfill
      * converged while categories were still missing.
+     *
+     * Must list every aggregate type the backfill re-emits (FLAG-RECON-COVERAGE-1): a type
+     * missing here is a type whose progress and convergence signal ignore it, so a site can be
+     * declared converged with none of it projected.
      */
     private const PROJECTION = [
         'page'     => ['table' => 'content.pages',      'type' => null],
         'post'     => ['table' => 'content.posts',      'type' => null],
         'category' => ['table' => 'content.taxonomies', 'type' => 'category'],
+        'tag'      => ['table' => 'content.taxonomies', 'type' => 'post_tag'],
+        'media'    => ['table' => 'content.media',      'type' => null],
     ];
 
     /** @var callable(): DatabaseConnectionInterface */
