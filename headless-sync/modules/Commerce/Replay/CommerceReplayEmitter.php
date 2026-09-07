@@ -29,7 +29,7 @@ use HSP\Modules\Commerce\WpCommerceLoader;
 final class CommerceReplayEmitter implements ReplayEmitterInterface
 {
     /** @var list<string> */
-    private const AGGREGATE_TYPES = ['product'];
+    private const AGGREGATE_TYPES = ['product', 'product_category'];
 
     public function __construct(
         private readonly EventProviderInterface $events,
@@ -49,6 +49,10 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
         string $correlationId,
         string $causationId,
     ): EventInterface {
+        if ($aggregateType === 'product_category') {
+            return $this->emitTerm($aggregateId, $correlationId, $causationId);
+        }
+
         if ($aggregateType !== 'product') {
             throw new \InvalidArgumentException(
                 self::class . " cannot emit aggregate type '{$aggregateType}'."
@@ -71,5 +75,25 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
             'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
             'payload'           => ['product_id' => $productId],
         ]);
+    }
+
+    /**
+     * A term that has gone — or whose taxonomy this module no longer owns — re-emits as
+     * DELETED, so a removed category tombstones rather than lingering.
+     */
+    private function emitTerm(string $aggregateId, string $correlationId, string $causationId): EventInterface
+    {
+        $exists = $this->loader->loadTerm((int) $aggregateId) !== null;
+
+        return $this->events->provide(
+            $exists ? CommerceEventTypes::CATEGORY_UPDATED : CommerceEventTypes::CATEGORY_DELETED,
+            $aggregateId,
+            [
+                'correlation_id'    => $correlationId,
+                'causation_id'      => $causationId,
+                'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+                'payload'           => ['term_id' => (int) $aggregateId],
+            ],
+        );
     }
 }

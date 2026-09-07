@@ -205,6 +205,27 @@ final class FakeCommerceLoader implements WpCommerceLoader
     {
         return $this->product !== null;
     }
+
+    /** @var array<int, array<string,mixed>> */
+    public array $terms = [];
+
+    /** @return array<string,mixed>|null */
+    public function loadTerm(int $termId): ?array
+    {
+        return $this->terms[$termId] ?? null;
+    }
+
+    /** @return list<int> */
+    public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
+    {
+        $ids = array_values(array_filter(
+            array_keys($this->terms),
+            static fn (int $id): bool => $id > $afterId,
+        ));
+        sort($ids);
+
+        return array_slice($ids, 0, $limit);
+    }
 }
 
 /**

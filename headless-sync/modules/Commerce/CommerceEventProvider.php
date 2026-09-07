@@ -15,7 +15,10 @@ use HSP\Modules\Commerce\Events\CommerceEventTypes;
  * Called by HookWiring immediately after a WordPress/WooCommerce commit (DECISION 1), and
  * delegates the write to the shared OutboxWriterInterface — Rule 3, no second capture path.
  *
- * Aggregate mapping: `commerce.product.*` → aggregate_type `product`.
+ * Aggregate mapping: the second dot-segment IS the aggregate type — `commerce.product.*` →
+ * `product`, `commerce.product_category.*` → `product_category`. Aggregate types are
+ * platform-wide keys, so Commerce namespaces its category rather than colliding with the
+ * Content module's `category`.
  *
  * NOTE ON BINDING: unlike Content, this is bound under its CONCRETE class rather than
  * EventProviderInterface. The interface is a single container key, so two modules binding it
@@ -31,7 +34,8 @@ final class CommerceEventProvider implements EventProviderInterface
 
     /** Second dot-segment → aggregate_type. */
     private const AGGREGATE_TYPE_MAP = [
-        'product' => 'product',
+        'product'  => 'product',
+        'product_category' => 'product_category',
     ];
 
     public function __construct(private readonly OutboxWriterInterface $outboxWriter)

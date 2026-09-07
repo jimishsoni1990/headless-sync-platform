@@ -42,4 +42,24 @@ interface WpCommerceLoader
 
     /** Does a product with this id exist in WordPress right now? */
     public function productExists(int $productId): bool;
+
+    /**
+     * Read one Commerce taxonomy term.
+     *
+     * Looked up by term id ALONE, with no taxonomy argument: WordPress term ids are unique
+     * across taxonomies, and the term reports its own taxonomy. Content's loader originally
+     * hardcoded get_term($id, 'category') and had to be generalised in P1B-S3 — this starts
+     * taxonomy-agnostic so the pa_* attribute terms of P2-S4 reuse it unchanged.
+     *
+     * @return array<string,mixed>|null Null when the term does not exist or belongs to a
+     *         taxonomy this module does not own.
+     */
+    public function loadTerm(int $termId): ?array;
+
+    /**
+     * Term ids in one taxonomy greater than $afterId, ascending — the reconciliation pager.
+     *
+     * @return list<int>
+     */
+    public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array;
 }

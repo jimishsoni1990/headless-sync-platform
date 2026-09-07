@@ -25,10 +25,19 @@ final class CommerceEventTypes
     public const PRODUCT_UPDATED = 'commerce.product.updated';
     public const PRODUCT_DELETED = 'commerce.product.deleted';
 
+    // Product categories (P2-S3). The OPEN-1 aggregate is `category`; the WordPress taxonomy
+    // is `product_cat` — the same naming asymmetry Content has between `tag` and `post_tag`.
+    public const CATEGORY_CREATED = 'commerce.product_category.created';
+    public const CATEGORY_UPDATED = 'commerce.product_category.updated';
+    public const CATEGORY_DELETED = 'commerce.product_category.deleted';
+
     /** @var list<string> */
     public const ALL = [
         self::PRODUCT_CREATED,
         self::PRODUCT_UPDATED,
         self::PRODUCT_DELETED,
+        self::CATEGORY_CREATED,
+        self::CATEGORY_UPDATED,
+        self::CATEGORY_DELETED,
     ];
 }

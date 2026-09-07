@@ -47,6 +47,12 @@ final class HookWiring
     /** @var array<int, bool> product ids whose deletion has been emitted this request */
     private array $deleted = [];
 
+    /** @var array<string, bool> term keys already emitted this request (upsert path) */
+    private array $handledTerms = [];
+
+    /** @var array<string, bool> term keys whose deletion has been emitted this request */
+    private array $deletedTerms = [];
+
     private bool $captureFailed = false;
 
     public function __construct(private readonly EventProviderInterface $events)
@@ -66,6 +72,29 @@ final class HookWiring
         // WordPress post lifecycle — deletion and trashing, which WooCommerce does not hook.
         add_action('wp_trash_post', [$this, 'onTrashPost'], 10, 1);
         add_action('after_delete_post', [$this, 'onAfterDeletePost'], 10, 2);
+
+        // Taxonomy terms (P2-S3). WordPress term hooks, which fire for EVERY taxonomy — the
+        // handlers below resolve through CommerceTaxonomies and silently ignore the ones this
+        // module does not own.
+        add_action('created_term', [$this, 'onCreatedTerm'], 10, 3);
+        add_action('edited_term', [$this, 'onEditedTerm'], 10, 3);
+        add_action('delete_term', [$this, 'onDeleteTerm'], 10, 4);
+    }
+
+    public function onCreatedTerm(int $termId, int $ttId, string $taxonomy): void
+    {
+        $this->captureTerm($termId, $taxonomy, 'created');
+    }
+
+    public function onEditedTerm(int $termId, int $ttId, string $taxonomy): void
+    {
+        $this->captureTerm($termId, $taxonomy, 'updated');
+    }
+
+    /** @param mixed $deletedTerm WordPress passes the term object; unused, the id suffices. */
+    public function onDeleteTerm(int $termId, int $ttId, string $taxonomy, mixed $deletedTerm = null): void
+    {
+        $this->captureTerm($termId, $taxonomy, 'deleted');
     }
 
     public function onProductCreated(int $productId): void
@@ -135,12 +164,66 @@ final class HookWiring
         $this->capture(CommerceEventTypes::PRODUCT_DELETED, $productId);
     }
 
+    /**
+     * Capture a taxonomy term change.
+     *
+     * Term hooks fire for EVERY taxonomy on the site, so the first thing this does is ask
+     * whether the module owns it. An unsupported taxonomy returns silently — other plugins
+     * register taxonomies freely and their terms are normal traffic, not an error worth
+     * logging on every save.
+     *
+     * Terms get their own guard key namespace so a product and a term sharing an id cannot
+     * suppress one another — WordPress post ids and term ids are separate sequences.
+     */
+    private function captureTerm(int $termId, string $taxonomy, string $action): void
+    {
+        if ($termId <= 0) {
+            return;
+        }
+
+        $eventType = CommerceTaxonomies::eventFor($taxonomy, $action);
+
+        if ($eventType === null) {
+            return;
+        }
+
+        $key = 'term:' . $termId;
+
+        if ($action === 'deleted') {
+            if (isset($this->deletedTerms[$key])) {
+                return;
+            }
+
+            // Terminal, exactly as for products: block any later upsert for this term.
+            $this->deletedTerms[$key] = true;
+            $this->handledTerms[$key] = true;
+        } else {
+            if (isset($this->handledTerms[$key]) || isset($this->deletedTerms[$key])) {
+                return;
+            }
+
+            $this->handledTerms[$key] = true;
+        }
+
+        $this->captureEvent($eventType, (string) $termId, ['term_id' => $termId]);
+    }
+
     private function capture(string $eventType, int $productId): void
     {
+        $this->captureEvent($eventType, (string) $productId, ['product_id' => $productId]);
+    }
+
+    /**
+     * The single emit path for every Commerce aggregate.
+     *
+     * @param array<string,mixed> $payload
+     */
+    private function captureEvent(string $eventType, string $aggregateId, array $payload): void
+    {
         try {
-            $this->events->provide($eventType, (string) $productId, [
+            $this->events->provide($eventType, $aggregateId, [
                 'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
-                'payload'           => ['product_id' => $productId],
+                'payload'           => $payload,
             ]);
         } catch (OutboxWriteException $e) {
             // Never re-thrown: a capture failure must not fatal the editor request. It is
@@ -148,8 +231,8 @@ final class HookWiring
             // (DECISION 1) — but it is never swallowed silently.
             error_log(sprintf(
                 '[HSP] outbox capture FAILED (lost sync until reconciliation) — '
-                . 'aggregate_type=product aggregate_id=%d event_type=%s: %s',
-                $productId,
+                . 'aggregate_id=%s event_type=%s: %s',
+                $aggregateId,
                 $eventType,
                 $e->getMessage(),
             ));

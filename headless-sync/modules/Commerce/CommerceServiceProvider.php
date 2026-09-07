@@ -17,22 +17,32 @@ use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Modules\Commerce\Adapters\ProductAdapter;
+use HSP\Modules\Commerce\Adapters\TermAdapter;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
+use HSP\Modules\Commerce\Extractors\TermExtractor;
 use HSP\Modules\Commerce\Handlers\ProductTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
+use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
+use HSP\Modules\Commerce\Migrations\CreateCommerceEntityTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceProductsMigration;
+use HSP\Modules\Commerce\Migrations\CreateCommerceTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceSchemaMigration;
 use HSP\Modules\Commerce\Operations\CommerceEndpointProvider;
 use HSP\Modules\Commerce\Queries\ProductQueryProvider;
+use HSP\Modules\Commerce\Queries\TermQueryProvider;
 use HSP\Modules\Commerce\Reconciliation\WpCommerceReconciliationSource;
 use HSP\Modules\Commerce\Replay\CommerceReplayEmitter;
 use HSP\Modules\Commerce\Resources\ProductResource;
+use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrar;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrarFactory;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriber;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriberRegistrar;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
+use HSP\Modules\Commerce\Transformers\TermTransformer;
 use HSP\Modules\Commerce\Validation\ProductValidator;
+use HSP\Modules\Commerce\Validation\TermValidator;
 
 /**
  * Registers the Commerce module's bindings — reached generically, never imported by core.
@@ -93,6 +103,24 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
         $container->singleton(ProductExtractor::class, fn (Container $c) =>
             new ProductExtractor($c->get(ProductValidator::class)));
         $container->singleton(ProductTransformer::class, fn () => new ProductTransformer());
+
+        $container->singleton(TermValidator::class, fn () => new TermValidator());
+        $container->singleton(TermExtractor::class, fn (Container $c) =>
+            new TermExtractor($c->get(TermValidator::class)));
+        $container->singleton(TermTransformer::class, fn () => new TermTransformer());
+        $container->singleton(TermAdapter::class, fn (Container $c) =>
+            new TermAdapter($c->get(DatabaseConnectionInterface::class)));
+
+        $container->singleton(TermUpsertHandler::class, fn (Container $c) =>
+            new TermUpsertHandler(
+                $c->get(WpCommerceLoader::class),
+                $c->get(TermExtractor::class),
+                $c->get(TermTransformer::class),
+                $c->get(TermAdapter::class),
+            ));
+
+        $container->singleton(TermTombstoneHandler::class, fn (Container $c) =>
+            new TermTombstoneHandler($c->get(TermAdapter::class)));
         $container->singleton(ProductAdapter::class, fn (Container $c) =>
             new ProductAdapter($c->get(DatabaseConnectionInterface::class)));
 
@@ -111,6 +139,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             new CommerceSubscriber(
                 $c->get(ProductUpsertHandler::class),
                 $c->get(ProductTombstoneHandler::class),
+                $c->get(TermUpsertHandler::class),
+                $c->get(TermTombstoneHandler::class),
             ));
 
         $container->singleton(CommerceSubscriberRegistrar::class, fn (Container $c) =>
@@ -123,11 +153,22 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
         $container->singleton(ProductQueryProvider::class, fn (Container $c) =>
             new ProductQueryProvider($c->get(DatabaseConnectionInterface::class)));
         $container->singleton(ProductResource::class, fn () => new ProductResource());
+        $container->singleton(TermResource::class, fn () => new TermResource());
+
+        // Parameterised by taxonomy: one class, one binding per taxonomy (P1B-S3 precedent).
+        // P2-S4 adds a pa_* binding here rather than another class.
+        $container->singleton('commerce.category_query_provider', fn (Container $c) =>
+            new TermQueryProvider(
+                $c->get(DatabaseConnectionInterface::class),
+                CommerceTaxonomies::PRODUCT_CAT,
+            ));
 
         $container->singleton(CommerceRestRegistrar::class, fn (Container $c) =>
             new CommerceRestRegistrar(
                 $c->get(ProductQueryProvider::class),
                 $c->get(ProductResource::class),
+                $c->get('commerce.category_query_provider'),
+                $c->get(TermResource::class),
             ));
 
         // --- Repair ----------------------------------------------------------
@@ -142,6 +183,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(WpCommerceLoader::class),
                 $c->get(ProductExtractor::class),
                 $c->get(ProductTransformer::class),
+                $c->get(TermExtractor::class),
+                $c->get(TermTransformer::class),
             ));
 
         // --- Operations ------------------------------------------------------
@@ -164,6 +207,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                     return [
                         new CreateCommerceSchemaMigration($conn),
                         new CreateCommerceProductsMigration($conn),
+                        new CreateCommerceTaxonomiesMigration($conn),
+                        new CreateCommerceEntityTaxonomiesMigration($conn),
                     ];
                 },
             ));
@@ -194,6 +239,18 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             // discriminated case arrives with commerce.taxonomies in P2-S3.
             new ProjectionDescriptor('product', 'commerce.products', 'source_product_id'),
         );
+
+        // DISCRIMINATED: commerce.taxonomies is shared, so the descriptor must carry the
+        // taxonomy predicate. Without it the orphan sweep would claim every attribute term as
+        // a category candidate, and the backfill would inflate the category count by every
+        // pa_* term — both real bugs DECISION AA had to fix for content.taxonomies.
+        $projections->register(new ProjectionDescriptor(
+            'product_category',
+            'commerce.taxonomies',
+            'source_term_id',
+            CommerceTaxonomies::PRODUCT_CAT,
+            'taxonomy_type',
+        ));
 
         /** @var RefreshCoordinator $coordinator */
         $coordinator = $container->get(RefreshCoordinator::class);

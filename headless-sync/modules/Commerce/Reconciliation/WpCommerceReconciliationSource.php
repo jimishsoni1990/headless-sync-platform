@@ -7,7 +7,10 @@ namespace HSP\Modules\Commerce\Reconciliation;
 use HSP\Core\Contracts\SourceState;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
+use HSP\Modules\Commerce\CommerceTaxonomies;
+use HSP\Modules\Commerce\Extractors\TermExtractor;
 use HSP\Modules\Commerce\ProductScope;
+use HSP\Modules\Commerce\Transformers\TermTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\WpCommerceLoader;
 
@@ -30,12 +33,14 @@ use HSP\Modules\Commerce\WpCommerceLoader;
 final class WpCommerceReconciliationSource implements WpReconciliationSourceInterface
 {
     /** @var list<string> */
-    private const AGGREGATE_TYPES = ['product'];
+    private const AGGREGATE_TYPES = ['product', 'product_category'];
 
     public function __construct(
         private readonly WpCommerceLoader $loader,
         private readonly ProductExtractor $extractor,
         private readonly ProductTransformer $transformer,
+        private readonly TermExtractor $termExtractor,
+        private readonly TermTransformer $termTransformer,
     ) {
     }
 
@@ -48,6 +53,13 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
     /** @return list<string> */
     public function listAggregateIds(string $aggregateType, int $afterId, int $limit): array
     {
+        if ($aggregateType === 'product_category') {
+            return array_map(
+                static fn (int $id): string => (string) $id,
+                $this->loader->listTermIdsAfter(CommerceTaxonomies::PRODUCT_CAT, $afterId, $limit),
+            );
+        }
+
         if ($aggregateType !== 'product') {
             return [];
         }
@@ -60,6 +72,14 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
 
     public function getSourceState(string $aggregateType, string $aggregateId): SourceState
     {
+        if ($aggregateType === 'product_category') {
+            // Terms carry no modified timestamp in WordPress, so drift detection for them is
+            // existence-only at the hourly cadence and checksum-based nightly (DECISION U D2).
+            $term = $this->loader->loadTerm((int) $aggregateId);
+
+            return new SourceState($term !== null, $term !== null, null);
+        }
+
         if ($aggregateType !== 'product') {
             return new SourceState(false, false, null);
         }
@@ -89,6 +109,14 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
 
     public function computeCurrentChecksum(string $aggregateType, string $aggregateId): ?string
     {
+        if ($aggregateType === 'product_category') {
+            $term = $this->loader->loadTerm((int) $aggregateId);
+
+            return $term === null
+                ? null
+                : $this->termTransformer->transform($this->termExtractor->extract($term))->getChecksum();
+        }
+
         if ($aggregateType !== 'product') {
             return null;
         }

@@ -7,12 +7,19 @@ namespace HSP\Modules\Commerce\Rest;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
 use HSP\Modules\Commerce\Queries\ProductFilterSet;
+use HSP\Modules\Commerce\Queries\TermFilterSet;
 
 /**
  * Registers the Commerce delivery routes on the `hsp/v1` namespace (DECISION N, Doc 9 §7).
  *
  *   GET /hsp/v1/products
  *   GET /hsp/v1/products/{slug}
+ *   GET /hsp/v1/product-categories
+ *   GET /hsp/v1/product-categories/{slug}
+ *
+ * The category routes are namespaced `product-categories` rather than `categories`, which the
+ * Content module already owns for WordPress post categories. Two different taxonomies in two
+ * different domains must not contend for one route.
  *
  * Reads come from commerce.products only — no synchronous WordPress reads (Rule 6, ADR-040).
  *
@@ -28,6 +35,8 @@ final class CommerceRestRegistrar
     public function __construct(
         private readonly QueryProviderInterface $productQueryProvider,
         private readonly ResourceInterface $productResource,
+        private readonly QueryProviderInterface $categoryQueryProvider,
+        private readonly ResourceInterface $termResource,
     ) {
     }
 
@@ -56,6 +65,56 @@ final class CommerceRestRegistrar
                 ],
             ],
         ]);
+
+        register_rest_route(self::NAMESPACE, '/product-categories', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleCategoryListing(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
+                'limit'  => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+                'parent' => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+            ],
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/product-categories/(?P<slug>[a-z0-9_-]+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleCategorySingle(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'slug' => [
+                    'required'          => true,
+                    'type'              => 'string',
+                    'sanitize_callback' => 'sanitize_title',
+                ],
+            ],
+        ]);
+    }
+
+    /** @param \WP_REST_Request<array<string,mixed>>|object $request */
+    public function handleCategoryListing(object $request): mixed
+    {
+        $parent = $this->param($request, 'parent');
+
+        $page = $this->categoryQueryProvider->list(new TermFilterSet(
+            parentId: $parent === null ? null : (int) $parent,
+            cursor:   $this->param($request, 'cursor'),
+            limit:    $this->intParam($request, 'limit'),
+        ));
+
+        return $this->respond($this->termResource->toCollection($page->rows, $page->nextCursor));
+    }
+
+    /** @param \WP_REST_Request<array<string,mixed>>|object $request */
+    public function handleCategorySingle(object $request): mixed
+    {
+        $row = $this->categoryQueryProvider->findBySlug((string) ($this->param($request, 'slug') ?? ''));
+
+        if ($row === null) {
+            return $this->notFound();
+        }
+
+        return $this->respond($this->termResource->toArray($row));
     }
 
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */

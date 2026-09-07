@@ -101,6 +101,69 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
         return $this->product($productId) !== null;
     }
 
+    public function loadTerm(int $termId): ?array
+    {
+        if (! function_exists('get_term')) {
+            return null;
+        }
+
+        // No taxonomy argument: WordPress term ids are unique across taxonomies and the term
+        // reports its own, so a single lookup serves product_cat and every pa_* alike.
+        $term = get_term($termId);
+
+        if (! is_object($term) || ! isset($term->term_id)) {
+            return null;
+        }
+
+        $taxonomy = (string) ($term->taxonomy ?? '');
+
+        // A term this module does not own is not an error — other plugins register taxonomies
+        // freely, and that is normal traffic.
+        if (! CommerceTaxonomies::isSupported($taxonomy)) {
+            return null;
+        }
+
+        return [
+            'term_id'     => (int) $term->term_id,
+            'taxonomy'    => $taxonomy,
+            'slug'        => (string) ($term->slug ?? ''),
+            'name'        => (string) ($term->name ?? ''),
+            'description' => (string) ($term->description ?? ''),
+            'parent'      => (int) ($term->parent ?? 0),
+            'count'       => (int) ($term->count ?? 0),
+        ];
+    }
+
+    /** @return list<int> */
+    public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
+    {
+        global $wpdb;
+
+        if (! isset($wpdb)) {
+            return [];
+        }
+
+        // Direct bounded read: `term_id > n ORDER BY term_id LIMIT k` keyset paging cannot be
+        // expressed through get_terms(), and the reconciliation corpus must page
+        // deterministically over the whole taxonomy.
+        $sql = $wpdb->prepare(
+            "SELECT t.term_id
+             FROM {$wpdb->terms} t
+             INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = t.term_id
+             WHERE tt.taxonomy = %s AND t.term_id > %d
+             ORDER BY t.term_id ASC
+             LIMIT %d",
+            $taxonomy,
+            $afterId,
+            $limit,
+        );
+
+        /** @var list<array<string,mixed>>|null $rows */
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+
+        return array_map(static fn (array $r): int => (int) $r['term_id'], $rows ?? []);
+    }
+
     /**
      * @return WooProductAccess|null A WC_Product, or null when WooCommerce is absent or the id
      *         is not a product.

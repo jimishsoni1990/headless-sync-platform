@@ -42,6 +42,8 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
         return [
             $this->productsList(),
             $this->productSingle(),
+            $this->categoriesList(),
+            $this->categorySingle(),
         ];
     }
 
@@ -93,6 +95,64 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             version: 'v1',
             moduleOwner: self::MODULE,
         );
+    }
+
+    private function categoriesList(): EndpointDescriptor
+    {
+        return new EndpointDescriptor(
+            method: 'GET',
+            route: '/product-categories',
+            namespace: self::NAMESPACE,
+            displayGroup: 'Commerce',
+            description: 'List WooCommerce product categories. Namespaced separately from the '
+                . 'Content module' . '\x27' . 's /categories, which serves WordPress post categories.',
+            parameters: [
+                self::query('cursor', 'string', 'Opaque pagination cursor.'),
+                self::query('limit', 'integer', 'Page size (max 200).'),
+                self::query('parent', 'integer', 'Only terms directly under this parent term id.'),
+            ],
+            responseSchema: $this->termSchema()->asCursorPage(),
+            requestSchema: null,
+            auth: EndpointAuth::Public,
+            paginated: true,
+            deprecated: false,
+            version: 'v1',
+            moduleOwner: self::MODULE,
+        );
+    }
+
+    private function categorySingle(): EndpointDescriptor
+    {
+        return new EndpointDescriptor(
+            method: 'GET',
+            route: '/product-categories/{slug}',
+            namespace: self::NAMESPACE,
+            displayGroup: 'Commerce',
+            description: 'Fetch one product category by slug.',
+            parameters: [EndpointParameter::path('slug', 'string', 'Category slug.')],
+            responseSchema: $this->termSchema(),
+            requestSchema: null,
+            auth: EndpointAuth::Public,
+            paginated: false,
+            deprecated: false,
+            version: 'v1',
+            moduleOwner: self::MODULE,
+        );
+    }
+
+    private function termSchema(): SchemaObject
+    {
+        return SchemaObject::object([
+            'id'          => 'string',
+            'source_id'   => 'integer',
+            'slug'        => 'string',
+            'name'        => 'string',
+            'description' => 'string',
+            // Parent SOURCE term id, or null at top level — so a consumer can rebuild the tree
+            // without a second lookup.
+            'parent'      => 'integer',
+            'count'       => 'integer',
+        ]);
     }
 
     /** Optional query parameter — the shape every listing filter shares. */

@@ -131,11 +131,36 @@ final class TwoModuleIntegrationTest extends TestCase
         /** @var ProjectionRegistryInterface $projections */
         $projections = $container->get(ProjectionRegistryInterface::class);
 
-        $expected = ['page', 'post', 'category', 'tag', 'media', 'product'];
+        $expected = ['page', 'post', 'category', 'tag', 'media', 'product', 'product_category'];
 
         self::assertEqualsCanonicalizing($expected, $emitters->aggregateTypes());
         self::assertEqualsCanonicalizing($expected, $sources->aggregateTypes());
         self::assertEqualsCanonicalizing($expected, $projections->aggregateTypes());
+    }
+
+    /**
+     * Aggregate types are PLATFORM-WIDE keys, not per-module ones: a projection descriptor maps
+     * one aggregate type to exactly one table, so `category` cannot mean `content.taxonomies`
+     * for one module and `commerce.taxonomies` for another.
+     *
+     * Commerce therefore owns `product_category`, not `category`. The first implementation used
+     * the bare name and the AG-2 duplicate guard rejected it at boot — which is exactly the
+     * failure mode that guard exists for. Before P2-S1 the second module to register would
+     * simply have taken ownership, with nothing reported.
+     */
+    public function testTheTwoDomainsOwnDistinctCategoryAggregates(): void
+    {
+        /** @var ProjectionRegistryInterface $projections */
+        $projections = $this->build()->get(ProjectionRegistryInterface::class);
+
+        self::assertSame('content.taxonomies', $projections->get('category')->table);
+        self::assertSame('commerce.taxonomies', $projections->get('product_category')->table);
+
+        // Both are SHARED tables, so both descriptors must carry a discriminator — otherwise
+        // an orphan sweep claims another taxonomy's rows (the DECISION AA defect class).
+        self::assertTrue($projections->get('category')->isDiscriminated());
+        self::assertTrue($projections->get('product_category')->isDiscriminated());
+        self::assertSame('product_cat', $projections->get('product_category')->discriminatorValue);
     }
 
     /** Production routing, not a fixture: each domain reaches its own partition (AG-4). */
