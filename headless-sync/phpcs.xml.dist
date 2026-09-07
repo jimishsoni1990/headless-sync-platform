@@ -37,6 +37,15 @@
     <!-- ============================================================= -->
     <rule ref="PSR12"/>
 
+    <!-- WooProductAccess mirrors WooCommerce's own WC_Product method names, which are      -->
+    <!-- snake_case. The file exists only to give static analysis a type for an optional    -->
+    <!-- third-party API and to document, in one place, exactly which of its methods this   -->
+    <!-- platform depends on. Renaming them to camelCase would make it describe an API that -->
+    <!-- does not exist, so the naming sniff is excluded for that file alone.               -->
+    <rule ref="PSR1.Methods.CamelCapsMethodName">
+        <exclude-pattern>*/modules/Commerce/WooProductAccess.php</exclude-pattern>
+    </rule>
+
     <!-- Baseline: per-file/per-sniff exclusions recorded when the lint    -->
     <!-- toolchain was introduced, so `composer lint` is green on the      -->
     <!-- unmodified tree. See phpcs-baseline.xml for the retirement plan   -->

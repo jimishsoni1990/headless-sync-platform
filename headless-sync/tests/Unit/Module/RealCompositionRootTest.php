@@ -48,6 +48,27 @@ final class RealCompositionRootTest extends TestCase
         }
     }
 
+    /**
+     * These assertions describe the WooCommerce-ABSENT state, which is only observable while
+     * the process has no WooCommerce marker.
+     *
+     * TwoModuleIntegrationTest declares that marker to exercise the both-modules-present path,
+     * and a class declaration cannot be undone within a PHP process — so when the two run in
+     * one process, whichever goes second sees the other's world. Rather than assert something
+     * order-dependent, the absent-path tests self-skip when the condition they describe is not
+     * available, matching how the integration suite skips without a live database. Run this
+     * file alone and they execute.
+     */
+    private function requireWooCommerceAbsent(): void
+    {
+        if (class_exists(\WooCommerce::class, false) || function_exists('wc_get_product')) {
+            self::markTestSkipped(
+                'WooCommerce is present in this process (declared by the two-module test), so the '
+                . 'WooCommerce-absent path cannot be observed here.'
+            );
+        }
+    }
+
     private function build(): \HSP\Core\Container\Container
     {
         $config = [
@@ -67,14 +88,33 @@ final class RealCompositionRootTest extends TestCase
         );
     }
 
-    public function testTheDiscoveredModuleIsRegisteredAndAvailable(): void
+    /**
+     * Content is available; Commerce is DISCOVERED BUT UNAVAILABLE, because WooCommerce is not
+     * loaded in a headless PHPUnit process.
+     *
+     * That is the AG-12 contract holding on real modules rather than a fixture: a module whose
+     * external dependency is absent contributes nothing, and — the part that matters — its
+     * absence does not degrade the module that is present.
+     */
+    public function testContentIsAvailableAndCommerceIsDiscoveredButUnavailable(): void
     {
+        $this->requireWooCommerceAbsent();
+
         $container = $this->build();
 
         /** @var list<string> $available */
         $available = $container->get('module.available_names');
+        /** @var list<string> $unavailable */
+        $unavailable = $container->get('module.unavailable_names');
+
         self::assertContains('content', $available);
-        self::assertSame([], $container->get('module.unavailable_names'));
+        self::assertContains(
+            'commerce',
+            $unavailable,
+            'WooCommerce is not loaded here, so Commerce must report unavailable — not fail, and '
+            . 'not register.',
+        );
+        self::assertNotContains('commerce', $available);
 
         /** @var ModuleRegistry $registry */
         $registry = $container->get('module.registry');
@@ -82,6 +122,38 @@ final class RealCompositionRootTest extends TestCase
 
         self::assertArrayHasKey('content', $registry->all());
         self::assertSame('content', $registry->all()['content']->getName());
+        self::assertArrayNotHasKey(
+            'commerce',
+            $registry->all(),
+            'an unavailable module must not enter the lifecycle at all',
+        );
+    }
+
+    /**
+     * The sharpest form of "WooCommerce absent is a normal state" (AG-12): with Commerce
+     * unavailable, Content's replay, reconciliation and projection registrations must be
+     * exactly what they were before Commerce existed — no Commerce aggregate types leak in,
+     * and nothing Content owns is displaced.
+     */
+    public function testAnUnavailableModuleContributesNothingToTheRegistries(): void
+    {
+        $this->requireWooCommerceAbsent();
+
+        $container = $this->build();
+
+        /** @var ReplayEmitterRegistryInterface $emitters */
+        $emitters = $container->get(ReplayEmitterRegistryInterface::class);
+        /** @var ProjectionRegistryInterface $projections */
+        $projections = $container->get(ProjectionRegistryInterface::class);
+
+        self::assertNotContains('product', $emitters->aggregateTypes());
+        self::assertFalse($projections->has('product'));
+
+        // And Content is untouched.
+        self::assertEqualsCanonicalizing(
+            ['page', 'post', 'category', 'tag', 'media'],
+            $projections->aggregateTypes(),
+        );
     }
 
     /**
@@ -107,6 +179,8 @@ final class RealCompositionRootTest extends TestCase
      */
     public function testModuleRegistrationsLandInTheCoreOwnedRegistries(): void
     {
+        $this->requireWooCommerceAbsent();
+
         $container = $this->build();
 
         $expected = ['page', 'post', 'category', 'tag', 'media'];

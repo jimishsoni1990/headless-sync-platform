@@ -1,0 +1,8 @@
+{
+  "name": "commerce",
+  "version": "1.0.0",
+  "module_class": "HSP\\Modules\\Commerce\\CommerceModule",
+  "service_provider": "HSP\\Modules\\Commerce\\CommerceServiceProvider",
+  "schema_version": "1.0.0",
+  "requires": []
+}
