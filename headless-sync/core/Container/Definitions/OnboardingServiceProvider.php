@@ -10,7 +10,8 @@ use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\MigrationInterface;
 use HSP\Core\Contracts\ModuleInterface;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
-use HSP\Core\Contracts\WpReconciliationSourceInterface;
+use HSP\Core\Contracts\ProjectionRegistryInterface;
+use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Migrations\MigrationRunner;
 use HSP\Core\Module\ModuleRegistry;
@@ -160,6 +161,7 @@ final class OnboardingServiceProvider extends ServiceProvider
             BackfillReader::class,
             fn (Container $c) => new BackfillReader(
                 static fn (): DatabaseConnectionInterface => $c->get(DatabaseConnectionInterface::class),
+                $c->get(ProjectionRegistryInterface::class),
             ),
         );
 
@@ -175,14 +177,17 @@ final class OnboardingServiceProvider extends ServiceProvider
             ),
         );
 
-        // Derived-on-demand progress (DECISION Q / W (d)): expected WP counts (via the existing
-        // WpReconciliationSourceInterface — Rule 5, no module import) vs live projection counts.
-        // WpReconciliationSourceInterface is bound by ContentServiceProvider; resolved lazily so
-        // provider order is safe.
+        // Derived-on-demand progress (DECISION Q / W (d)): expected WP counts (paged through the
+        // existing reconciliation-source contract — Rule 5, no module import) vs live projection
+        // counts. Both sides now come from CORE-OWNED REGISTRIES rather than single bindings
+        // (AG-2/AG-3): a scalar source could hold only one module's aggregates, so a second
+        // module's content was invisible to progress AND to the convergence signal — the
+        // FLAG-RECON-COVERAGE-1 defect, reintroduced by every module after the first.
         $container->singleton(
             BackfillProgress::class,
             fn (Container $c) => new BackfillProgress(
-                $c->get(WpReconciliationSourceInterface::class),
+                $c->get(ReconciliationSourceRegistryInterface::class),
+                $c->get(ProjectionRegistryInterface::class),
                 $c->get(BackfillReader::class),
                 $this->reconcilePageSize(),
             ),

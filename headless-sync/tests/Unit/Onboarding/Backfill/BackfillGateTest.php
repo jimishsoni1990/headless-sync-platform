@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Tests\Unit\Onboarding\Backfill;
 
 use HSP\Core\Onboarding\Backfill\BackfillGate;
+use HSP\Tests\Support\ContentProjections;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
 use HSP\Core\Onboarding\OnboardingConnectionProbe;
 use HSP\Core\Onboarding\Preflight\MigrationsAppliedCheck;
@@ -75,7 +76,7 @@ final class BackfillGateTest extends TestCase
     {
         // No 'worker_heartbeats' script → MAX(...) age is null → no cycle has run.
         $reader = new BackfillReader(fn (): ScriptedConnection => (new ScriptedConnection())
-            ->on('system.worker_heartbeats', [['age' => null]]));
+            ->on('system.worker_heartbeats', [['age' => null]]), ContentProjections::registry());
         $gate   = new BackfillGate($reader, $this->migrations(self::ALL_MIGRATIONS), 60);
 
         self::assertFalse($gate->isReady());
@@ -102,7 +103,7 @@ final class BackfillGateTest extends TestCase
     public function test_blocks_when_migrations_missing_even_with_a_live_cycle(): void
     {
         $reader = new BackfillReader(fn (): ScriptedConnection => (new ScriptedConnection())
-            ->on('system.worker_heartbeats', [['age' => 3.0]]));
+            ->on('system.worker_heartbeats', [['age' => 3.0]]), ContentProjections::registry());
         // Only a subset applied → migration gate fails.
         $gate = new BackfillGate($reader, $this->migrations(['0002_create_system_events']), 60);
 
@@ -131,7 +132,7 @@ final class BackfillGateTest extends TestCase
     private function gate(float $heartbeatAge, int $offlineAfter): BackfillGate
     {
         $reader = new BackfillReader(fn (): ScriptedConnection => (new ScriptedConnection())
-            ->on('system.worker_heartbeats', [['age' => $heartbeatAge]]));
+            ->on('system.worker_heartbeats', [['age' => $heartbeatAge]]), ContentProjections::registry());
 
         return new BackfillGate($reader, $this->migrations(self::ALL_MIGRATIONS), $offlineAfter);
     }

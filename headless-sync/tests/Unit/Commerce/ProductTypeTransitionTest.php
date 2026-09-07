@@ -218,13 +218,47 @@ final class FakeCommerceLoader implements WpCommerceLoader
     /** @return list<int> */
     public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
     {
+        $ids = [];
+
+        foreach ($this->terms as $id => $term) {
+            if ($id > $afterId && ($term['taxonomy'] ?? '') === $taxonomy) {
+                $ids[] = $id;
+            }
+        }
+
+        sort($ids);
+
+        return array_slice($ids, 0, $limit);
+    }
+
+    /** @var array<int, array<string,mixed>> */
+    public array $attributes = [];
+
+    /** @return array<string,mixed>|null */
+    public function loadAttribute(int $attributeId): ?array
+    {
+        return $this->attributes[$attributeId] ?? null;
+    }
+
+    /** @return list<int> */
+    public function listAttributeIdsAfter(int $afterId, int $limit): array
+    {
         $ids = array_values(array_filter(
-            array_keys($this->terms),
+            array_keys($this->attributes),
             static fn (int $id): bool => $id > $afterId,
         ));
         sort($ids);
 
         return array_slice($ids, 0, $limit);
+    }
+
+    /** @return list<string> */
+    public function attributeTaxonomyNames(): array
+    {
+        return array_values(array_map(
+            static fn (array $a): string => (string) $a['slug'],
+            $this->attributes,
+        ));
     }
 }
 

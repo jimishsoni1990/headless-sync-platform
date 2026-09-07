@@ -64,12 +64,32 @@ final class ProductAdapter implements AdapterInterface
         try {
             $lockedVersion = $this->lockAggregateVersion($event, $now);
 
-            $suppressProjection = ($existingRow !== null && $existingRow['checksum'] === $checksum)
-                || ($event->getAggregateVersion() < $lockedVersion);
+            // A TOMBSTONED row is never suppressed, however identical its checksum.
+            //
+            // Tombstoning sets deleted_at and leaves the checksum alone, so when the source
+            // comes back — a post restored from trash, a term or attribute re-created, an
+            // aggregate re-entering supported scope — the reloaded state hashes to exactly what
+            // is already stored. Without this clause the revival is suppressed and the row stays
+            // invisible forever; worse, reconciliation then detects the drift on every pass and
+            // repairs it by re-emission (DECISION T/U), which is suppressed in turn. That is a
+            // permanent repair loop that never converges and never logs an error.
+            $suppressProjection = (
+                $existingRow !== null
+                && $existingRow['checksum'] === $checksum
+                && $existingRow['deleted_at'] === null
+            ) || ($event->getAggregateVersion() < $lockedVersion);
 
             if (! $suppressProjection) {
                 $this->upsertProduct($model, $id, $checksum, $now);
-                $this->rewriteEntityTaxonomies($id, $model->categoryIds);
+                // ONE rewrite for both kinds: commerce.entity_taxonomies stores only
+                // (entity_id, source_term_id) and the term's own row carries the taxonomy, so
+                // a category link and an attribute-term link are the same row shape. Rewriting
+                // them separately would need a taxonomy-scoped DELETE and would reintroduce the
+                // partial-rewrite hazard the delete-all-then-insert shape avoids.
+                $this->rewriteEntityTaxonomies(
+                    $id,
+                    array_merge($model->categoryIds, $model->attributeTermIds),
+                );
             }
 
             $this->insertProcessedEvent($event, $checksum, $now);
@@ -127,7 +147,7 @@ final class ProductAdapter implements AdapterInterface
     private function fetchExistingRow(int $sourceProductId): ?array
     {
         $rows = $this->db->query(
-            'SELECT id, checksum FROM commerce.products WHERE source_product_id = $1',
+            'SELECT id, checksum, deleted_at FROM commerce.products WHERE source_product_id = $1',
             [$sourceProductId],
         );
 
@@ -243,16 +263,16 @@ final class ProductAdapter implements AdapterInterface
      *
      * Runs INSIDE the caller's transaction, so membership and the product row commit together.
      *
-     * @param list<int> $categoryIds
+     * @param list<int> $termIds
      */
-    private function rewriteEntityTaxonomies(string $productId, array $categoryIds): void
+    private function rewriteEntityTaxonomies(string $productId, array $termIds): void
     {
         $this->db->execute(
             'DELETE FROM commerce.entity_taxonomies WHERE entity_id = $1::uuid',
             [$productId],
         );
 
-        if ($categoryIds === []) {
+        if ($termIds === []) {
             return;
         }
 
@@ -261,7 +281,7 @@ final class ProductAdapter implements AdapterInterface
         $rows   = [];
         $params = [$productId];
 
-        foreach (array_unique($categoryIds) as $termId) {
+        foreach (array_unique($termIds) as $termId) {
             $params[] = $termId;
             $rows[]   = '($1::uuid, $' . count($params) . ')';
         }

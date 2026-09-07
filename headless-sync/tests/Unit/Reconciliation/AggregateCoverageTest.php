@@ -82,35 +82,91 @@ final class AggregateCoverageTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // The consuming lists that remain core-owned (backfill counting)
+    // Backfill counting — derived from the registries since P2-S4, not from constants
     // -------------------------------------------------------------------------
 
+    /**
+     * The reader must produce a count for every supported aggregate.
+     *
+     * Until P2-S4 this asserted against `BackfillReader::PROJECTION`, a hardcoded `content.*`
+     * map. That constant could not survive a second module — core is forbidden to name Commerce
+     * tables (AG-1) — so the reader now walks the ProjectionRegistry, and the assertion moves
+     * with it: a type the registry does not describe simply never appears in the counts, which
+     * reads downstream as "zero projected" and under-reports progress forever.
+     */
     public function testBackfillReaderCountsEverySupportedAggregate(): void
     {
-        $projection = $this->constantOf(BackfillReader::class, 'PROJECTION');
+        $reader = new BackfillReader(
+            static fn (): \HSP\Core\Database\DatabaseConnectionInterface => new CountingStubConnection(),
+            $this->projectionRegistry(),
+        );
+
+        $counts = $reader->liveProjectionCounts();
 
         foreach ($this->supportedTypes() as $type) {
             self::assertArrayHasKey(
                 $type,
-                $projection,
-                "'{$type}' has no BackfillReader::PROJECTION entry, so its projected count is "
-                . 'always 0 and backfill progress under-reports it.',
+                $counts,
+                "'{$type}' produced no projected count, so backfill progress under-reports it.",
             );
         }
     }
 
+    /**
+     * Convergence must score every supported aggregate.
+     *
+     * Same move as above, from `BackfillProgress::TYPES` to the intersection of the two
+     * registries. The failure this protects against is unchanged and is the reason
+     * FLAG-RECON-COVERAGE-1 exists: a type left out of the scored set is a type convergence
+     * ignores, so the site flips complete with none of it projected.
+     */
     public function testBackfillProgressScoresEverySupportedAggregate(): void
     {
-        $types = $this->constantOf(BackfillProgress::class, 'TYPES');
+        $progress = new BackfillProgress(
+            $this->sourceRegistry(),
+            $this->projectionRegistry(),
+            new BackfillReader(
+                static fn (): \HSP\Core\Database\DatabaseConnectionInterface => new CountingStubConnection(),
+                $this->projectionRegistry(),
+            ),
+        );
+
+        $snapshot = $progress->snapshot();
 
         foreach ($this->supportedTypes() as $type) {
-            self::assertContains(
+            self::assertArrayHasKey(
                 $type,
-                $types,
-                "'{$type}' is missing from BackfillProgress::TYPES, so convergence ignores it "
-                . 'and the site flips complete with none of it projected.',
+                $snapshot['expected'],
+                "'{$type}' is not scored by convergence, so the site flips complete with none of "
+                . 'it projected.',
             );
+            self::assertArrayHasKey($type, $snapshot['projected'], "'{$type}' has no projected score");
         }
+    }
+
+    /**
+     * A source type with no projection descriptor is DROPPED from scoring — so the registry
+     * pairing proven above is what keeps convergence honest, and this test states the
+     * consequence explicitly rather than leaving it implied.
+     */
+    public function testAnUndescribedSourceTypeIsNotScoredAtAll(): void
+    {
+        $sources = new \HSP\Core\Reconciliation\ReconciliationSourceRegistry();
+        $sources->register(new StubContentSource(['post', 'ghost']));
+
+        $progress = new BackfillProgress(
+            $sources,
+            $this->projectionRegistry(),
+            new BackfillReader(
+                static fn (): \HSP\Core\Database\DatabaseConnectionInterface => new CountingStubConnection(),
+                $this->projectionRegistry(),
+            ),
+        );
+
+        $snapshot = $progress->snapshot();
+
+        self::assertArrayHasKey('post', $snapshot['expected']);
+        self::assertArrayNotHasKey('ghost', $snapshot['expected']);
     }
 
     // -------------------------------------------------------------------------
@@ -181,6 +237,20 @@ final class StubContentSource implements \HSP\Core\Contracts\WpReconciliationSou
     }
     public function computeCurrentChecksum(string $aggregateType, string $aggregateId): ?string { return null; }
     public function hasPendingOutbox(string $aggregateType, string $aggregateId): bool { return false; }
+}
+
+/** Answers every count query with 0 — the subject here is WHICH types are counted, not how many. */
+final class CountingStubConnection implements \HSP\Core\Database\DatabaseConnectionInterface
+{
+    /** @return array<int,array<string,mixed>> */
+    public function query(string $sql, array $params = []): array { return [['c' => 0, 'age' => 0.0]]; }
+    public function execute(string $sql, array $params = []): int
+    {
+        throw new \LogicException('backfill reads must not write');
+    }
+    public function beginTransaction(): void {}
+    public function commit(): void {}
+    public function rollback(): void {}
 }
 
 final class StubContentEmitter implements \HSP\Core\Contracts\ReplayEmitterInterface

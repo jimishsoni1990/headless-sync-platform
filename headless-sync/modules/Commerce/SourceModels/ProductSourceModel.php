@@ -43,6 +43,13 @@ final class ProductSourceModel
      * @param \DateTimeImmutable  $modifiedAt        post_modified_gmt as a UTC instant
      * @param array<string,mixed> $meta              published-safe meta (protected keys stripped)
      * @param list<int>           $categoryIds       product_cat TERM ids this product carries
+     * @param list<int>           $attributeTermIds  pa_* TERM ids across every global attribute
+     *                                               taxonomy. Kept SEPARATE from categoryIds
+     *                                               even though both land in the same link
+     *                                               table: they are different domain facts and
+     *                                               merging them here would make a category
+     *                                               change indistinguishable from an attribute
+     *                                               change to anything reading the source model.
      */
     public function __construct(
         public readonly int $productId,
@@ -64,6 +71,7 @@ final class ProductSourceModel
         public readonly \DateTimeImmutable $modifiedAt,
         public readonly array $meta,
         public readonly array $categoryIds,
+        public readonly array $attributeTermIds,
     ) {
     }
 }

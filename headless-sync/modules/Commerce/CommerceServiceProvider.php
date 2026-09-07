@@ -16,31 +16,40 @@ use HSP\Core\Contracts\ReplayEmitterRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Operations\Services\RefreshCoordinator;
+use HSP\Modules\Commerce\Adapters\AttributeAdapter;
 use HSP\Modules\Commerce\Adapters\ProductAdapter;
 use HSP\Modules\Commerce\Adapters\TermAdapter;
+use HSP\Modules\Commerce\Extractors\AttributeExtractor;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
+use HSP\Modules\Commerce\Handlers\AttributeTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\AttributeUpsertHandler;
 use HSP\Modules\Commerce\Handlers\ProductTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
 use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
+use HSP\Modules\Commerce\Migrations\CreateCommerceAttributesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceEntityTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceProductsMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceSchemaMigration;
 use HSP\Modules\Commerce\Operations\CommerceEndpointProvider;
+use HSP\Modules\Commerce\Queries\AttributeQueryProvider;
 use HSP\Modules\Commerce\Queries\ProductQueryProvider;
 use HSP\Modules\Commerce\Queries\TermQueryProvider;
 use HSP\Modules\Commerce\Reconciliation\WpCommerceReconciliationSource;
 use HSP\Modules\Commerce\Replay\CommerceReplayEmitter;
+use HSP\Modules\Commerce\Resources\AttributeResource;
 use HSP\Modules\Commerce\Resources\ProductResource;
 use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrar;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrarFactory;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriber;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriberRegistrar;
+use HSP\Modules\Commerce\Transformers\AttributeTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
+use HSP\Modules\Commerce\Validation\AttributeValidator;
 use HSP\Modules\Commerce\Validation\ProductValidator;
 use HSP\Modules\Commerce\Validation\TermValidator;
 
@@ -121,6 +130,25 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
 
         $container->singleton(TermTombstoneHandler::class, fn (Container $c) =>
             new TermTombstoneHandler($c->get(TermAdapter::class)));
+
+        $container->singleton(AttributeValidator::class, fn () => new AttributeValidator());
+        $container->singleton(AttributeExtractor::class, fn (Container $c) =>
+            new AttributeExtractor($c->get(AttributeValidator::class)));
+        $container->singleton(AttributeTransformer::class, fn () => new AttributeTransformer());
+        $container->singleton(AttributeAdapter::class, fn (Container $c) =>
+            new AttributeAdapter($c->get(DatabaseConnectionInterface::class)));
+
+        $container->singleton(AttributeUpsertHandler::class, fn (Container $c) =>
+            new AttributeUpsertHandler(
+                $c->get(WpCommerceLoader::class),
+                $c->get(AttributeExtractor::class),
+                $c->get(AttributeTransformer::class),
+                $c->get(AttributeAdapter::class),
+            ));
+
+        $container->singleton(AttributeTombstoneHandler::class, fn (Container $c) =>
+            new AttributeTombstoneHandler($c->get(AttributeAdapter::class)));
+
         $container->singleton(ProductAdapter::class, fn (Container $c) =>
             new ProductAdapter($c->get(DatabaseConnectionInterface::class)));
 
@@ -141,6 +169,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(ProductTombstoneHandler::class),
                 $c->get(TermUpsertHandler::class),
                 $c->get(TermTombstoneHandler::class),
+                $c->get(AttributeUpsertHandler::class),
+                $c->get(AttributeTombstoneHandler::class),
             ));
 
         $container->singleton(CommerceSubscriberRegistrar::class, fn (Container $c) =>
@@ -155,12 +185,24 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
         $container->singleton(ProductResource::class, fn () => new ProductResource());
         $container->singleton(TermResource::class, fn () => new TermResource());
 
+        $container->singleton(AttributeQueryProvider::class, fn (Container $c) =>
+            new AttributeQueryProvider($c->get(DatabaseConnectionInterface::class)));
+        $container->singleton(AttributeResource::class, fn () => new AttributeResource());
+
         // Parameterised by taxonomy: one class, one binding per taxonomy (P1B-S3 precedent).
-        // P2-S4 adds a pa_* binding here rather than another class.
         $container->singleton('commerce.category_query_provider', fn (Container $c) =>
             new TermQueryProvider(
                 $c->get(DatabaseConnectionInterface::class),
                 CommerceTaxonomies::PRODUCT_CAT,
+            ));
+
+        // The pa_* case cannot be a binding: the set of attribute taxonomies is defined by the
+        // operator at runtime, so the provider is built per request from the requested taxonomy
+        // (the registrar validates the `pa_` prefix before calling this).
+        $container->singleton('commerce.attribute_term_query_factory', fn (Container $c) =>
+            static fn (string $taxonomy): TermQueryProvider => new TermQueryProvider(
+                $c->get(DatabaseConnectionInterface::class),
+                $taxonomy,
             ));
 
         $container->singleton(CommerceRestRegistrar::class, fn (Container $c) =>
@@ -169,6 +211,9 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(ProductResource::class),
                 $c->get('commerce.category_query_provider'),
                 $c->get(TermResource::class),
+                $c->get(AttributeQueryProvider::class),
+                $c->get(AttributeResource::class),
+                $c->get('commerce.attribute_term_query_factory'),
             ));
 
         // --- Repair ----------------------------------------------------------
@@ -185,6 +230,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(ProductTransformer::class),
                 $c->get(TermExtractor::class),
                 $c->get(TermTransformer::class),
+                $c->get(AttributeExtractor::class),
+                $c->get(AttributeTransformer::class),
             ));
 
         // --- Operations ------------------------------------------------------
@@ -209,6 +256,7 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                         new CreateCommerceProductsMigration($conn),
                         new CreateCommerceTaxonomiesMigration($conn),
                         new CreateCommerceEntityTaxonomiesMigration($conn),
+                        new CreateCommerceAttributesMigration($conn),
                     ];
                 },
             ));
@@ -250,6 +298,24 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             'source_term_id',
             CommerceTaxonomies::PRODUCT_CAT,
             'taxonomy_type',
+        ));
+
+        // Attribute DEFINITIONS get their own table, so no discriminator (AG-9).
+        $projections->register(
+            new ProjectionDescriptor('attribute', 'commerce.attributes', 'source_attribute_id'),
+        );
+
+        // Attribute TERMS share commerce.taxonomies with categories, but their discriminator is
+        // a PREFIX rather than one fixed value: `pa_colour`, `pa_size` and every taxonomy an
+        // operator defines later all belong to this one aggregate. An exact-match descriptor
+        // could not express that without enumerating taxonomies that do not exist yet.
+        $projections->register(new ProjectionDescriptor(
+            'attribute_term',
+            'commerce.taxonomies',
+            'source_term_id',
+            CommerceTaxonomies::ATTRIBUTE_PREFIX,
+            'taxonomy_type',
+            ProjectionDescriptor::MATCH_PREFIX,
         ));
 
         /** @var RefreshCoordinator $coordinator */

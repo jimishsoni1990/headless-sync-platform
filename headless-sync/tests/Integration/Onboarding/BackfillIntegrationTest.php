@@ -241,7 +241,7 @@ final class BackfillIntegrationTest extends TestCase
 
     private function gate(): BackfillGate
     {
-        $reader = new BackfillReader(fn (): PostgresDatabaseConnection => $this->db);
+        $reader = new BackfillReader(fn (): PostgresDatabaseConnection => $this->db, ContentProjections::registry());
         $probe  = new OnboardingConnectionProbe(fn (): PostgresDatabaseConnection => $this->db);
 
         return new BackfillGate($reader, new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()), 60);
@@ -250,9 +250,9 @@ final class BackfillIntegrationTest extends TestCase
     private function progress(): BackfillProgress
     {
         $source = new StoreReconciliationSource($this->wp, $this->mysqli, $this->outbox);
-        $reader = new BackfillReader(fn (): PostgresDatabaseConnection => $this->db);
+        $reader = new BackfillReader(fn (): PostgresDatabaseConnection => $this->db, ContentProjections::registry());
 
-        return new BackfillProgress($source, $reader, 500);
+        return new BackfillProgress(ContentProjections::sourceRegistry($source), ContentProjections::registry(), $reader, 500);
     }
 
     private function drainPipeline(): void

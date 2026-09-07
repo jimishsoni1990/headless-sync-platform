@@ -347,7 +347,7 @@ final class OnboardingRestControllerTest extends TestCase
             ->on('FROM content.pages', [['c' => 0]])
             ->on('FROM content.taxonomies', [['c' => 0]])
             ->on('behind', [['c' => 0]]);
-        $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+        $reader = new BackfillReader(fn (): ScriptedConnection => $conn, ContentProjections::registry());
         $probe  = new OnboardingConnectionProbe(
             fn (): ScriptedConnection => (new ScriptedConnection())->on(
                 'system.schema_versions',
@@ -388,7 +388,7 @@ final class OnboardingRestControllerTest extends TestCase
             ->on('FROM content.taxonomies', [['c' => 0]])
             ->on('behind', [['c' => $inFlight]]);
 
-        $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+        $reader = new BackfillReader(fn (): ScriptedConnection => $conn, ContentProjections::registry());
 
         $migRows = array_map(static fn (string $n) => ['migration_name' => $n], $migrations);
         $probe   = new OnboardingConnectionProbe(
@@ -404,7 +404,11 @@ final class OnboardingRestControllerTest extends TestCase
         );
 
         // Empty WP source → expected_total 0.
-        $progress = new BackfillProgress(new FakeReconciliationSource(), $reader);
+        $progress = new BackfillProgress(
+            ContentProjections::sourceRegistry(new FakeReconciliationSource()),
+            ContentProjections::registry(),
+            $reader,
+        );
 
         return new OnboardingRestController(
             new PreflightRunner($this->check('a', true)),
@@ -462,7 +466,10 @@ final class OnboardingRestControllerTest extends TestCase
     /** Backfill service over fakes — constructible for the preflight/complete tests (not invoked). */
     private function backfillService(): BackfillService
     {
-        $reader = new BackfillReader(fn (): ScriptedConnection => new ScriptedConnection());
+        $reader = new BackfillReader(
+            fn (): ScriptedConnection => new ScriptedConnection(),
+            ContentProjections::registry(),
+        );
         $probe  = new OnboardingConnectionProbe(fn (): ScriptedConnection => new ScriptedConnection());
         $gate   = new BackfillGate($reader, new MigrationsAppliedCheck($probe, FakeModuleMigration::contentModule()), 60);
 
@@ -479,8 +486,12 @@ final class OnboardingRestControllerTest extends TestCase
     private function backfillProgress(): BackfillProgress
     {
         return new BackfillProgress(
-            new FakeReconciliationSource(),
-            new BackfillReader(fn (): ScriptedConnection => new ScriptedConnection()),
+            ContentProjections::sourceRegistry(new FakeReconciliationSource()),
+            ContentProjections::registry(),
+            new BackfillReader(
+                fn (): ScriptedConnection => new ScriptedConnection(),
+                ContentProjections::registry(),
+            ),
         );
     }
 

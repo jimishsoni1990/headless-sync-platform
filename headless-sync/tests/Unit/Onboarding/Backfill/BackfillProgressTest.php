@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Tests\Unit\Onboarding\Backfill;
 
 use HSP\Core\Onboarding\Backfill\BackfillProgress;
+use HSP\Tests\Support\ContentProjections;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
 use HSP\Tests\Unit\Reconciliation\FakeReconciliationSource;
 use PHPUnit\Framework\TestCase;
@@ -86,11 +87,16 @@ final class BackfillProgressTest extends TestCase
         // The connection throws on connect → freshest/counts fall back, in-flight is null → -1.
         $reader = new BackfillReader(static function (): never {
             throw new \RuntimeException('PG unreachable');
-        });
+        }, ContentProjections::registry());
         $source = new FakeReconciliationSource();
         $source->addLive('post', '1', true, new \DateTimeImmutable('now'));
 
-        $progress = new BackfillProgress($source, $reader, 500);
+        $progress = new BackfillProgress(
+            ContentProjections::sourceRegistry($source),
+            ContentProjections::registry(),
+            $reader,
+            500,
+        );
         $snap     = $progress->snapshot();
 
         self::assertSame(-1, $snap['in_flight']);
@@ -113,7 +119,7 @@ final class BackfillProgressTest extends TestCase
         $conn->on("taxonomy_type = 'category'", [['c' => 2]]);
         $conn->on("taxonomy_type = 'post_tag'", [['c' => 5]]);
 
-        $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+        $reader = new BackfillReader(fn (): ScriptedConnection => $conn, ContentProjections::registry());
         $counts = $reader->liveProjectionCounts();
 
         self::assertSame(2, $counts['category']);
@@ -186,9 +192,14 @@ final class BackfillProgressTest extends TestCase
         }
         $conn->on('behind', [['c' => $inFlight]]);
 
-        $reader = new BackfillReader(fn (): ScriptedConnection => $conn);
+        $reader = new BackfillReader(fn (): ScriptedConnection => $conn, ContentProjections::registry());
 
-        return new BackfillProgress($source, $reader, 500);
+        return new BackfillProgress(
+            ContentProjections::sourceRegistry($source),
+            ContentProjections::registry(),
+            $reader,
+            500,
+        );
     }
 
     private function idFor(string $type, int $i): int

@@ -131,7 +131,10 @@ final class TwoModuleIntegrationTest extends TestCase
         /** @var ProjectionRegistryInterface $projections */
         $projections = $container->get(ProjectionRegistryInterface::class);
 
-        $expected = ['page', 'post', 'category', 'tag', 'media', 'product', 'product_category'];
+        $expected = [
+            'page', 'post', 'category', 'tag', 'media',
+            'product', 'product_category', 'attribute', 'attribute_term',
+        ];
 
         self::assertEqualsCanonicalizing($expected, $emitters->aggregateTypes());
         self::assertEqualsCanonicalizing($expected, $sources->aggregateTypes());

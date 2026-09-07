@@ -99,6 +99,14 @@ final class ProductQueryProvider implements QueryProviderInterface
             $where[]  = $this->categoryFilter(count($params));
         }
 
+        // Both halves or neither: a term slug without its taxonomy would have to match across
+        // every attribute, and WordPress only guarantees slug uniqueness within one taxonomy.
+        if ($filters->attributeTaxonomy !== null && $filters->attributeTermSlug !== null) {
+            $params[] = $filters->attributeTermSlug;
+            $params[] = $filters->attributeTaxonomy;
+            $where[]  = $this->attributeFilter(count($params) - 1, count($params));
+        }
+
         $cursor = $filters->cursor !== null ? $this->decodeCursor($filters->cursor) : null;
         if ($cursor !== null) {
             $params[] = $cursor['s'];
@@ -186,6 +194,32 @@ final class ProductQueryProvider implements QueryProviderInterface
             // A fixed module-owned literal, never request input — but quoted through a single
             // place so the predicate cannot be dropped or misspelled at a call site.
             "'" . CommerceTaxonomies::PRODUCT_CAT . "'",
+        );
+    }
+
+    /**
+     * Products carrying one term of one global attribute.
+     *
+     * Same EXISTS shape as the category filter, but the taxonomy is a BOUND PARAMETER rather
+     * than a module literal — `pa_colour` is defined by the store operator, not by this module,
+     * so it necessarily comes from the request. That makes the predicate itself the only thing
+     * standing between an attribute query and another taxonomy's terms, which is why the
+     * registrar rejects a non-`pa_` value before it ever reaches here.
+     */
+    private function attributeFilter(int $slugParam, int $taxonomyParam): string
+    {
+        return sprintf(
+            'EXISTS (
+                SELECT 1
+                FROM commerce.entity_taxonomies et
+                JOIN commerce.taxonomies t ON t.source_term_id = et.source_term_id
+                WHERE et.entity_id = commerce.products.id
+                  AND t.slug = $%d
+                  AND t.taxonomy_type = $%d
+                  AND t.deleted_at IS NULL
+            )',
+            $slugParam,
+            $taxonomyParam,
         );
     }
 

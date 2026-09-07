@@ -79,6 +79,59 @@ final class HookWiring
         add_action('created_term', [$this, 'onCreatedTerm'], 10, 3);
         add_action('edited_term', [$this, 'onEditedTerm'], 10, 3);
         add_action('delete_term', [$this, 'onDeleteTerm'], 10, 4);
+
+        // Global attribute DEFINITIONS (P2-S4). These are neither posts nor terms — they live
+        // in WooCommerce's own table — so they have their own lifecycle hooks and nothing in
+        // the post or term families would ever fire for them.
+        add_action('woocommerce_attribute_added', [$this, 'onAttributeAdded'], 10, 1);
+        add_action('woocommerce_attribute_updated', [$this, 'onAttributeUpdated'], 10, 1);
+        add_action('woocommerce_attribute_deleted', [$this, 'onAttributeDeleted'], 10, 1);
+    }
+
+    public function onAttributeAdded(int $attributeId): void
+    {
+        $this->captureAttribute($attributeId, CommerceEventTypes::ATTRIBUTE_CREATED, false);
+    }
+
+    public function onAttributeUpdated(int $attributeId): void
+    {
+        $this->captureAttribute($attributeId, CommerceEventTypes::ATTRIBUTE_UPDATED, false);
+    }
+
+    public function onAttributeDeleted(int $attributeId): void
+    {
+        $this->captureAttribute($attributeId, CommerceEventTypes::ATTRIBUTE_DELETED, true);
+    }
+
+    /**
+     * Attributes get their own guard-key namespace: attribute ids, post ids and term ids are
+     * three independent sequences, so a shared key space would let unrelated entities suppress
+     * one another.
+     */
+    private function captureAttribute(int $attributeId, string $eventType, bool $terminal): void
+    {
+        if ($attributeId <= 0) {
+            return;
+        }
+
+        $key = 'attr:' . $attributeId;
+
+        if ($terminal) {
+            if (isset($this->deletedTerms[$key])) {
+                return;
+            }
+
+            $this->deletedTerms[$key] = true;
+            $this->handledTerms[$key] = true;
+        } else {
+            if (isset($this->handledTerms[$key]) || isset($this->deletedTerms[$key])) {
+                return;
+            }
+
+            $this->handledTerms[$key] = true;
+        }
+
+        $this->captureEvent($eventType, (string) $attributeId, ['attribute_id' => $attributeId]);
     }
 
     public function onCreatedTerm(int $termId, int $ttId, string $taxonomy): void

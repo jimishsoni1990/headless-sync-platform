@@ -8,6 +8,8 @@ use HSP\Core\Contracts\EventInterface;
 use HSP\Modules\Commerce\Events\CommerceEventTypes;
 use HSP\Modules\Commerce\Handlers\ProductTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
+use HSP\Modules\Commerce\Handlers\AttributeTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\AttributeUpsertHandler;
 use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
 
@@ -29,6 +31,8 @@ final class CommerceSubscriber
         private readonly ProductTombstoneHandler $productTombstone,
         private readonly TermUpsertHandler $termUpsert,
         private readonly TermTombstoneHandler $termTombstone,
+        private readonly AttributeUpsertHandler $attributeUpsert,
+        private readonly AttributeTombstoneHandler $attributeTombstone,
     ) {
     }
 
@@ -41,6 +45,14 @@ final class CommerceSubscriber
             CommerceEventTypes::CATEGORY_CREATED,
             CommerceEventTypes::CATEGORY_UPDATED => $this->termUpsert->handle($event),
             CommerceEventTypes::CATEGORY_DELETED => $this->termTombstone->handle($event),
+            // pa_* terms reuse the taxonomy-generic handlers — the whole point of building the
+            // term spine generic in P2-S3 rather than category-specific.
+            CommerceEventTypes::ATTRIBUTE_TERM_CREATED,
+            CommerceEventTypes::ATTRIBUTE_TERM_UPDATED => $this->termUpsert->handle($event),
+            CommerceEventTypes::ATTRIBUTE_TERM_DELETED => $this->termTombstone->handle($event),
+            CommerceEventTypes::ATTRIBUTE_CREATED,
+            CommerceEventTypes::ATTRIBUTE_UPDATED => $this->attributeUpsert->handle($event),
+            CommerceEventTypes::ATTRIBUTE_DELETED => $this->attributeTombstone->handle($event),
             default => throw new \RuntimeException(
                 "No Commerce handler registered for event type '{$event->getEventType()}'."
             ),

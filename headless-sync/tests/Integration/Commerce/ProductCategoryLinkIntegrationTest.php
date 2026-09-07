@@ -90,8 +90,31 @@ final class ProductCategoryLinkIntegrationTest extends TestCase
         );
     }
 
-    /** @param list<int> $categoryIds */
-    private function givenProduct(int $id, string $slug, array $categoryIds, int $version = 1, string $key = ''): void
+    /** Project one `pa_*` term — same shared table, same handler, different discriminator. */
+    private function givenAttributeTerm(int $termId, string $slug, string $taxonomy): void
+    {
+        $this->loader->terms[$termId] = [
+            'term_id' => $termId, 'taxonomy' => $taxonomy, 'slug' => $slug,
+            'name' => ucfirst($slug), 'description' => '', 'parent' => 0, 'count' => 0,
+        ];
+
+        $this->termHandler()->handle(
+            new IntegrationTermEvent('commerce.attribute_term.created', (string) $termId, 1, "at{$termId}")
+        );
+    }
+
+    /**
+     * @param list<int> $categoryIds
+     * @param list<int> $attributeTermIds
+     */
+    private function givenProduct(
+        int $id,
+        string $slug,
+        array $categoryIds,
+        int $version = 1,
+        string $key = '',
+        array $attributeTermIds = [],
+    ): void
     {
         $this->loader->products[$id] = [
             'id' => $id, 'sku' => "SKU-{$id}", 'slug' => $slug, 'name' => "Product {$id}",
@@ -101,6 +124,7 @@ final class ProductCategoryLinkIntegrationTest extends TestCase
             'featured_media_id' => 0, 'gallery_media_ids' => [],
             'published_at' => '2026-01-01 00:00:00', 'modified_at' => '2026-01-01 00:00:00',
             'meta' => [], 'category_ids' => $categoryIds,
+            'attribute_term_ids' => $attributeTermIds,
         ];
 
         $this->productHandler()->handle(
@@ -279,6 +303,198 @@ final class ProductCategoryLinkIntegrationTest extends TestCase
             ->rows;
 
         self::assertCount(1, $rows);
+    }
+
+    // =========================================================================
+    // Product ↔ Global Attribute Term (P2-S4)
+    // =========================================================================
+
+    /**
+     * Attribute terms link through the SAME join table as categories.
+     *
+     * commerce.entity_taxonomies stores only (entity_id, source_term_id) — the term's own row
+     * carries the taxonomy — so a category link and an attribute-term link are the same row
+     * shape and one rewrite covers both. Splitting them would need a taxonomy-scoped DELETE and
+     * would reintroduce the partial-rewrite hazard the delete-all-then-insert shape avoids.
+     */
+    public function test_the_real_handler_links_a_product_to_its_attribute_terms(): void
+    {
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+        $this->givenAttributeTerm(41, 'large', 'pa_size');
+        $this->givenProduct(1, 'shirt', [], attributeTermIds: [40, 41]);
+
+        self::assertSame([40, 41], $this->linkedTermIds(1));
+    }
+
+    public function test_categories_and_attribute_terms_coexist_on_one_product(): void
+    {
+        $this->givenCategory(10, 'clothing');
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+        $this->givenProduct(1, 'shirt', [10], attributeTermIds: [40]);
+
+        self::assertSame([10, 40], $this->linkedTermIds(1));
+    }
+
+    /**
+     * Changing ONLY the attribute terms must still rewrite the links.
+     *
+     * This is the P1B-S3 tag bug in its P2-S4 form. If `attributeTermIds` were left out of the
+     * product checksum, a product moving from `blue` to `red` would hash identically, DECISION 3
+     * would suppress the write, and the join rewrite — which only runs when the write is not
+     * suppressed — would never happen. The product would keep the old colour forever, and
+     * reconciliation could not see it either, because it compares the same checksum.
+     */
+    public function test_changing_only_the_attribute_terms_still_rewrites_the_links(): void
+    {
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+        $this->givenAttributeTerm(42, 'red', 'pa_colour');
+
+        $this->givenProduct(1, 'shirt', [], attributeTermIds: [40]);
+        self::assertSame([40], $this->linkedTermIds(1));
+
+        $this->givenProduct(1, 'shirt', [], version: 2, attributeTermIds: [42]);
+        self::assertSame([42], $this->linkedTermIds(1));
+    }
+
+    public function test_removing_an_attribute_term_removes_the_relationship(): void
+    {
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+        $this->givenAttributeTerm(41, 'large', 'pa_size');
+
+        $this->givenProduct(1, 'shirt', [], attributeTermIds: [40, 41]);
+        $this->givenProduct(1, 'shirt', [], version: 2, attributeTermIds: [41]);
+
+        self::assertSame([41], $this->linkedTermIds(1));
+    }
+
+    /**
+     * A product may carry an attribute term that has not projected yet (AG-7).
+     *
+     * The link stores the SOURCE term id, not the term projection's uuid, so an out-of-order
+     * arrival still records a durable relationship that becomes readable the moment the term
+     * lands — with no reprojection of the product, which could not happen anyway because its
+     * checksum has not moved.
+     */
+    public function test_an_out_of_order_attribute_term_becomes_filterable_without_reprojecting(): void
+    {
+        $this->givenProduct(1, 'shirt', [], attributeTermIds: [40]);
+
+        self::assertSame([40], $this->rawLinkedTermIds(1), 'the link exists before the term does');
+        self::assertSame([], $this->filteredSlugs('pa_colour', 'blue'));
+
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+
+        self::assertSame(['shirt'], $this->filteredSlugs('pa_colour', 'blue'));
+    }
+
+    public function test_the_attribute_filter_matches_only_that_attributes_term(): void
+    {
+        // The same slug in two different attributes — legal in WordPress, and the case a
+        // taxonomy-blind filter answers wrongly.
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+        $this->givenAttributeTerm(41, 'blue', 'pa_finish');
+
+        $this->givenProduct(1, 'shirt', [], attributeTermIds: [40]);
+        $this->givenProduct(2, 'mug', [], attributeTermIds: [41]);
+
+        self::assertSame(['shirt'], $this->filteredSlugs('pa_colour', 'blue'));
+        self::assertSame(['mug'], $this->filteredSlugs('pa_finish', 'blue'));
+    }
+
+    public function test_the_attribute_filter_does_not_match_a_same_slug_category(): void
+    {
+        $this->givenCategory(10, 'blue');
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+
+        $this->givenProduct(1, 'shirt', [10]);
+        $this->givenProduct(2, 'mug', [], attributeTermIds: [40]);
+
+        self::assertSame(['mug'], $this->filteredSlugs('pa_colour', 'blue'));
+    }
+
+    /**
+     * A tombstoned attribute term stops matching.
+     *
+     * The link row survives — the product still references that source term — but the filter
+     * joins through commerce.taxonomies and requires a live row, so a deleted term drops out of
+     * results without any cleanup pass over the join table (DECISION I).
+     */
+    public function test_a_tombstoned_attribute_term_stops_matching(): void
+    {
+        $this->givenAttributeTerm(40, 'blue', 'pa_colour');
+        $this->givenProduct(1, 'shirt', [], attributeTermIds: [40]);
+
+        self::assertSame(['shirt'], $this->filteredSlugs('pa_colour', 'blue'));
+
+        (new \HSP\Modules\Commerce\Handlers\TermTombstoneHandler(new TermAdapter($this->db)))->handle(
+            new IntegrationTermEvent('commerce.attribute_term.deleted', '40', 2, 'at40-del')
+        );
+
+        self::assertSame([], $this->filteredSlugs('pa_colour', 'blue'));
+        self::assertSame([40], $this->linkedTermIds(1), 'the link itself is not swept');
+    }
+
+    /** PERFORMANCE DoD: the attribute-filtered listing is index-backed at catalogue scale. */
+    public function test_the_attribute_filtered_listing_is_index_backed(): void
+    {
+        $this->seedAtScale(1000, 500);
+        pg_query($this->pgConn, 'ANALYZE commerce.products');
+        pg_query($this->pgConn, 'ANALYZE commerce.taxonomies');
+        pg_query($this->pgConn, 'ANALYZE commerce.entity_taxonomies');
+
+        $plan = $this->explain(
+            "SELECT p.id FROM commerce.products p
+             WHERE p.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM commerce.entity_taxonomies et
+                   JOIN commerce.taxonomies t ON t.source_term_id = et.source_term_id
+                   WHERE et.entity_id = p.id AND t.slug = 'term-250'
+                     AND t.taxonomy_type = 'pa_colour' AND t.deleted_at IS NULL
+               )
+             LIMIT 50"
+        );
+
+        self::assertStringNotContainsString(
+            'Seq Scan on entity_taxonomies',
+            $plan,
+            'the join table must be reached by index, not scanned per product',
+        );
+    }
+
+    /**
+     * Link rows for one product WITHOUT joining the term projection.
+     *
+     * {@see linkedTermIds()} joins commerce.taxonomies, so it can only see links whose term has
+     * already projected — which is exactly what the out-of-order case does not have. Reading the
+     * join table directly is what proves the relationship is durable while the term is still in
+     * flight (AG-7).
+     *
+     * @return list<int>
+     */
+    private function rawLinkedTermIds(int $productId): array
+    {
+        $rows = $this->db->query(
+            'SELECT et.source_term_id
+             FROM commerce.entity_taxonomies et
+             JOIN commerce.products p ON p.id = et.entity_id
+             WHERE p.source_product_id = $1
+             ORDER BY et.source_term_id',
+            [$productId],
+        );
+
+        return array_map(static fn (array $r): int => (int) $r['source_term_id'], $rows);
+    }
+
+    /** @return list<string> */
+    private function filteredSlugs(string $taxonomy, string $termSlug): array
+    {
+        return array_values(array_column(
+            (new ProductQueryProvider($this->db))->list(new ProductFilterSet(
+                attributeTaxonomy: $taxonomy,
+                attributeTermSlug: $termSlug,
+            ))->rows,
+            'slug',
+        ));
     }
 
     /** PERFORMANCE DoD: the filtered listing must be index-backed in both directions. */

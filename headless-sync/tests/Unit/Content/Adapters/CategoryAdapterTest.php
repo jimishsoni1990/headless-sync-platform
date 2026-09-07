@@ -80,7 +80,7 @@ final class CategoryAdapterTest extends TestCase
 
         // slot 0: matching checksum; slot 1: FOR UPDATE locked version 0
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum()]],
+            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum(), 'deleted_at' => null]],
             [['latest_processed_version' => '0']],
         );
 
@@ -101,7 +101,7 @@ final class CategoryAdapterTest extends TestCase
     {
         // slot 0: different checksum; slot 1: FOR UPDATE locked version 9 (incoming=2 < 9)
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-cccccccccccc', 'checksum' => str_repeat('1', 64)]],
+            [['id' => '01900000-0000-7000-8000-cccccccccccc', 'checksum' => str_repeat('1', 64), 'deleted_at' => null]],
             [['latest_processed_version' => '9']],
         );
 
@@ -134,7 +134,7 @@ final class CategoryAdapterTest extends TestCase
     public function test_persist_writes_when_checksum_differs_and_no_version_conflict(): void
     {
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-dddddddddddd', 'checksum' => str_repeat('0', 64)]],
+            [['id' => '01900000-0000-7000-8000-dddddddddddd', 'checksum' => str_repeat('0', 64), 'deleted_at' => null]],
             [['latest_processed_version' => '0']],
         );
 

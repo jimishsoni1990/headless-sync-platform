@@ -35,6 +35,19 @@ final class ProjectionDescriptor
     /** Column identifier: a single unqualified segment. */
     private const COLUMN = '/^[a-z_][a-z0-9_]*$/';
 
+    /** The discriminator value is matched with `=`. */
+    public const MATCH_EXACT = 'exact';
+
+    /**
+     * The discriminator value is matched as a PREFIX (`LIKE 'value%'`).
+     *
+     * For aggregates whose taxonomy is DYNAMIC rather than fixed: WooCommerce global attribute
+     * terms live in `pa_<slug>` taxonomies that come and go with the attributes an operator
+     * defines, so there is no single value to compare against — but every one of them shares
+     * the `pa_` prefix, and that is exactly the set the aggregate owns.
+     */
+    public const MATCH_PREFIX = 'prefix';
+
     /**
      * @param string      $aggregateType     Aggregate type key, e.g. 'post', 'product'.
      * @param string      $table             Schema-qualified projection table, e.g. 'content.posts'.
@@ -43,9 +56,11 @@ final class ProjectionDescriptor
      *                                        'post_tag' for tags inside content.taxonomies. Null for
      *                                        a table that holds exactly one aggregate type.
      * @param string|null $discriminatorColumn Column carrying that discriminator, e.g. 'taxonomy_type'.
+     * @param string      $discriminatorMatch MATCH_EXACT or MATCH_PREFIX.
      *
-     * @throws \InvalidArgumentException if any identifier fails validation, or if exactly one
-     *                                   half of the discriminator pair is supplied.
+     * @throws \InvalidArgumentException if any identifier fails validation, if exactly one half
+     *                                   of the discriminator pair is supplied, or if the match
+     *                                   mode is unknown.
      */
     public function __construct(
         public readonly string $aggregateType,
@@ -53,6 +68,7 @@ final class ProjectionDescriptor
         public readonly string $sourceIdColumn,
         public readonly ?string $discriminatorValue = null,
         public readonly ?string $discriminatorColumn = null,
+        public readonly string $discriminatorMatch = self::MATCH_EXACT,
     ) {
         if ($aggregateType === '') {
             throw new \InvalidArgumentException('ProjectionDescriptor: aggregateType must not be empty.');
@@ -89,11 +105,37 @@ final class ProjectionDescriptor
                 "ProjectionDescriptor: discriminatorColumn '{$discriminatorColumn}' is not a valid identifier."
             );
         }
+
+        if (! in_array($discriminatorMatch, [self::MATCH_EXACT, self::MATCH_PREFIX], true)) {
+            throw new \InvalidArgumentException(
+                "ProjectionDescriptor: unknown discriminator match mode '{$discriminatorMatch}'."
+            );
+        }
+
+        // A prefix match on a value containing LIKE wildcards would silently widen the set the
+        // aggregate claims — and a projection claiming rows it does not own is how an orphan
+        // sweep tombstones another aggregate's data. Refuse it rather than escape it.
+        if (
+            $discriminatorMatch === self::MATCH_PREFIX
+            && $discriminatorValue !== null
+            && preg_match('/^[a-z0-9_]+$/', $discriminatorValue) !== 1
+        ) {
+            throw new \InvalidArgumentException(
+                "ProjectionDescriptor: prefix discriminator '{$discriminatorValue}' must be plain"
+                . ' lowercase alphanumerics or underscores — no LIKE wildcards.'
+            );
+        }
     }
 
     /** Does this projection share its table with other aggregate types? */
     public function isDiscriminated(): bool
     {
         return $this->discriminatorColumn !== null;
+    }
+
+    /** Is the discriminator matched as a prefix rather than an exact value? */
+    public function matchesByPrefix(): bool
+    {
+        return $this->discriminatorMatch === self::MATCH_PREFIX;
     }
 }

@@ -64,8 +64,20 @@ final class CategoryAdapter implements AdapterInterface
         try {
             $lockedVersion = $this->lockAggregateVersion($event, $now);
 
-            $suppressProjection = ($existingRow !== null && $existingRow['checksum'] === $checksum)
-                || ($event->getAggregateVersion() < $lockedVersion);
+            // A TOMBSTONED row is never suppressed, however identical its checksum.
+            //
+            // Tombstoning sets deleted_at and leaves the checksum alone, so when the source
+            // comes back — a post restored from trash, a term or attribute re-created, an
+            // aggregate re-entering supported scope — the reloaded state hashes to exactly what
+            // is already stored. Without this clause the revival is suppressed and the row stays
+            // invisible forever; worse, reconciliation then detects the drift on every pass and
+            // repairs it by re-emission (DECISION T/U), which is suppressed in turn. That is a
+            // permanent repair loop that never converges and never logs an error.
+            $suppressProjection = (
+                $existingRow !== null
+                && $existingRow['checksum'] === $checksum
+                && $existingRow['deleted_at'] === null
+            ) || ($event->getAggregateVersion() < $lockedVersion);
 
             if (! $suppressProjection) {
                 $this->upsertTaxonomy($model, $id, $checksum, $now);
@@ -128,7 +140,7 @@ final class CategoryAdapter implements AdapterInterface
     private function fetchExistingRow(int $termId): ?array
     {
         $rows = $this->db->query(
-            'SELECT id, checksum FROM content.taxonomies WHERE source_term_id = $1',
+            'SELECT id, checksum, deleted_at FROM content.taxonomies WHERE source_term_id = $1',
             [$termId]
         );
         return $rows[0] ?? null;

@@ -62,4 +62,33 @@ interface WpCommerceLoader
      * @return list<int>
      */
     public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array;
+
+    /**
+     * Read one global attribute DEFINITION.
+     *
+     * @return array<string,mixed>|null Null when the attribute does not exist.
+     */
+    public function loadAttribute(int $attributeId): ?array;
+
+    /**
+     * Every global attribute id greater than $afterId, ascending.
+     *
+     * Attribute definitions are few — one per attribute the store defines, not per product — so
+     * the whole set is read and filtered rather than paged in SQL. WooCommerce exposes them
+     * only through wc_get_attribute_taxonomies(), and reading its custom table directly would
+     * breach the public-API rule for no benefit at this cardinality.
+     *
+     * @return list<int>
+     */
+    public function listAttributeIdsAfter(int $afterId, int $limit): array;
+
+    /**
+     * Every pa_* taxonomy name currently defined.
+     *
+     * The reconciliation corpus for attribute TERMS: unlike product_cat there is no fixed
+     * taxonomy to page, so the set is derived from the defined attributes.
+     *
+     * @return list<string>
+     */
+    public function attributeTaxonomyNames(): array;
 }

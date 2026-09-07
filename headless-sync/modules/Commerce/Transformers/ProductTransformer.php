@@ -47,6 +47,7 @@ final class ProductTransformer implements TransformerInterface
             updatedAt:         $source->modifiedAt,
             meta:              $source->meta,
             categoryIds:       $source->categoryIds,
+            attributeTermIds:  $source->attributeTermIds,
         );
     }
 

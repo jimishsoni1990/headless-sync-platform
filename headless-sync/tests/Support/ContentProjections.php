@@ -32,6 +32,19 @@ final class ContentProjections
         return $registry;
     }
 
+    /**
+     * A source registry holding one source — the shape core now takes everywhere a single
+     * `WpReconciliationSourceInterface` binding used to be passed (AG-2).
+     */
+    public static function sourceRegistry(
+        \HSP\Core\Contracts\WpReconciliationSourceInterface $source,
+    ): \HSP\Core\Contracts\ReconciliationSourceRegistryInterface {
+        $registry = new \HSP\Core\Reconciliation\ReconciliationSourceRegistry();
+        $registry->register($source);
+
+        return $registry;
+    }
+
     /** An empty registry — for tests that never reconcile and only need the argument. */
     public static function empty(): ProjectionRegistryInterface
     {

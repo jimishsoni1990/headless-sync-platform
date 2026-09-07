@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Onboarding\Backfill;
 
+use HSP\Core\Contracts\ProjectionRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 
 /**
@@ -26,39 +27,25 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  */
 final class BackfillReader
 {
-    /**
-     * Live projection table per in-scope aggregate type, plus the taxonomy discriminator where
-     * the table is SHARED.
-     *
-     * Categories and tags live in one content.taxonomies table (DECISION AA), so counting the
-     * table reports "categories" as categories + tags. That inflated the projected count against
-     * a WordPress-side expected count of categories alone, which could declare the backfill
-     * converged while categories were still missing.
-     *
-     * Must list every aggregate type the backfill re-emits (FLAG-RECON-COVERAGE-1): a type
-     * missing here is a type whose progress and convergence signal ignore it, so a site can be
-     * declared converged with none of it projected.
-     */
-    private const PROJECTION = [
-        'page'     => ['table' => 'content.pages',      'type' => null],
-        'post'     => ['table' => 'content.posts',      'type' => null],
-        'category' => ['table' => 'content.taxonomies', 'type' => 'category'],
-        'tag'      => ['table' => 'content.taxonomies', 'type' => 'post_tag'],
-        'media'    => ['table' => 'content.media',      'type' => null],
-    ];
-
     /** @var callable(): DatabaseConnectionInterface */
     private $resolveConnection;
 
     /**
      * @param callable(): DatabaseConnectionInterface $resolveConnection resolves the EXISTING
      *        delivery handle on demand (may throw if the underlying link cannot be opened).
+     * @param ProjectionRegistryInterface $projections where each aggregate type's projection
+     *        lives. Was a hardcoded `content.*` map until DECISION AG AG-3: core cannot know
+     *        every domain table in the platform, and a map that does not name an active
+     *        module's aggregates counts none of them — which is FLAG-RECON-COVERAGE-1's defect
+     *        (a site declared converged with none of that content projected) reintroduced for
+     *        every module after the first.
      */
-    public function __construct(callable $resolveConnection)
-    {
+    public function __construct(
+        callable $resolveConnection,
+        private readonly ProjectionRegistryInterface $projections,
+    ) {
         $this->resolveConnection = $resolveConnection;
     }
-
     /**
      * Age in seconds of the freshest worker heartbeat, or null when no heartbeat row exists at all
      * (no worker has ever ticked) or the DB is unreachable. Read from the single current-state
@@ -91,8 +78,8 @@ final class BackfillReader
     public function liveProjectionCounts(): array
     {
         $counts = [];
-        foreach (self::PROJECTION as $type => $meta) {
-            $counts[$type] = $this->countLive($meta['table'], $meta['type']);
+        foreach ($this->projections->all() as $type => $descriptor) {
+            $counts[$type] = $this->countLive($descriptor);
         }
 
         return $counts;
@@ -127,14 +114,35 @@ final class BackfillReader
         return (int) ($rows[0]['c'] ?? 0);
     }
 
-    private function countLive(string $table, ?string $taxonomyType): int
+    /**
+     * Live rows for ONE aggregate type.
+     *
+     * The discriminator predicate is what stops a SHARED projection counting its neighbours:
+     * categories and tags live in one content.taxonomies table, so counting the table reports
+     * categories as categories + tags and can declare the backfill converged while categories
+     * are still missing (DECISION AA). Commerce repeats the shape — product categories and every
+     * `pa_*` attribute term share commerce.taxonomies — and the attribute-term half is matched
+     * by PREFIX, because those taxonomies are defined by the operator and cannot be enumerated
+     * here.
+     *
+     * Identifiers and values are interpolated because an identifier cannot be bound as a
+     * parameter. ProjectionDescriptor validates every one of them as a strict identifier at
+     * registration and accepts them only from trusted module code — never from request input
+     * (AG-3).
+     */
+    private function countLive(\HSP\Core\Contracts\ProjectionDescriptor $descriptor): int
     {
-        // Fixed literals from PROJECTION above — never user input.
-        $scope = $taxonomyType === null ? '' : " AND taxonomy_type = '{$taxonomyType}'";
+        $scope = '';
+
+        if ($descriptor->isDiscriminated()) {
+            $scope = $descriptor->matchesByPrefix()
+                ? " AND {$descriptor->discriminatorColumn} LIKE '{$descriptor->discriminatorValue}%'"
+                : " AND {$descriptor->discriminatorColumn} = '{$descriptor->discriminatorValue}'";
+        }
 
         try {
             $rows = $this->connection()->query(
-                "SELECT COUNT(*) AS c FROM {$table} WHERE deleted_at IS NULL{$scope}"
+                "SELECT COUNT(*) AS c FROM {$descriptor->table} WHERE deleted_at IS NULL{$scope}"
             );
         } catch (\Throwable) {
             return 0;

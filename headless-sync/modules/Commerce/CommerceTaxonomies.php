@@ -55,17 +55,47 @@ final class CommerceTaxonomies
             'updated' => CommerceEventTypes::CATEGORY_UPDATED,
             'deleted' => CommerceEventTypes::CATEGORY_DELETED,
         ],
+        'attribute_term' => [
+            'created' => CommerceEventTypes::ATTRIBUTE_TERM_CREATED,
+            'updated' => CommerceEventTypes::ATTRIBUTE_TERM_UPDATED,
+            'deleted' => CommerceEventTypes::ATTRIBUTE_TERM_DELETED,
+        ],
     ];
 
     public static function isSupported(string $taxonomy): bool
     {
-        return isset(self::AGGREGATES[$taxonomy]);
+        return self::aggregateFor($taxonomy) !== null;
     }
 
-    /** The OPEN-1 aggregate type for a taxonomy, or null when the module does not own it. */
+    /**
+     * The OPEN-1 aggregate type for a taxonomy, or null when the module does not own it.
+     *
+     * Two matching modes, because Commerce owns two KINDS of taxonomy. `product_cat` is a
+     * fixed name. The attribute taxonomies are DYNAMIC — `pa_colour`, `pa_size`, whatever an
+     * operator defines — so they cannot be enumerated and are matched by their `pa_` prefix
+     * instead. All of them map to ONE aggregate, `attribute_term`: they share a projection, a
+     * spine and a lifecycle, and differ only in the discriminator value stored on each row.
+     */
     public static function aggregateFor(string $taxonomy): ?string
     {
-        return self::AGGREGATES[$taxonomy] ?? null;
+        if (isset(self::AGGREGATES[$taxonomy])) {
+            return self::AGGREGATES[$taxonomy];
+        }
+
+        // Guard against the bare prefix itself: `pa_` alone is not a taxonomy.
+        if (
+            str_starts_with($taxonomy, self::ATTRIBUTE_PREFIX)
+            && strlen($taxonomy) > strlen(self::ATTRIBUTE_PREFIX)
+        ) {
+            return 'attribute_term';
+        }
+
+        return null;
+    }
+
+    public static function isAttributeTaxonomy(string $taxonomy): bool
+    {
+        return self::aggregateFor($taxonomy) === 'attribute_term';
     }
 
     /**

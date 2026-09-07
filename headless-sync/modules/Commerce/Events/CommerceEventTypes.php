@@ -25,11 +25,26 @@ final class CommerceEventTypes
     public const PRODUCT_UPDATED = 'commerce.product.updated';
     public const PRODUCT_DELETED = 'commerce.product.deleted';
 
-    // Product categories (P2-S3). The OPEN-1 aggregate is `category`; the WordPress taxonomy
-    // is `product_cat` — the same naming asymmetry Content has between `tag` and `post_tag`.
+    // Product categories (P2-S3). The OPEN-1 aggregate is `product_category`; the WordPress
+    // taxonomy is `product_cat` — the same naming asymmetry Content has between `tag` and
+    // `post_tag`. The aggregate is NOT bare `category`: aggregate types are platform-wide keys
+    // and Content already owns that one (see CommerceTaxonomies).
     public const CATEGORY_CREATED = 'commerce.product_category.created';
     public const CATEGORY_UPDATED = 'commerce.product_category.updated';
     public const CATEGORY_DELETED = 'commerce.product_category.deleted';
+
+    // Global attribute DEFINITIONS (P2-S4). Not taxonomy terms — they live in WooCommerce's
+    // own woocommerce_attribute_taxonomies table and carry label/type/ordering semantics.
+    public const ATTRIBUTE_CREATED = 'commerce.attribute.created';
+    public const ATTRIBUTE_UPDATED = 'commerce.attribute.updated';
+    public const ATTRIBUTE_DELETED = 'commerce.attribute.deleted';
+
+    // Terms of the pa_* attribute taxonomies (P2-S4). ONE aggregate covering every pa_*
+    // taxonomy, because those taxonomies are dynamic — they come and go with the attributes an
+    // operator defines, so there is no fixed set to enumerate.
+    public const ATTRIBUTE_TERM_CREATED = 'commerce.attribute_term.created';
+    public const ATTRIBUTE_TERM_UPDATED = 'commerce.attribute_term.updated';
+    public const ATTRIBUTE_TERM_DELETED = 'commerce.attribute_term.deleted';
 
     /** @var list<string> */
     public const ALL = [
@@ -39,5 +54,11 @@ final class CommerceEventTypes
         self::CATEGORY_CREATED,
         self::CATEGORY_UPDATED,
         self::CATEGORY_DELETED,
+        self::ATTRIBUTE_CREATED,
+        self::ATTRIBUTE_UPDATED,
+        self::ATTRIBUTE_DELETED,
+        self::ATTRIBUTE_TERM_CREATED,
+        self::ATTRIBUTE_TERM_UPDATED,
+        self::ATTRIBUTE_TERM_DELETED,
     ];
 }

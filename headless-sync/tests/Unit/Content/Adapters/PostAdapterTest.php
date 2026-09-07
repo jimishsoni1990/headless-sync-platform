@@ -151,7 +151,7 @@ final class PostAdapterTest extends TestCase
 
         // slot 0: matching checksum; slot 1: FOR UPDATE locked version 0
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum()]],
+            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum(), 'deleted_at' => null]],
             [['latest_processed_version' => '0']],
         );
 
@@ -173,7 +173,7 @@ final class PostAdapterTest extends TestCase
     {
         // slot 0: different checksum; slot 1: FOR UPDATE locked version 10 (incoming=3 < 10)
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-bbbbbbbbbbbb', 'checksum' => str_repeat('0', 64)]],
+            [['id' => '01900000-0000-7000-8000-bbbbbbbbbbbb', 'checksum' => str_repeat('0', 64), 'deleted_at' => null]],
             [['latest_processed_version' => '10']],
         );
 

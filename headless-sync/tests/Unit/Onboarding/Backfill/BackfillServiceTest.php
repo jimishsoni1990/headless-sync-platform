@@ -127,8 +127,11 @@ final class BackfillServiceTest extends TestCase
     /** @param list<string> $migrations */
     private function gate(float $heartbeatAge, array $migrations): BackfillGate
     {
-        $reader = new BackfillReader(fn (): ScriptedConnection => (new ScriptedConnection())
-            ->on('system.worker_heartbeats', [['age' => $heartbeatAge]]));
+        $reader = new BackfillReader(
+            fn (): ScriptedConnection => (new ScriptedConnection())
+                ->on('system.worker_heartbeats', [['age' => $heartbeatAge]]),
+            ContentProjections::registry(),
+        );
 
         $rows  = array_map(static fn (string $n) => ['migration_name' => $n], $migrations);
         $probe = new OnboardingConnectionProbe(

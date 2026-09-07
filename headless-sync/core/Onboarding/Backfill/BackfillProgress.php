@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Core\Onboarding\Backfill;
 
-use HSP\Core\Contracts\WpReconciliationSourceInterface;
+use HSP\Core\Contracts\ProjectionRegistryInterface;
+use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
 
 /**
  * Derived-on-demand backfill progress (ONB-S2; DECISION W (d); DECISION Q).
@@ -33,20 +34,41 @@ use HSP\Core\Contracts\WpReconciliationSourceInterface;
  */
 final class BackfillProgress
 {
-    /**
-     * In-scope aggregate types (Blog MVP), fixed by the pipeline's projection targets.
-     *
-     * Must match the aggregate types the backfill actually re-emits (FLAG-RECON-COVERAGE-1) —
-     * a type omitted here is excluded from both progress and the convergence signal, so the site
-     * flips complete with none of it projected.
-     */
-    private const TYPES = ['page', 'post', 'category', 'tag', 'media'];
-
     public function __construct(
-        private readonly WpReconciliationSourceInterface $source,
+        private readonly ReconciliationSourceRegistryInterface $sources,
+        private readonly ProjectionRegistryInterface $projections,
         private readonly BackfillReader $reader,
         private readonly int $pageSize = 500,
     ) {}
+
+    /**
+     * The in-scope aggregate types — DERIVED from what modules registered, not a fixed list.
+     *
+     * FLAG-RECON-COVERAGE-1 was exactly this defect at Content scale: an aggregate omitted from
+     * the hardcoded list is excluded from both progress and the convergence signal, so the site
+     * flips complete with none of it projected. A fixed list cannot avoid that once modules can
+     * be activated independently — the list would have to name aggregates core is forbidden to
+     * know about (AG-1/AG-3).
+     *
+     * The intersection matters, not the union: a type needs BOTH a WordPress-side source (to
+     * have an expected count) and a projection descriptor (to have a projected count). One
+     * without the other cannot be compared, so counting it would either understate progress
+     * forever or declare convergence on a number nothing produced.
+     *
+     * @return list<string>
+     */
+    private function types(): array
+    {
+        $types = [];
+
+        foreach ($this->sources->aggregateTypes() as $type) {
+            if ($this->projections->has($type)) {
+                $types[] = $type;
+            }
+        }
+
+        return $types;
+    }
 
     /**
      * Compute the current progress snapshot.
@@ -69,7 +91,7 @@ final class BackfillProgress
 
         $expectedTotal  = array_sum($expected);
         $projectedTotal = 0;
-        foreach (self::TYPES as $type) {
+        foreach ($this->types() as $type) {
             $projectedTotal += $projected[$type] ?? 0;
         }
 
@@ -106,28 +128,30 @@ final class BackfillProgress
      */
     private function expectedCounts(): array
     {
-        $supported = $this->source->getSupportedAggregateTypes();
-        $counts    = [];
+        $counts = [];
 
-        foreach (self::TYPES as $type) {
-            if (! in_array($type, $supported, true)) {
-                $counts[$type] = 0;
-                continue;
-            }
+        foreach ($this->types() as $type) {
             $counts[$type] = $this->countExpected($type);
         }
 
         return $counts;
     }
 
-    /** Page listAggregateIds until exhausted, counting IDs. Bounded by the source's own paging. */
+    /**
+     * Page listAggregateIds until exhausted, counting IDs. Bounded by the source's own paging.
+     *
+     * The source comes from the REGISTRY, so each type is counted by the module that owns it —
+     * the single-source binding this replaced had nowhere to put a second module's source, which
+     * meant a second module's aggregates could not be counted at all (AG-2).
+     */
     private function countExpected(string $type): int
     {
+        $source  = $this->sources->get($type);
         $count   = 0;
         $afterId = 0;
 
         do {
-            $ids = $this->source->listAggregateIds($type, $afterId, $this->pageSize);
+            $ids = $source->listAggregateIds($type, $afterId, $this->pageSize);
             foreach ($ids as $id) {
                 $count++;
                 $afterId = max($afterId, (int) $id);
@@ -149,7 +173,7 @@ final class BackfillProgress
         }
 
         // (a) every in-scope type's projection must cover its expected count.
-        foreach (self::TYPES as $type) {
+        foreach ($this->types() as $type) {
             if (($projected[$type] ?? 0) < ($expected[$type] ?? 0)) {
                 return false;
             }
@@ -162,7 +186,7 @@ final class BackfillProgress
     private function onlyInScope(array $counts): array
     {
         $out = [];
-        foreach (self::TYPES as $type) {
+        foreach ($this->types() as $type) {
             $out[$type] = $counts[$type] ?? 0;
         }
 

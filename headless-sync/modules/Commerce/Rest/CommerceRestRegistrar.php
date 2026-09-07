@@ -6,6 +6,7 @@ namespace HSP\Modules\Commerce\Rest;
 
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Modules\Commerce\CommerceTaxonomies;
 use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Queries\TermFilterSet;
 
@@ -16,6 +17,9 @@ use HSP\Modules\Commerce\Queries\TermFilterSet;
  *   GET /hsp/v1/products/{slug}
  *   GET /hsp/v1/product-categories
  *   GET /hsp/v1/product-categories/{slug}
+ *   GET /hsp/v1/product-attributes
+ *   GET /hsp/v1/product-attributes/{taxonomy}
+ *   GET /hsp/v1/product-attributes/{taxonomy}/terms
  *
  * The category routes are namespaced `product-categories` rather than `categories`, which the
  * Content module already owns for WordPress post categories. Two different taxonomies in two
@@ -32,11 +36,20 @@ final class CommerceRestRegistrar
 {
     private const NAMESPACE = 'hsp/v1';
 
+    /**
+     * @param \Closure(string): QueryProviderInterface $attributeTermQueryFactory Builds a term
+     *        provider scoped to ONE `pa_*` taxonomy. A factory rather than a container binding
+     *        because attribute taxonomies are DYNAMIC — an operator defines `pa_colour`
+     *        whenever they like — so there is no fixed set to bind at composition time.
+     */
     public function __construct(
         private readonly QueryProviderInterface $productQueryProvider,
         private readonly ResourceInterface $productResource,
         private readonly QueryProviderInterface $categoryQueryProvider,
         private readonly ResourceInterface $termResource,
+        private readonly QueryProviderInterface $attributeQueryProvider,
+        private readonly ResourceInterface $attributeResource,
+        private readonly \Closure $attributeTermQueryFactory,
     ) {
     }
 
@@ -89,6 +102,99 @@ final class CommerceRestRegistrar
                 ],
             ],
         ]);
+
+        register_rest_route(self::NAMESPACE, '/product-attributes', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleAttributeListing(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
+                'limit'  => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+            ],
+        ]);
+
+        // The path segment is the FULL taxonomy name (`pa_colour`), so underscores are part of
+        // the identifier and `sanitize_key` — not `sanitize_title` — is the matching sanitizer.
+        register_rest_route(self::NAMESPACE, '/product-attributes/(?P<taxonomy>[a-z0-9_-]+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleAttributeSingle(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'taxonomy' => [
+                    'required'          => true,
+                    'type'              => 'string',
+                    'sanitize_callback' => 'sanitize_key',
+                ],
+            ],
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/product-attributes/(?P<taxonomy>[a-z0-9_-]+)/terms', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleAttributeTermListing(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'taxonomy' => [
+                    'required'          => true,
+                    'type'              => 'string',
+                    'sanitize_callback' => 'sanitize_key',
+                ],
+                'cursor'   => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
+                'limit'    => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+            ],
+        ]);
+    }
+
+    /** @param \WP_REST_Request<array<string,mixed>>|object $request */
+    public function handleAttributeListing(object $request): mixed
+    {
+        $page = $this->attributeQueryProvider->list(new TermFilterSet(
+            cursor: $this->param($request, 'cursor'),
+            limit:  $this->intParam($request, 'limit'),
+        ));
+
+        return $this->respond($this->attributeResource->toCollection($page->rows, $page->nextCursor));
+    }
+
+    /** @param \WP_REST_Request<array<string,mixed>>|object $request */
+    public function handleAttributeSingle(object $request): mixed
+    {
+        $row = $this->attributeQueryProvider->findBySlug(
+            (string) ($this->param($request, 'taxonomy') ?? '')
+        );
+
+        if ($row === null) {
+            return $this->notFound();
+        }
+
+        return $this->respond($this->attributeResource->toArray($row));
+    }
+
+    /**
+     * The terms of ONE global attribute.
+     *
+     * The taxonomy is checked against the `pa_` prefix BEFORE any provider is built. Without
+     * that guard `/product-attributes/product_cat/terms` would serve product categories through
+     * the attribute route — the shared-table leak DECISION AA exists to prevent, arriving
+     * through the front door as a path parameter rather than as a forgotten predicate.
+     *
+     * @param \WP_REST_Request<array<string,mixed>>|object $request
+     */
+    public function handleAttributeTermListing(object $request): mixed
+    {
+        $taxonomy = (string) ($this->param($request, 'taxonomy') ?? '');
+
+        if (! CommerceTaxonomies::isAttributeTaxonomy($taxonomy)) {
+            return $this->notFound();
+        }
+
+        $provider = ($this->attributeTermQueryFactory)($taxonomy);
+
+        $page = $provider->list(new TermFilterSet(
+            cursor: $this->param($request, 'cursor'),
+            limit:  $this->intParam($request, 'limit'),
+        ));
+
+        return $this->respond($this->termResource->toCollection($page->rows, $page->nextCursor));
     }
 
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */
@@ -131,6 +237,8 @@ final class CommerceRestRegistrar
             // (Requirement B).
             catalogOnly: true,
             categorySlug: $this->param($request, 'category'),
+            attributeTaxonomy: $this->attributeTaxonomyParam($request),
+            attributeTermSlug: $this->param($request, 'attribute_term'),
             cursor:      $this->param($request, 'cursor'),
             limit:       $this->intParam($request, 'limit'),
         );
@@ -165,7 +273,27 @@ final class CommerceRestRegistrar
             'min_price' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
             'max_price' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
             'category'  => ['type' => 'string',  'sanitize_callback' => 'sanitize_title'],
+            'attribute'      => ['type' => 'string', 'sanitize_callback' => 'sanitize_key'],
+            'attribute_term' => ['type' => 'string', 'sanitize_callback' => 'sanitize_title'],
         ];
+    }
+
+    /**
+     * The `attribute` query parameter, accepted only when it names a `pa_*` taxonomy.
+     *
+     * Anything else becomes null, which drops the filter rather than applying it to another
+     * taxonomy — `?attribute=product_cat&attribute_term=shoes` must not quietly become a
+     * category filter wearing an attribute's name.
+     */
+    private function attributeTaxonomyParam(object $request): ?string
+    {
+        $taxonomy = $this->param($request, 'attribute');
+
+        if ($taxonomy === null || ! CommerceTaxonomies::isAttributeTaxonomy($taxonomy)) {
+            return null;
+        }
+
+        return $taxonomy;
     }
 
     private function param(object $request, string $key): ?string
@@ -205,7 +333,7 @@ final class CommerceRestRegistrar
     private function notFound(): mixed
     {
         if (class_exists(\WP_Error::class)) {
-            return new \WP_Error('hsp_product_not_found', 'Product not found.', ['status' => 404]);
+            return new \WP_Error('hsp_not_found', 'Resource not found.', ['status' => 404]);
         }
 
         return null;

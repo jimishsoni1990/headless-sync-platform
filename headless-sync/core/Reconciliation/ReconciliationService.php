@@ -291,6 +291,13 @@ final class ReconciliationService
             return '';
         }
 
+        // A dynamic-taxonomy aggregate (WooCommerce `pa_*` attribute terms) owns every value
+        // sharing a prefix rather than one fixed value. The descriptor validates that prefix
+        // as plain alphanumerics, so it can carry no LIKE wildcard of its own.
+        if ($meta->matchesByPrefix()) {
+            return " AND {$meta->discriminatorColumn} LIKE '{$meta->discriminatorValue}%'";
+        }
+
         return " AND {$meta->discriminatorColumn} = '{$meta->discriminatorValue}'";
     }
 

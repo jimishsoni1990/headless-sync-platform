@@ -41,6 +41,7 @@ final class CanonicalProduct implements CanonicalModelInterface
      * @param \DateTimeImmutable  $updatedAt
      * @param array<string,mixed> $meta
      * @param list<int>           $categoryIds       product_cat term ids (soft references)
+     * @param list<int>           $attributeTermIds  pa_* term ids (soft references)
      */
     public function __construct(
         public readonly int $sourceProductId,
@@ -62,6 +63,7 @@ final class CanonicalProduct implements CanonicalModelInterface
         public readonly \DateTimeImmutable $updatedAt,
         public readonly array $meta,
         public readonly array $categoryIds,
+        public readonly array $attributeTermIds,
     ) {
     }
 
@@ -109,6 +111,9 @@ final class CanonicalProduct implements CanonicalModelInterface
             // unmoved, DECISION 3 suppresses the write, and the join rewrite never runs — the
             // exact bug P1B-S3 shipped for tags and had to fix in a follow-up.
             implode(',', $this->categoryIds),
+            // Same reasoning for attribute terms: they are stored in the same link table, so
+            // a product moving from pa_colour:red to pa_colour:blue must move the checksum.
+            implode(',', $this->attributeTermIds),
         ];
 
         return hash('sha256', implode('|', $parts));

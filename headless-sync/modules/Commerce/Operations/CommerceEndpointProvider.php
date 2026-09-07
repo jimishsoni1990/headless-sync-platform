@@ -44,6 +44,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             $this->productSingle(),
             $this->categoriesList(),
             $this->categorySingle(),
+            $this->attributesList(),
+            $this->attributeSingle(),
+            $this->attributeTermsList(),
         ];
     }
 
@@ -65,6 +68,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 self::query('min_price', 'string', 'Inclusive lower price bound, exact decimal string.'),
                 self::query('max_price', 'string', 'Inclusive upper price bound, exact decimal string.'),
                 self::query('category', 'string', 'Product-category slug.'),
+                self::query('attribute', 'string', 'Full attribute taxonomy name, e.g. pa_colour. '
+                    . 'Applied only together with attribute_term.'),
+                self::query('attribute_term', 'string', 'Attribute term slug within that taxonomy.'),
             ],
             responseSchema: $this->productSchema()->asCursorPage(),
             requestSchema: null,
@@ -106,7 +112,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             namespace: self::NAMESPACE,
             displayGroup: 'Commerce',
             description: 'List WooCommerce product categories. Namespaced separately from the '
-                . 'Content module' . '\x27' . 's /categories, which serves WordPress post categories.',
+                . "Content module's /categories, which serves WordPress post categories.",
             parameters: [
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
                 self::query('limit', 'integer', 'Page size (max 200).'),
@@ -139,6 +145,90 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             version: 'v1',
             moduleOwner: self::MODULE,
         );
+    }
+
+    private function attributesList(): EndpointDescriptor
+    {
+        return new EndpointDescriptor(
+            method: 'GET',
+            route: '/product-attributes',
+            namespace: self::NAMESPACE,
+            displayGroup: 'Commerce',
+            description: 'List WooCommerce global attribute definitions (Colour, Size, …). These '
+                . 'are definitions, not terms: the terms of one attribute are served by '
+                . '/product-attributes/{taxonomy}/terms.',
+            parameters: [
+                self::query('cursor', 'string', 'Opaque pagination cursor.'),
+                self::query('limit', 'integer', 'Page size (max 200).'),
+            ],
+            responseSchema: $this->attributeSchema()->asCursorPage(),
+            requestSchema: null,
+            auth: EndpointAuth::Public,
+            paginated: true,
+            deprecated: false,
+            version: 'v1',
+            moduleOwner: self::MODULE,
+        );
+    }
+
+    private function attributeSingle(): EndpointDescriptor
+    {
+        return new EndpointDescriptor(
+            method: 'GET',
+            route: '/product-attributes/{taxonomy}',
+            namespace: self::NAMESPACE,
+            displayGroup: 'Commerce',
+            description: 'Fetch one global attribute definition by its full taxonomy name.',
+            parameters: [
+                EndpointParameter::path('taxonomy', 'string', 'Full taxonomy name, e.g. pa_colour.'),
+            ],
+            responseSchema: $this->attributeSchema(),
+            requestSchema: null,
+            auth: EndpointAuth::Public,
+            paginated: false,
+            deprecated: false,
+            version: 'v1',
+            moduleOwner: self::MODULE,
+        );
+    }
+
+    private function attributeTermsList(): EndpointDescriptor
+    {
+        return new EndpointDescriptor(
+            method: 'GET',
+            route: '/product-attributes/{taxonomy}/terms',
+            namespace: self::NAMESPACE,
+            displayGroup: 'Commerce',
+            description: 'List the terms of one global attribute. Only pa_-prefixed taxonomies '
+                . 'resolve here; anything else returns 404 rather than reaching across into '
+                . 'another taxonomy sharing the same projection.',
+            parameters: [
+                EndpointParameter::path('taxonomy', 'string', 'Full taxonomy name, e.g. pa_colour.'),
+                self::query('cursor', 'string', 'Opaque pagination cursor.'),
+                self::query('limit', 'integer', 'Page size (max 200).'),
+            ],
+            responseSchema: $this->termSchema()->asCursorPage(),
+            requestSchema: null,
+            auth: EndpointAuth::Public,
+            paginated: true,
+            deprecated: false,
+            version: 'v1',
+            moduleOwner: self::MODULE,
+        );
+    }
+
+    private function attributeSchema(): SchemaObject
+    {
+        return SchemaObject::object([
+            'id'           => 'string',
+            'source_id'    => 'integer',
+            // The FULL pa_-prefixed name — the key that joins to this attribute's terms.
+            'taxonomy'     => 'string',
+            'name'         => 'string',
+            'type'         => 'string',
+            'order_by'     => 'string',
+            'has_archives' => 'boolean',
+        ]);
     }
 
     private function termSchema(): SchemaObject

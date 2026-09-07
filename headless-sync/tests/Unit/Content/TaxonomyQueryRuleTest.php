@@ -72,7 +72,6 @@ final class TaxonomyQueryRuleTest extends TestCase
             // a hardcoded map, so the literal — and the discriminator that scopes it — now
             // live where the module declares them. Core no longer names a domain table.
             'ContentServiceProvider.php',
-            'BackfillReader.php',          // onboarding progress counts
         ] as $expected) {
             self::assertContains($expected, $found, "scan missed {$expected}");
         }

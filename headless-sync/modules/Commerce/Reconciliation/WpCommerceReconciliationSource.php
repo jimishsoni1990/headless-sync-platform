@@ -8,8 +8,10 @@ use HSP\Core\Contracts\SourceState;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\CommerceTaxonomies;
+use HSP\Modules\Commerce\Extractors\AttributeExtractor;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
 use HSP\Modules\Commerce\ProductScope;
+use HSP\Modules\Commerce\Transformers\AttributeTransformer;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\WpCommerceLoader;
@@ -33,7 +35,7 @@ use HSP\Modules\Commerce\WpCommerceLoader;
 final class WpCommerceReconciliationSource implements WpReconciliationSourceInterface
 {
     /** @var list<string> */
-    private const AGGREGATE_TYPES = ['product', 'product_category'];
+    private const AGGREGATE_TYPES = ['product', 'product_category', 'attribute', 'attribute_term'];
 
     public function __construct(
         private readonly WpCommerceLoader $loader,
@@ -41,6 +43,8 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
         private readonly ProductTransformer $transformer,
         private readonly TermExtractor $termExtractor,
         private readonly TermTransformer $termTransformer,
+        private readonly AttributeExtractor $attributeExtractor,
+        private readonly AttributeTransformer $attributeTransformer,
     ) {
     }
 
@@ -60,6 +64,29 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             );
         }
 
+        if ($aggregateType === 'attribute') {
+            return array_map(
+                static fn (int $id): string => (string) $id,
+                $this->loader->listAttributeIdsAfter($afterId, $limit),
+            );
+        }
+
+        if ($aggregateType === 'attribute_term') {
+            // pa_* taxonomies are dynamic, so the corpus is the union across every attribute
+            // taxonomy currently defined. Term ids are globally unique, so the merged set is
+            // still safely keyset-paged by id.
+            $ids = [];
+            foreach ($this->loader->attributeTaxonomyNames() as $taxonomy) {
+                foreach ($this->loader->listTermIdsAfter($taxonomy, $afterId, $limit) as $id) {
+                    $ids[] = $id;
+                }
+            }
+
+            sort($ids);
+
+            return array_map(static fn (int $id): string => (string) $id, array_slice($ids, 0, $limit));
+        }
+
         if ($aggregateType !== 'product') {
             return [];
         }
@@ -72,7 +99,13 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
 
     public function getSourceState(string $aggregateType, string $aggregateId): SourceState
     {
-        if ($aggregateType === 'product_category') {
+        if ($aggregateType === 'attribute') {
+            $attribute = $this->loader->loadAttribute((int) $aggregateId);
+
+            return new SourceState($attribute !== null, $attribute !== null, null);
+        }
+
+        if ($aggregateType === 'product_category' || $aggregateType === 'attribute_term') {
             // Terms carry no modified timestamp in WordPress, so drift detection for them is
             // existence-only at the hourly cadence and checksum-based nightly (DECISION U D2).
             $term = $this->loader->loadTerm((int) $aggregateId);
@@ -109,7 +142,15 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
 
     public function computeCurrentChecksum(string $aggregateType, string $aggregateId): ?string
     {
-        if ($aggregateType === 'product_category') {
+        if ($aggregateType === 'attribute') {
+            $attribute = $this->loader->loadAttribute((int) $aggregateId);
+
+            return $attribute === null
+                ? null
+                : $this->attributeTransformer->transform($this->attributeExtractor->extract($attribute))->getChecksum();
+        }
+
+        if ($aggregateType === 'product_category' || $aggregateType === 'attribute_term') {
             $term = $this->loader->loadTerm((int) $aggregateId);
 
             return $term === null

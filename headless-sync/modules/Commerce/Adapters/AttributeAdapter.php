@@ -8,25 +8,16 @@ use HSP\Core\Contracts\AdapterInterface;
 use HSP\Core\Contracts\CanonicalModelInterface;
 use HSP\Core\Contracts\EventInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
-use HSP\Modules\Commerce\CanonicalModels\CanonicalTerm;
+use HSP\Modules\Commerce\CanonicalModels\CanonicalAttribute;
 
 /**
- * Persists CanonicalTerm into the shared commerce.taxonomies projection.
+ * Persists CanonicalAttribute into commerce.attributes.
  *
- * Same DECISION 3 three-op transaction as every other adapter — projection upsert +
- * system.processed_events + system.aggregate_versions, committed together, with suppression
- * affecting only the upsert.
- *
- * Taxonomy-generic: one adapter serves `product_cat` and every `pa_*` taxonomy, because the
- * discriminator travels on the model rather than being baked into the class. Content's
- * `CategoryAdapter` hardcoded the literal `'category'` and had to be generalised retroactively
- * in P1B-S3; this starts generic.
- *
- * The upsert conflicts on `source_term_id`, NOT on `(taxonomy_type, slug)` — WordPress term ids
- * are globally unique across taxonomies, and `(taxonomy_type, slug)` deliberately carries no
- * unique constraint (see migration 0003).
+ * The same DECISION 3 three-op transaction as every other adapter in the platform: projection
+ * upsert + system.processed_events + system.aggregate_versions, committed together, with
+ * suppression affecting only the upsert.
  */
-final class TermAdapter implements AdapterInterface
+final class AttributeAdapter implements AdapterInterface
 {
     public function __construct(private readonly DatabaseConnectionInterface $db)
     {
@@ -34,19 +25,19 @@ final class TermAdapter implements AdapterInterface
 
     public function getCanonicalModelClass(): string
     {
-        return CanonicalTerm::class;
+        return CanonicalAttribute::class;
     }
 
     public function persist(CanonicalModelInterface $model, EventInterface $event): void
     {
-        if (! $model instanceof CanonicalTerm) {
+        if (! $model instanceof CanonicalAttribute) {
             throw new \InvalidArgumentException(
-                self::class . ' requires ' . CanonicalTerm::class . ', got ' . $model::class
+                self::class . ' requires ' . CanonicalAttribute::class . ', got ' . $model::class
             );
         }
 
         $checksum = $model->getChecksum();
-        $existing = $this->fetchExisting($model->sourceTermId);
+        $existing = $this->fetchExisting($model->sourceAttributeId);
         $id       = $existing['id'] ?? $this->uuidv7();
         $now      = $this->nowUtc();
 
@@ -71,7 +62,7 @@ final class TermAdapter implements AdapterInterface
             ) || ($event->getAggregateVersion() < $lockedVersion);
 
             if (! $suppress) {
-                $this->upsertTerm($model, $id, $checksum, $now);
+                $this->upsertAttribute($model, $id, $checksum, $now);
             }
 
             $this->insertProcessedEvent($event, $checksum, $now);
@@ -93,10 +84,8 @@ final class TermAdapter implements AdapterInterface
         $this->db->beginTransaction();
 
         try {
-            // Scoped by source_term_id, which is globally unique — so this needs no taxonomy
-            // predicate and cannot tombstone the wrong taxonomy's term.
             $this->db->execute(
-                'UPDATE commerce.taxonomies SET deleted_at = $1::timestamptz WHERE source_term_id = $2',
+                'UPDATE commerce.attributes SET deleted_at = $1::timestamptz WHERE source_attribute_id = $2',
                 [$deletedAt, (int) $aggregateId],
             );
 
@@ -119,11 +108,11 @@ final class TermAdapter implements AdapterInterface
     }
 
     /** @return array<string,mixed>|null */
-    private function fetchExisting(int $sourceTermId): ?array
+    private function fetchExisting(int $sourceAttributeId): ?array
     {
         $rows = $this->db->query(
-            'SELECT id, checksum, deleted_at FROM commerce.taxonomies WHERE source_term_id = $1',
-            [$sourceTermId],
+            'SELECT id, checksum, deleted_at FROM commerce.attributes WHERE source_attribute_id = $1',
+            [$sourceAttributeId],
         );
 
         return $rows[0] ?? null;
@@ -149,33 +138,31 @@ final class TermAdapter implements AdapterInterface
         return isset($rows[0]) ? (int) $rows[0]['latest_processed_version'] : 0;
     }
 
-    private function upsertTerm(CanonicalTerm $model, string $id, string $checksum, string $now): void
+    private function upsertAttribute(CanonicalAttribute $model, string $id, string $checksum, string $now): void
     {
         $this->db->execute(
-            'INSERT INTO commerce.taxonomies
-                (id, source_term_id, taxonomy_type, slug, name, description, parent_id,
-                 term_count, deleted_at, checksum, created_at, updated_at, synced_at)
-             VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,NULL,$9,$10::timestamptz,$11::timestamptz,$12::timestamptz)
-             ON CONFLICT (source_term_id) DO UPDATE SET
-                taxonomy_type = EXCLUDED.taxonomy_type,
-                slug          = EXCLUDED.slug,
-                name          = EXCLUDED.name,
-                description   = EXCLUDED.description,
-                parent_id     = EXCLUDED.parent_id,
-                term_count    = EXCLUDED.term_count,
-                deleted_at    = NULL,
-                checksum      = EXCLUDED.checksum,
-                updated_at    = EXCLUDED.updated_at,
-                synced_at     = EXCLUDED.synced_at',
+            'INSERT INTO commerce.attributes
+                (id, source_attribute_id, slug, name, type, order_by, has_archives,
+                 deleted_at, checksum, created_at, updated_at, synced_at)
+             VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,NULL,$8,$9::timestamptz,$10::timestamptz,$11::timestamptz)
+             ON CONFLICT (source_attribute_id) DO UPDATE SET
+                slug         = EXCLUDED.slug,
+                name         = EXCLUDED.name,
+                type         = EXCLUDED.type,
+                order_by     = EXCLUDED.order_by,
+                has_archives = EXCLUDED.has_archives,
+                deleted_at   = NULL,
+                checksum     = EXCLUDED.checksum,
+                updated_at   = EXCLUDED.updated_at,
+                synced_at    = EXCLUDED.synced_at',
             [
                 $id,
-                $model->sourceTermId,
-                $model->taxonomyType,
+                $model->sourceAttributeId,
                 $model->slug,
                 $model->name,
-                $model->description,
-                $model->parentId,
-                $model->count,
+                $model->type,
+                $model->orderBy,
+                $model->hasArchives ? 't' : 'f',
                 $checksum,
                 $now,
                 $now,

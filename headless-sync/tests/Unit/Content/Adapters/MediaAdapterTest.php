@@ -70,7 +70,7 @@ final class MediaAdapterTest extends TestCase
 
         // Stored checksum equals the freshly computed projection checksum (OPEN-11).
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-0000000000aa', 'checksum' => $model->getChecksum()]],
+            [['id' => '01900000-0000-7000-8000-0000000000aa', 'checksum' => $model->getChecksum(), 'deleted_at' => null]],
             [['latest_processed_version' => '0']],
         );
 

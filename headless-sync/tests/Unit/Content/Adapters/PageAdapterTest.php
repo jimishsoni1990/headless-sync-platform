@@ -118,7 +118,7 @@ final class PageAdapterTest extends TestCase
 
         // slot 0: matching checksum → checksum suppress; slot 1: FOR UPDATE → version 0 (no version conflict)
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum()]],
+            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum(), 'deleted_at' => null]],
             [['latest_processed_version' => '0']],
         );
 
@@ -143,7 +143,7 @@ final class PageAdapterTest extends TestCase
         // slot 0: different checksum (no checksum suppress); slot 1: FOR UPDATE locked version 5
         // Incoming event version = 2 < locked 5 → version guard fires
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-bbbbbbbbbbbb', 'checksum' => str_repeat('0', 64)]],
+            [['id' => '01900000-0000-7000-8000-bbbbbbbbbbbb', 'checksum' => str_repeat('0', 64), 'deleted_at' => null]],
             [['latest_processed_version' => '5']],
         );
 
@@ -179,7 +179,7 @@ final class PageAdapterTest extends TestCase
     {
         // Locked version == incoming version (2 == 2) → NOT stale, should write.
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-cccccccccccc', 'checksum' => str_repeat('0', 64)]],
+            [['id' => '01900000-0000-7000-8000-cccccccccccc', 'checksum' => str_repeat('0', 64), 'deleted_at' => null]],
             [['latest_processed_version' => '2']],
         );
 
@@ -191,7 +191,7 @@ final class PageAdapterTest extends TestCase
     public function test_persist_writes_when_checksum_differs_and_no_version_conflict(): void
     {
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-dddddddddddd', 'checksum' => str_repeat('0', 64)]],
+            [['id' => '01900000-0000-7000-8000-dddddddddddd', 'checksum' => str_repeat('0', 64), 'deleted_at' => null]],
             [['latest_processed_version' => '0']],
         );
 

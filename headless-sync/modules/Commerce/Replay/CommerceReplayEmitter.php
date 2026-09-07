@@ -29,7 +29,7 @@ use HSP\Modules\Commerce\WpCommerceLoader;
 final class CommerceReplayEmitter implements ReplayEmitterInterface
 {
     /** @var list<string> */
-    private const AGGREGATE_TYPES = ['product', 'product_category'];
+    private const AGGREGATE_TYPES = ['product', 'product_category', 'attribute', 'attribute_term'];
 
     public function __construct(
         private readonly EventProviderInterface $events,
@@ -49,8 +49,23 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
         string $correlationId,
         string $causationId,
     ): EventInterface {
-        if ($aggregateType === 'product_category') {
-            return $this->emitTerm($aggregateId, $correlationId, $causationId);
+        if ($aggregateType === 'product_category' || $aggregateType === 'attribute_term') {
+            return $this->emitTerm($aggregateType, $aggregateId, $correlationId, $causationId);
+        }
+
+        if ($aggregateType === 'attribute') {
+            $exists = $this->loader->loadAttribute((int) $aggregateId) !== null;
+
+            return $this->events->provide(
+                $exists ? CommerceEventTypes::ATTRIBUTE_UPDATED : CommerceEventTypes::ATTRIBUTE_DELETED,
+                $aggregateId,
+                [
+                    'correlation_id'    => $correlationId,
+                    'causation_id'      => $causationId,
+                    'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+                    'payload'           => ['attribute_id' => (int) $aggregateId],
+                ],
+            );
         }
 
         if ($aggregateType !== 'product') {
@@ -81,12 +96,23 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
      * A term that has gone — or whose taxonomy this module no longer owns — re-emits as
      * DELETED, so a removed category tombstones rather than lingering.
      */
-    private function emitTerm(string $aggregateId, string $correlationId, string $causationId): EventInterface
-    {
+    private function emitTerm(
+        string $aggregateType,
+        string $aggregateId,
+        string $correlationId,
+        string $causationId,
+    ): EventInterface {
         $exists = $this->loader->loadTerm((int) $aggregateId) !== null;
 
+        $updated = $aggregateType === 'attribute_term'
+            ? CommerceEventTypes::ATTRIBUTE_TERM_UPDATED
+            : CommerceEventTypes::CATEGORY_UPDATED;
+        $deleted = $aggregateType === 'attribute_term'
+            ? CommerceEventTypes::ATTRIBUTE_TERM_DELETED
+            : CommerceEventTypes::CATEGORY_DELETED;
+
         return $this->events->provide(
-            $exists ? CommerceEventTypes::CATEGORY_UPDATED : CommerceEventTypes::CATEGORY_DELETED,
+            $exists ? $updated : $deleted,
             $aggregateId,
             [
                 'correlation_id'    => $correlationId,

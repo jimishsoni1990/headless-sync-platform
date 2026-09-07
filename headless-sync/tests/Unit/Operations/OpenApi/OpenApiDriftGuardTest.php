@@ -376,6 +376,19 @@ final class OpenApiDriftGuardTest extends TestCase
             ),
         );
 
+        // The core-owned registries WorkerServiceProvider binds in production. Onboarding's
+        // backfill reader and progress resolve them lazily (AG-2/AG-3), so binding them here
+        // proves the graph wires through registries rather than single-module bindings.
+        $container->singleton(
+            \HSP\Core\Contracts\ProjectionRegistryInterface::class,
+            fn () => ContentProjections::registry(),
+        );
+        $container->singleton(
+            \HSP\Core\Contracts\ReconciliationSourceRegistryInterface::class,
+            fn (Container $c) => ContentProjections::sourceRegistry(
+                $c->get(WpReconciliationSourceInterface::class),
+            ),
+        );
         // Self-remediation upstream deps (resolved lazily by MigrationApplier / WorkerCronSpawner).
         $container->singleton(
             \HSP\Core\Workers\ProcessingCronRegistrar::class,

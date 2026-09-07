@@ -57,6 +57,7 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
             'modified_at'        => $post->post_modified_gmt ?? null,
             'meta'               => $this->publicMeta($productId),
             'category_ids'       => $this->termIds($productId, CommerceTaxonomies::PRODUCT_CAT),
+            'attribute_term_ids' => $this->attributeTermIds($productId),
         ];
     }
 
@@ -165,6 +166,75 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
         return array_map(static fn (array $r): int => (int) $r['term_id'], $rows ?? []);
     }
 
+    public function loadAttribute(int $attributeId): ?array
+    {
+        if (! function_exists('wc_get_attribute')) {
+            return null;
+        }
+
+        // The PUBLIC accessor, not the woocommerce_attribute_taxonomies table. Verified shape:
+        // id, name (the human label), slug (the FULL pa_-prefixed taxonomy name), type,
+        // order_by, has_archives.
+        $attribute = wc_get_attribute($attributeId);
+
+        if (! is_object($attribute) || ! isset($attribute->id)) {
+            return null;
+        }
+
+        return [
+            'id'           => (int) $attribute->id,
+            'slug'         => (string) ($attribute->slug ?? ''),
+            'name'         => (string) ($attribute->name ?? ''),
+            'type'         => (string) ($attribute->type ?? 'select'),
+            'order_by'     => (string) ($attribute->order_by ?? 'menu_order'),
+            'has_archives' => (bool) ($attribute->has_archives ?? false),
+        ];
+    }
+
+    /** @return list<int> */
+    public function listAttributeIdsAfter(int $afterId, int $limit): array
+    {
+        $ids = array_map(
+            static fn (object $t): int => (int) ($t->attribute_id ?? 0),
+            $this->attributeTaxonomies(),
+        );
+
+        $ids = array_values(array_filter($ids, static fn (int $id): bool => $id > $afterId));
+        sort($ids);
+
+        return array_slice($ids, 0, $limit);
+    }
+
+    /** @return list<string> */
+    public function attributeTaxonomyNames(): array
+    {
+        if (! function_exists('wc_attribute_taxonomy_name')) {
+            return [];
+        }
+
+        $names = [];
+
+        foreach ($this->attributeTaxonomies() as $taxonomy) {
+            $name = wc_attribute_taxonomy_name((string) ($taxonomy->attribute_name ?? ''));
+
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /** @return list<object> */
+    private function attributeTaxonomies(): array
+    {
+        if (! function_exists('wc_get_attribute_taxonomies')) {
+            return [];
+        }
+
+        return array_values(array_filter((array) wc_get_attribute_taxonomies(), 'is_object'));
+    }
+
     /**
      * @return WooProductAccess|null A WC_Product, or null when WooCommerce is absent or the id
      *         is not a product.
@@ -201,6 +271,32 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
         }
 
         $ids = wp_get_object_terms($productId, $taxonomy, ['fields' => 'ids']);
+
+        if (! is_array($ids)) {
+            return [];
+        }
+
+        return array_values(array_map('intval', array_filter($ids, 'is_scalar')));
+    }
+
+    /**
+     * The `pa_*` TERM ids this product carries, across every global attribute taxonomy.
+     *
+     * One `wp_get_object_terms()` call for all of them rather than one per attribute: the
+     * function accepts an array of taxonomies, and a store with a dozen attributes would
+     * otherwise pay a dozen queries per product — an N+1 that only shows up on a real catalog.
+     *
+     * @return list<int>
+     */
+    private function attributeTermIds(int $productId): array
+    {
+        $taxonomies = $this->attributeTaxonomyNames();
+
+        if ($taxonomies === [] || ! function_exists('wp_get_object_terms')) {
+            return [];
+        }
+
+        $ids = wp_get_object_terms($productId, $taxonomies, ['fields' => 'ids']);
 
         if (! is_array($ids)) {
             return [];

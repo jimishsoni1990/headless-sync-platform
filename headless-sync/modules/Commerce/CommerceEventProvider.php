@@ -36,6 +36,8 @@ final class CommerceEventProvider implements EventProviderInterface
     private const AGGREGATE_TYPE_MAP = [
         'product'  => 'product',
         'product_category' => 'product_category',
+        'attribute'        => 'attribute',
+        'attribute_term'   => 'attribute_term',
     ];
 
     public function __construct(private readonly OutboxWriterInterface $outboxWriter)
