@@ -29,7 +29,13 @@ use HSP\Modules\Commerce\WpCommerceLoader;
 final class CommerceReplayEmitter implements ReplayEmitterInterface
 {
     /** @var list<string> */
-    private const AGGREGATE_TYPES = ['product', 'product_category', 'attribute', 'attribute_term'];
+    private const AGGREGATE_TYPES = [
+        'product',
+        'product_category',
+        'attribute',
+        'attribute_term',
+        'product_variation',
+    ];
 
     public function __construct(
         private readonly EventProviderInterface $events,
@@ -51,6 +57,25 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
     ): EventInterface {
         if ($aggregateType === 'product_category' || $aggregateType === 'attribute_term') {
             return $this->emitTerm($aggregateType, $aggregateId, $correlationId, $causationId);
+        }
+
+        if ($aggregateType === 'product_variation') {
+            // The loader already applies AG-13 scope: it returns null both when the variation is
+            // gone and when its parent has left supported scope. Either way the projection must
+            // not stay visible, so both re-emit as DELETED — the DECISION I path, with no
+            // variation-specific repair route.
+            $exists = $this->loader->loadVariation((int) $aggregateId) !== null;
+
+            return $this->events->provide(
+                $exists ? CommerceEventTypes::VARIATION_UPDATED : CommerceEventTypes::VARIATION_DELETED,
+                $aggregateId,
+                [
+                    'correlation_id'    => $correlationId,
+                    'causation_id'      => $causationId,
+                    'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+                    'payload'           => ['variation_id' => (int) $aggregateId],
+                ],
+            );
         }
 
         if ($aggregateType === 'attribute') {

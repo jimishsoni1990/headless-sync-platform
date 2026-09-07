@@ -53,4 +53,19 @@ interface WooProductAccess
     public function get_image_id(): mixed;
 
     public function get_gallery_image_ids(): mixed;
+
+    /**
+     * 0 for a top-level product; the parent product's post id for a variation.
+     *
+     * Declared on WC_Product itself rather than only on WC_Product_Variation, so one annotation
+     * covers both — which is also why this interface is not split per product type.
+     */
+    public function get_parent_id(): mixed;
+
+    /**
+     * On a VARIATION: the selected values, keyed by UNPREFIXED taxonomy name, valued by term
+     * slug, with '' meaning "any". On a parent product this returns WC_Product_Attribute
+     * objects instead — a different shape entirely — so only the variation loader calls it.
+     */
+    public function get_attributes(): mixed;
 }

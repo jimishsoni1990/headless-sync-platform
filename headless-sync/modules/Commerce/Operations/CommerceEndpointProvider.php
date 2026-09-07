@@ -47,6 +47,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             $this->attributesList(),
             $this->attributeSingle(),
             $this->attributeTermsList(),
+            $this->variationsList(),
         ];
     }
 
@@ -215,6 +216,53 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             version: 'v1',
             moduleOwner: self::MODULE,
         );
+    }
+
+    private function variationsList(): EndpointDescriptor
+    {
+        return new EndpointDescriptor(
+            method: 'GET',
+            route: '/products/{slug}/variations',
+            namespace: self::NAMESPACE,
+            displayGroup: 'Commerce',
+            description: 'List the variations of one product, in the store\'s own order. Nested '
+                . 'under the product because WooCommerce gives a variation no permalink and no '
+                . 'independent catalogue presence.',
+            parameters: [
+                EndpointParameter::path('slug', 'string', 'Parent product slug.'),
+                self::query('cursor', 'string', 'Opaque pagination cursor.'),
+                self::query('limit', 'integer', 'Page size (max 200).'),
+            ],
+            responseSchema: $this->variationSchema()->asCursorPage(),
+            requestSchema: null,
+            auth: EndpointAuth::Public,
+            paginated: true,
+            deprecated: false,
+            version: 'v1',
+            moduleOwner: self::MODULE,
+        );
+    }
+
+    private function variationSchema(): SchemaObject
+    {
+        return SchemaObject::object([
+            'id'          => 'string',
+            'source_id'   => 'integer',
+            // The parent's source id, so a consumer holding a variation can get back to it.
+            'product_id'  => 'integer',
+            'sku'         => 'string',
+            'name'        => 'string',
+            'description' => 'string',
+            'status'      => 'string',
+            // Exact decimal strings, never JSON numbers (Requirement C).
+            'prices'      => 'object',
+            // taxonomy => selected value. An EMPTY value means "any value of this attribute",
+            // which is not the same as the attribute being absent.
+            'attributes'  => 'object',
+            // Attachment id reference; content.media owns the projection (AG-10).
+            'media'       => 'object',
+            'menu_order'  => 'integer',
+        ]);
     }
 
     private function attributeSchema(): SchemaObject

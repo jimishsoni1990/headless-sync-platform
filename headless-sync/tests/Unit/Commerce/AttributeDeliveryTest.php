@@ -48,6 +48,8 @@ final class AttributeDeliveryTest extends TestCase
             new AttributeQueryProvider($this->db),
             new AttributeResource(),
             $factory(...),
+            new \HSP\Modules\Commerce\Queries\VariationQueryProvider($this->db),
+            new \HSP\Modules\Commerce\Resources\VariationResource(),
         );
     }
 

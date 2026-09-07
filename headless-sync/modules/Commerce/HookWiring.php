@@ -11,16 +11,30 @@ use HSP\Modules\Commerce\Events\CommerceEventTypes;
 /**
  * Captures WooCommerce product lifecycle into wp_hsp_outbox (Rule 3, DECISION 1).
  *
- * THE HOOK ASYMMETRY, verified against WooCommerce 11.1.0 rather than assumed:
+ * THE HOOK SPLIT, verified against WooCommerce 11.1.0 rather than assumed:
  *
- *   create / update  →  woocommerce_new_product / woocommerce_update_product
- *                       (fired by the product data store, carrying the hydrated WC_Product)
- *   delete / trash   →  WordPress's OWN post hooks, filtered to post_type 'product'
+ *   create / update  →  woocommerce_new_product{,_variation} / woocommerce_update_product{,_variation}
+ *                       (fired by the data store, carrying the hydrated WC_Product)
+ *   delete / trash   →  WordPress's OWN post hooks, filtered by post type
  *
- * There is NO `woocommerce_delete_product` or `woocommerce_trash_product` hook — grepped
- * across the plugin's includes/. Variations have dedicated delete and trash hooks; whole
- * products do not. Inferring one by symmetry with the variation hooks would have produced a
- * module that silently never tombstones a deleted product.
+ * WooCommerce DOES emit `woocommerce_delete_product` and `woocommerce_trash_product` — the
+ * P2-S2 note claiming otherwise was corrected at the P2-S5 preflight. The names are composed at
+ * runtime as `'woocommerce_delete_' . $post_type`, so no literal is greppable, which is what
+ * made them look absent.
+ *
+ * Deletion is nevertheless captured through the WordPress post hooks, now for a better reason
+ * than the original one: those fire for EVERY deletion path — `wp_delete_post()` called
+ * directly, a WP-CLI delete, another plugin removing the row — none of which reach a WooCommerce
+ * data store and none of which would emit the WooCommerce hook. Using the post hooks means a
+ * product cannot be deleted without HSP noticing.
+ *
+ * VARIATIONS follow the same shape and share the delete path: `product_variation` is a post
+ * type, so one filtered handler covers both. A variation's own edits arrive on the WooCommerce
+ * variation hooks; a variation's effect on its PARENT arrives separately, because
+ * `WC_Product_Variable::sync()` calls `$parent->save()` and that fires
+ * `woocommerce_update_product` for the parent (verified: class-wc-product-variable.php:710-725).
+ * So a price change on one variation correctly re-emits both aggregates, and the first-emit-wins
+ * guard collapses the duplicates each of them generates.
  *
  * FIRST-EMIT-WINS GUARD: one product save fires `woocommerce_update_product` AND `save_post`,
  * so without a per-request guard a single edit would write several outbox rows and burn
@@ -41,6 +55,8 @@ final class HookWiring
 {
     private const PRODUCT_POST_TYPE = 'product';
 
+    private const VARIATION_POST_TYPE = 'product_variation';
+
     /** @var array<int, bool> product ids already emitted this request (upsert path) */
     private array $handled = [];
 
@@ -52,6 +68,12 @@ final class HookWiring
 
     /** @var array<string, bool> term keys whose deletion has been emitted this request */
     private array $deletedTerms = [];
+
+    /** @var array<int, bool> variation ids already emitted this request (upsert path) */
+    private array $handledVariations = [];
+
+    /** @var array<int, bool> variation ids whose deletion has been emitted this request */
+    private array $deletedVariations = [];
 
     private bool $captureFailed = false;
 
@@ -86,6 +108,89 @@ final class HookWiring
         add_action('woocommerce_attribute_added', [$this, 'onAttributeAdded'], 10, 1);
         add_action('woocommerce_attribute_updated', [$this, 'onAttributeUpdated'], 10, 1);
         add_action('woocommerce_attribute_deleted', [$this, 'onAttributeDeleted'], 10, 1);
+
+        // Variations (P2-S5). Their deletion rides the same post hooks registered above —
+        // `product_variation` is a post type — so only the create/update pair is new here.
+        add_action('woocommerce_new_product_variation', [$this, 'onVariationCreated'], 10, 1);
+        add_action('woocommerce_update_product_variation', [$this, 'onVariationUpdated'], 10, 1);
+    }
+
+    public function onVariationCreated(int $variationId): void
+    {
+        $this->captureVariationUpsert($variationId, CommerceEventTypes::VARIATION_CREATED);
+    }
+
+    public function onVariationUpdated(int $variationId): void
+    {
+        $this->captureVariationUpsert($variationId, CommerceEventTypes::VARIATION_UPDATED);
+    }
+
+    /**
+     * Variations get their own guard-key namespace.
+     *
+     * Post ids are one sequence shared with products, so a variation and a product cannot
+     * actually collide — but keeping the maps separate means the terminal-delete rule for one
+     * can never block the other, and it makes the guard readable rather than relying on that
+     * coincidence.
+     */
+    private function captureVariationUpsert(int $variationId, string $eventType): void
+    {
+        if (
+            $variationId <= 0
+            || isset($this->handledVariations[$variationId])
+            || isset($this->deletedVariations[$variationId])
+        ) {
+            return;
+        }
+
+        if ($this->isRevisionOrAutosave($variationId)) {
+            return;
+        }
+
+        // The PARENT's type decides scope (AG-13): a variation of a product retyped out of
+        // Phase 2 is out of scope with it. Nothing is captured, so it cannot retry, reach the
+        // DLQ, or block convergence — and anything already projected is tombstoned by the
+        // handler, which reaches the same conclusion through the loader.
+        $parentId = $this->variationParentId($variationId);
+
+        if ($parentId <= 0 || ! ProductScope::isSupportedType($this->productType($parentId))) {
+            return;
+        }
+
+        $this->handledVariations[$variationId] = true;
+
+        $this->captureEvent($eventType, (string) $variationId, [
+            'variation_id' => $variationId,
+            'parent_id'    => $parentId,
+        ]);
+    }
+
+    private function captureVariationDelete(int $variationId): void
+    {
+        if ($variationId <= 0 || isset($this->deletedVariations[$variationId])) {
+            return;
+        }
+
+        // Terminal: block any later upsert for this id in the same request.
+        $this->deletedVariations[$variationId] = true;
+        $this->handledVariations[$variationId] = true;
+
+        $this->captureEvent(CommerceEventTypes::VARIATION_DELETED, (string) $variationId, [
+            'variation_id' => $variationId,
+        ]);
+    }
+
+    private function variationParentId(int $variationId): int
+    {
+        if (! function_exists('wc_get_product')) {
+            return 0;
+        }
+
+        $variation = wc_get_product($variationId);
+
+        return is_object($variation) && method_exists($variation, 'get_parent_id')
+            ? (int) $variation->get_parent_id()
+            : 0;
     }
 
     public function onAttributeAdded(int $attributeId): void
@@ -162,11 +267,11 @@ final class HookWiring
 
     public function onTrashPost(int $postId): void
     {
-        if (! $this->isProduct($postId)) {
-            return;
-        }
-
-        $this->captureDelete($postId);
+        match ($this->postType($postId)) {
+            self::PRODUCT_POST_TYPE   => $this->captureDelete($postId),
+            self::VARIATION_POST_TYPE => $this->captureVariationDelete($postId),
+            default                   => null,
+        };
     }
 
     /**
@@ -177,11 +282,11 @@ final class HookWiring
     {
         $postType = is_object($post) && isset($post->post_type) ? (string) $post->post_type : '';
 
-        if ($postType !== self::PRODUCT_POST_TYPE) {
-            return;
-        }
-
-        $this->captureDelete($postId);
+        match ($postType) {
+            self::PRODUCT_POST_TYPE   => $this->captureDelete($postId),
+            self::VARIATION_POST_TYPE => $this->captureVariationDelete($postId),
+            default                   => null,
+        };
     }
 
     private function captureUpsert(int $productId, string $eventType): void
@@ -294,13 +399,15 @@ final class HookWiring
         }
     }
 
-    private function isProduct(int $postId): bool
+    private function postType(int $postId): string
     {
         if (! function_exists('get_post_type')) {
-            return false;
+            return '';
         }
 
-        return get_post_type($postId) === self::PRODUCT_POST_TYPE;
+        $postType = get_post_type($postId);
+
+        return is_string($postType) ? $postType : '';
     }
 
     private function productType(int $postId): string

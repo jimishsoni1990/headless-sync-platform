@@ -12,6 +12,8 @@ use HSP\Modules\Commerce\Handlers\AttributeTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\AttributeUpsertHandler;
 use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
+use HSP\Modules\Commerce\Handlers\VariationTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\VariationUpsertHandler;
 
 /**
  * Routes a Commerce event to its handler. Registered into EventRegistry once per event type.
@@ -33,6 +35,8 @@ final class CommerceSubscriber
         private readonly TermTombstoneHandler $termTombstone,
         private readonly AttributeUpsertHandler $attributeUpsert,
         private readonly AttributeTombstoneHandler $attributeTombstone,
+        private readonly VariationUpsertHandler $variationUpsert,
+        private readonly VariationTombstoneHandler $variationTombstone,
     ) {
     }
 
@@ -53,6 +57,9 @@ final class CommerceSubscriber
             CommerceEventTypes::ATTRIBUTE_CREATED,
             CommerceEventTypes::ATTRIBUTE_UPDATED => $this->attributeUpsert->handle($event),
             CommerceEventTypes::ATTRIBUTE_DELETED => $this->attributeTombstone->handle($event),
+            CommerceEventTypes::VARIATION_CREATED,
+            CommerceEventTypes::VARIATION_UPDATED => $this->variationUpsert->handle($event),
+            CommerceEventTypes::VARIATION_DELETED => $this->variationTombstone->handle($event),
             default => throw new \RuntimeException(
                 "No Commerce handler registered for event type '{$event->getEventType()}'."
             ),

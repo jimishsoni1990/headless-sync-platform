@@ -91,4 +91,23 @@ interface WpCommerceLoader
      * @return list<string>
      */
     public function attributeTaxonomyNames(): array;
+
+    /**
+     * Read one product variation's state.
+     *
+     * @return array<string,mixed>|null Null when the variation does not exist, or when its
+     *         PARENT is not a Phase 2 supported type — a variation of an out-of-scope product
+     *         is normal source, not a failure (AG-13).
+     */
+    public function loadVariation(int $variationId): ?array;
+
+    /**
+     * Variation ids greater than $afterId, ascending — the reconciliation corpus pager.
+     *
+     * @return list<int>
+     */
+    public function listVariationIdsAfter(int $afterId, int $limit): array;
+
+    /** Does a variation with this id exist in WordPress right now? */
+    public function variationExists(int $variationId): bool;
 }

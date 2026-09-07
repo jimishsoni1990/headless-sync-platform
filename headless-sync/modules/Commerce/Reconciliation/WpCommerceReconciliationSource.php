@@ -10,9 +10,11 @@ use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\CommerceTaxonomies;
 use HSP\Modules\Commerce\Extractors\AttributeExtractor;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
+use HSP\Modules\Commerce\Extractors\VariationExtractor;
 use HSP\Modules\Commerce\ProductScope;
 use HSP\Modules\Commerce\Transformers\AttributeTransformer;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
+use HSP\Modules\Commerce\Transformers\VariationTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\WpCommerceLoader;
 
@@ -35,7 +37,13 @@ use HSP\Modules\Commerce\WpCommerceLoader;
 final class WpCommerceReconciliationSource implements WpReconciliationSourceInterface
 {
     /** @var list<string> */
-    private const AGGREGATE_TYPES = ['product', 'product_category', 'attribute', 'attribute_term'];
+    private const AGGREGATE_TYPES = [
+        'product',
+        'product_category',
+        'attribute',
+        'attribute_term',
+        'product_variation',
+    ];
 
     public function __construct(
         private readonly WpCommerceLoader $loader,
@@ -45,6 +53,8 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
         private readonly TermTransformer $termTransformer,
         private readonly AttributeExtractor $attributeExtractor,
         private readonly AttributeTransformer $attributeTransformer,
+        private readonly VariationExtractor $variationExtractor,
+        private readonly VariationTransformer $variationTransformer,
     ) {
     }
 
@@ -87,6 +97,13 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             return array_map(static fn (int $id): string => (string) $id, array_slice($ids, 0, $limit));
         }
 
+        if ($aggregateType === 'product_variation') {
+            return array_map(
+                static fn (int $id): string => (string) $id,
+                $this->loader->listVariationIdsAfter($afterId, $limit),
+            );
+        }
+
         if ($aggregateType !== 'product') {
             return [];
         }
@@ -113,6 +130,24 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             return new SourceState($term !== null, $term !== null, null);
         }
 
+        if ($aggregateType === 'product_variation') {
+            // EXISTS and PUBLIC are deliberately different questions here. A variation whose
+            // parent has left supported scope still exists as a WordPress post — so reporting
+            // it absent would be a lie — but it is no longer public, and that is what drives
+            // the orphan path to tombstone its projection (AG-13 + DECISION I).
+            $raw = $this->loader->loadVariation((int) $aggregateId);
+
+            if ($raw !== null) {
+                return new SourceState(true, true, $this->modifiedAt($raw['modified_at'] ?? null));
+            }
+
+            return new SourceState(
+                $this->loader->variationExists((int) $aggregateId),
+                false,
+                null,
+            );
+        }
+
         if ($aggregateType !== 'product') {
             return new SourceState(false, false, null);
         }
@@ -127,17 +162,21 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
         // its projection rather than leaving a `grouped` product published as though supported.
         $public = ProductScope::isSupportedType((string) ($raw['product_type'] ?? ''));
 
-        $modifiedAt = null;
-        $modified   = $raw['modified_at'] ?? null;
-        if (is_string($modified) && $modified !== '' && $modified !== '0000-00-00 00:00:00') {
-            try {
-                $modifiedAt = new \DateTimeImmutable($modified, new \DateTimeZone('UTC'));
-            } catch (\Exception) {
-                $modifiedAt = null;
-            }
+        return new SourceState(true, $public, $this->modifiedAt($raw['modified_at'] ?? null));
+    }
+
+    /** WordPress GMT strings are UTC but carry no zone marker, so the zone is supplied here. */
+    private function modifiedAt(mixed $value): ?\DateTimeImmutable
+    {
+        if (! is_string($value) || $value === '' || $value === '0000-00-00 00:00:00') {
+            return null;
         }
 
-        return new SourceState(true, $public, $modifiedAt);
+        try {
+            return new \DateTimeImmutable($value, new \DateTimeZone('UTC'));
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     public function computeCurrentChecksum(string $aggregateType, string $aggregateId): ?string
@@ -156,6 +195,14 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             return $term === null
                 ? null
                 : $this->termTransformer->transform($this->termExtractor->extract($term))->getChecksum();
+        }
+
+        if ($aggregateType === 'product_variation') {
+            $raw = $this->loader->loadVariation((int) $aggregateId);
+
+            return $raw === null
+                ? null
+                : $this->variationTransformer->transform($this->variationExtractor->extract($raw))->getChecksum();
         }
 
         if ($aggregateType !== 'product') {

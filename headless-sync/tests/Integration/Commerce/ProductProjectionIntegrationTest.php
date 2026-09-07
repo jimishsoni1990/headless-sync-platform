@@ -13,7 +13,6 @@ use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Queries\ProductQueryProvider;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\Validation\ProductValidator;
-use HSP\Modules\Commerce\WpCommerceLoader;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -453,91 +452,9 @@ final class ProductProjectionIntegrationTest extends TestCase
 }
 
 /** Loader double holding a small in-memory catalog. */
-final class FakeCommerceSource implements WpCommerceLoader
+/** Loader double holding a small in-memory catalog. */
+final class FakeCommerceSource extends \HSP\Tests\Support\InMemoryCommerceLoader
 {
-    /** @var array<int, array<string,mixed>> */
-    public array $products = [];
-
-    public function loadProduct(int $productId): ?array
-    {
-        return $this->products[$productId] ?? null;
-    }
-
-    public function productType(int $productId): ?string
-    {
-        return isset($this->products[$productId])
-            ? (string) $this->products[$productId]['product_type']
-            : null;
-    }
-
-    /** @return list<int> */
-    public function listProductIdsAfter(int $afterId, int $limit): array
-    {
-        $ids = array_values(array_filter(array_keys($this->products), static fn (int $id): bool => $id > $afterId));
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    public function productExists(int $productId): bool
-    {
-        return isset($this->products[$productId]);
-    }
-
-    /** @var array<int, array<string,mixed>> */
-    public array $terms = [];
-
-    /** @return array<string,mixed>|null */
-    public function loadTerm(int $termId): ?array
-    {
-        return $this->terms[$termId] ?? null;
-    }
-
-    /** @return list<int> */
-    public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
-    {
-        $ids = [];
-
-        foreach ($this->terms as $id => $term) {
-            if ($id > $afterId && ($term['taxonomy'] ?? '') === $taxonomy) {
-                $ids[] = $id;
-            }
-        }
-
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    /** @var array<int, array<string,mixed>> */
-    public array $attributes = [];
-
-    /** @return array<string,mixed>|null */
-    public function loadAttribute(int $attributeId): ?array
-    {
-        return $this->attributes[$attributeId] ?? null;
-    }
-
-    /** @return list<int> */
-    public function listAttributeIdsAfter(int $afterId, int $limit): array
-    {
-        $ids = array_values(array_filter(
-            array_keys($this->attributes),
-            static fn (int $id): bool => $id > $afterId,
-        ));
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    /** @return list<string> */
-    public function attributeTaxonomyNames(): array
-    {
-        return array_values(array_map(
-            static fn (array $a): string => (string) $a['slug'],
-            $this->attributes,
-        ));
-    }
 }
 
 /** Counts queries so the no-N+1 assertion measures rather than assumes. */

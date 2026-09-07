@@ -11,7 +11,6 @@ use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
 use HSP\Modules\Commerce\ProductScope;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\Validation\ProductValidator;
-use HSP\Modules\Commerce\WpCommerceLoader;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -176,15 +175,19 @@ final class ProductTypeTransitionTest extends TestCase
     }
 }
 
-/** Loader double: one product, whose type each test controls. */
-final class FakeCommerceLoader implements WpCommerceLoader
+/**
+ * Loader double with ONE product whose type each test controls.
+ *
+ * Overrides only the product half of {@see InMemoryCommerceLoader}: these tests care about which
+ * write path a type transition chooses, so a single mutable slot is clearer than a map keyed by
+ * an id nothing asserts on.
+ */
+final class FakeCommerceLoader extends \HSP\Tests\Support\InMemoryCommerceLoader
 {
     /** @var array<string,mixed>|null */
     public ?array $product = null;
 
-    /** @var list<int> */
-    public array $ids = [];
-
+    /** @return array<string,mixed>|null */
     public function loadProduct(int $productId): ?array
     {
         return $this->product;
@@ -195,70 +198,9 @@ final class FakeCommerceLoader implements WpCommerceLoader
         return $this->product === null ? null : (string) $this->product['product_type'];
     }
 
-    /** @return list<int> */
-    public function listProductIdsAfter(int $afterId, int $limit): array
-    {
-        return array_values(array_filter($this->ids, static fn (int $id): bool => $id > $afterId));
-    }
-
     public function productExists(int $productId): bool
     {
         return $this->product !== null;
-    }
-
-    /** @var array<int, array<string,mixed>> */
-    public array $terms = [];
-
-    /** @return array<string,mixed>|null */
-    public function loadTerm(int $termId): ?array
-    {
-        return $this->terms[$termId] ?? null;
-    }
-
-    /** @return list<int> */
-    public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
-    {
-        $ids = [];
-
-        foreach ($this->terms as $id => $term) {
-            if ($id > $afterId && ($term['taxonomy'] ?? '') === $taxonomy) {
-                $ids[] = $id;
-            }
-        }
-
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    /** @var array<int, array<string,mixed>> */
-    public array $attributes = [];
-
-    /** @return array<string,mixed>|null */
-    public function loadAttribute(int $attributeId): ?array
-    {
-        return $this->attributes[$attributeId] ?? null;
-    }
-
-    /** @return list<int> */
-    public function listAttributeIdsAfter(int $afterId, int $limit): array
-    {
-        $ids = array_values(array_filter(
-            array_keys($this->attributes),
-            static fn (int $id): bool => $id > $afterId,
-        ));
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    /** @return list<string> */
-    public function attributeTaxonomyNames(): array
-    {
-        return array_values(array_map(
-            static fn (array $a): string => (string) $a['slug'],
-            $this->attributes,
-        ));
     }
 }
 

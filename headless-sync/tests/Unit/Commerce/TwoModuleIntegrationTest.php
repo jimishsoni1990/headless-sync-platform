@@ -133,7 +133,7 @@ final class TwoModuleIntegrationTest extends TestCase
 
         $expected = [
             'page', 'post', 'category', 'tag', 'media',
-            'product', 'product_category', 'attribute', 'attribute_term',
+            'product', 'product_category', 'attribute', 'attribute_term', 'product_variation',
         ];
 
         self::assertEqualsCanonicalizing($expected, $emitters->aggregateTypes());

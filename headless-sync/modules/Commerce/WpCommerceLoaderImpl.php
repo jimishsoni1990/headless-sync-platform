@@ -305,6 +305,172 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
         return array_values(array_map('intval', array_filter($ids, 'is_scalar')));
     }
 
+    public function loadVariation(int $variationId): ?array
+    {
+        $variation = $this->product($variationId);
+
+        if ($variation === null || $variation->get_type() !== 'variation') {
+            return null;
+        }
+
+        $parentId = (int) $variation->get_parent_id();
+
+        // A variation whose parent is out of Phase 2 scope is NORMAL SOURCE, not a failure
+        // (AG-13). Reporting it as absent lets the orphan path tombstone anything already
+        // projected, without inventing a product-type-specific repair route.
+        if ($parentId <= 0 || ! ProductScope::isSupportedType((string) $this->productType($parentId))) {
+            return null;
+        }
+
+        $post = function_exists('get_post') ? get_post($variationId) : null;
+
+        // Verified: keys are UNPREFIXED taxonomy names, values are term slugs, and an empty
+        // value means "any" rather than absent. Passed through as-is; the extractor decides
+        // which entries this module owns.
+        $attributes = $this->variationAttributes($variation);
+
+        return [
+            'id'                 => $variationId,
+            'parent_id'          => $parentId,
+            'sku'                => (string) $variation->get_sku(),
+            'name'               => (string) $variation->get_name(),
+            'description'        => (string) $variation->get_description(),
+            'status'             => (string) $variation->get_status(),
+            // Money stays a STRING all the way to normalisation (Requirement C).
+            'price'              => $this->priceString($variation->get_price()),
+            'regular_price'      => $this->priceString($variation->get_regular_price()),
+            'sale_price'         => $this->priceString($variation->get_sale_price()),
+            'featured_media_id'  => (int) $variation->get_image_id(),
+            'menu_order'         => (int) ($post->menu_order ?? 0),
+            'attributes'         => $attributes,
+            // Resolved HERE, in the read boundary, rather than in the transformer: turning a
+            // (taxonomy, slug) pair into a term id is a WordPress read, and the transformer is
+            // pure by contract.
+            'attribute_term_ids' => $this->variationTermIds($attributes),
+            'modified_at'        => $post->post_modified_gmt ?? null,
+        ];
+    }
+
+    /**
+     * The term ids behind a variation's selected values.
+     *
+     * ONE query for the whole variation rather than one per attribute: a store varying by four
+     * attributes would otherwise pay four queries per variation — invisible against a test
+     * fixture, an N+1 across a real reconciliation pass.
+     *
+     * Entries whose value is empty are skipped, because "any" selects no particular term. The
+     * result is therefore deliberately smaller than the attribute map, which stays authoritative
+     * for the delivery contract; these ids exist to drive the join rows.
+     *
+     * @param array<string,string> $attributes
+     * @return list<int>
+     */
+    private function variationTermIds(array $attributes): array
+    {
+        if (! function_exists('get_terms')) {
+            return [];
+        }
+
+        $wanted = array_filter($attributes, static fn (string $slug): bool => $slug !== '');
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $terms = get_terms([
+            'taxonomy'   => array_keys($wanted),
+            'slug'       => array_values(array_unique($wanted)),
+            'hide_empty' => false,
+        ]);
+
+        if (! is_array($terms)) {
+            return [];
+        }
+
+        $ids = [];
+
+        foreach ($terms as $term) {
+            // get_terms() can return ids or names depending on its `fields` argument; the call
+            // above asks for whole terms, and anything else is a signal not to trust the row.
+            if (! $term instanceof \WP_Term) {
+                continue;
+            }
+
+            // Matched on the PAIR, never on the slug alone. A slug is unique only within one
+            // taxonomy, so `pa_colour/blue` and `pa_finish/blue` both come back from the query
+            // above and taking either would attach the wrong term.
+            if (($wanted[(string) $term->taxonomy] ?? null) === (string) $term->slug) {
+                $ids[] = (int) $term->term_id;
+            }
+        }
+
+        sort($ids);
+
+        return $ids;
+    }
+
+    /** @return list<int> */
+    public function listVariationIdsAfter(int $afterId, int $limit): array
+    {
+        global $wpdb;
+
+        if (! isset($wpdb)) {
+            return [];
+        }
+
+        // Keyset paging over the whole table, with NO post_status filter — a draft or private
+        // variation is still a variation whose projection state reconciliation must reason
+        // about. Filtering to 'publish' here is what made the media corpus permanently empty in
+        // P1B-S1 until it was caught.
+        $sql = $wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts}
+             WHERE post_type = %s AND ID > %d
+             ORDER BY ID ASC
+             LIMIT %d",
+            'product_variation',
+            $afterId,
+            $limit,
+        );
+
+        /** @var list<array<string,mixed>>|null $rows */
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+
+        return array_map(static fn (array $r): int => (int) $r['ID'], $rows ?? []);
+    }
+
+    public function variationExists(int $variationId): bool
+    {
+        $variation = $this->product($variationId);
+
+        return $variation !== null && $variation->get_type() === 'variation';
+    }
+
+    /**
+     * The variation's selected attribute values, as WooCommerce reports them.
+     *
+     * @return array<string,string> taxonomy name => term slug ('' meaning "any")
+     */
+    private function variationAttributes(object $variation): array
+    {
+        if (! method_exists($variation, 'get_attributes')) {
+            return [];
+        }
+
+        $out = [];
+
+        foreach ((array) $variation->get_attributes() as $taxonomy => $value) {
+            if (! is_string($taxonomy) || ! is_scalar($value)) {
+                continue;
+            }
+
+            $out[$taxonomy] = (string) $value;
+        }
+
+        ksort($out);
+
+        return $out;
+    }
+
     /** WooCommerce returns '' for "no price set", which must stay distinct from 0. */
     private function priceString(mixed $value): ?string
     {

@@ -9,6 +9,7 @@ use HSP\Core\Contracts\ResourceInterface;
 use HSP\Modules\Commerce\CommerceTaxonomies;
 use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Queries\TermFilterSet;
+use HSP\Modules\Commerce\Queries\VariationFilterSet;
 
 /**
  * Registers the Commerce delivery routes on the `hsp/v1` namespace (DECISION N, Doc 9 §7).
@@ -20,6 +21,7 @@ use HSP\Modules\Commerce\Queries\TermFilterSet;
  *   GET /hsp/v1/product-attributes
  *   GET /hsp/v1/product-attributes/{taxonomy}
  *   GET /hsp/v1/product-attributes/{taxonomy}/terms
+ *   GET /hsp/v1/products/{slug}/variations
  *
  * The category routes are namespaced `product-categories` rather than `categories`, which the
  * Content module already owns for WordPress post categories. Two different taxonomies in two
@@ -50,6 +52,8 @@ final class CommerceRestRegistrar
         private readonly QueryProviderInterface $attributeQueryProvider,
         private readonly ResourceInterface $attributeResource,
         private readonly \Closure $attributeTermQueryFactory,
+        private readonly QueryProviderInterface $variationQueryProvider,
+        private readonly ResourceInterface $variationResource,
     ) {
     }
 
@@ -142,6 +146,51 @@ final class CommerceRestRegistrar
                 'limit'    => ['type' => 'integer', 'sanitize_callback' => 'absint'],
             ],
         ]);
+
+        register_rest_route(self::NAMESPACE, '/products/(?P<slug>[a-z0-9_-]+)/variations', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => $this->handleVariationListing(...),
+            'permission_callback' => '__return_true',
+            'args'                => [
+                'slug'   => [
+                    'required'          => true,
+                    'type'              => 'string',
+                    'sanitize_callback' => 'sanitize_title',
+                ],
+                'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
+                'limit'  => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+            ],
+        ]);
+    }
+
+    /**
+     * The variations of one product.
+     *
+     * Nested under the product deliberately: WooCommerce gives a variation no permalink and no
+     * independent catalogue presence, so there is no top-level resource to expose. The parent is
+     * resolved through the SINGLE-product path rather than the catalog-scoped listing, matching
+     * how the parent itself is addressed — a product hidden from the catalog is still reachable
+     * at its own URL, so its variations must be too (Requirement B).
+     *
+     * @param \WP_REST_Request<array<string,mixed>>|object $request
+     */
+    public function handleVariationListing(object $request): mixed
+    {
+        $product = $this->productQueryProvider->findBySlug(
+            (string) ($this->param($request, 'slug') ?? '')
+        );
+
+        if ($product === null) {
+            return $this->notFound();
+        }
+
+        $page = $this->variationQueryProvider->list(new VariationFilterSet(
+            parentSourceId: (int) ($product['source_product_id'] ?? 0),
+            cursor:         $this->param($request, 'cursor'),
+            limit:          $this->intParam($request, 'limit'),
+        ));
+
+        return $this->respond($this->variationResource->toCollection($page->rows, $page->nextCursor));
     }
 
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */

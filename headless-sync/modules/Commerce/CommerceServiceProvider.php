@@ -19,29 +19,36 @@ use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Modules\Commerce\Adapters\AttributeAdapter;
 use HSP\Modules\Commerce\Adapters\ProductAdapter;
 use HSP\Modules\Commerce\Adapters\TermAdapter;
+use HSP\Modules\Commerce\Adapters\VariationAdapter;
 use HSP\Modules\Commerce\Extractors\AttributeExtractor;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
+use HSP\Modules\Commerce\Extractors\VariationExtractor;
 use HSP\Modules\Commerce\Handlers\AttributeTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\AttributeUpsertHandler;
 use HSP\Modules\Commerce\Handlers\ProductTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
 use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
+use HSP\Modules\Commerce\Handlers\VariationTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\VariationUpsertHandler;
 use HSP\Modules\Commerce\Migrations\CreateCommerceAttributesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceEntityTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceProductsMigration;
+use HSP\Modules\Commerce\Migrations\CreateCommerceProductVariationsMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceSchemaMigration;
 use HSP\Modules\Commerce\Operations\CommerceEndpointProvider;
 use HSP\Modules\Commerce\Queries\AttributeQueryProvider;
 use HSP\Modules\Commerce\Queries\ProductQueryProvider;
 use HSP\Modules\Commerce\Queries\TermQueryProvider;
+use HSP\Modules\Commerce\Queries\VariationQueryProvider;
 use HSP\Modules\Commerce\Reconciliation\WpCommerceReconciliationSource;
 use HSP\Modules\Commerce\Replay\CommerceReplayEmitter;
 use HSP\Modules\Commerce\Resources\AttributeResource;
 use HSP\Modules\Commerce\Resources\ProductResource;
 use HSP\Modules\Commerce\Resources\TermResource;
+use HSP\Modules\Commerce\Resources\VariationResource;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrar;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrarFactory;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriber;
@@ -49,9 +56,11 @@ use HSP\Modules\Commerce\Subscribers\CommerceSubscriberRegistrar;
 use HSP\Modules\Commerce\Transformers\AttributeTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
+use HSP\Modules\Commerce\Transformers\VariationTransformer;
 use HSP\Modules\Commerce\Validation\AttributeValidator;
 use HSP\Modules\Commerce\Validation\ProductValidator;
 use HSP\Modules\Commerce\Validation\TermValidator;
+use HSP\Modules\Commerce\Validation\VariationValidator;
 
 /**
  * Registers the Commerce module's bindings — reached generically, never imported by core.
@@ -149,6 +158,24 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
         $container->singleton(AttributeTombstoneHandler::class, fn (Container $c) =>
             new AttributeTombstoneHandler($c->get(AttributeAdapter::class)));
 
+        $container->singleton(VariationValidator::class, fn () => new VariationValidator());
+        $container->singleton(VariationExtractor::class, fn (Container $c) =>
+            new VariationExtractor($c->get(VariationValidator::class)));
+        $container->singleton(VariationTransformer::class, fn () => new VariationTransformer());
+        $container->singleton(VariationAdapter::class, fn (Container $c) =>
+            new VariationAdapter($c->get(DatabaseConnectionInterface::class)));
+
+        $container->singleton(VariationUpsertHandler::class, fn (Container $c) =>
+            new VariationUpsertHandler(
+                $c->get(WpCommerceLoader::class),
+                $c->get(VariationExtractor::class),
+                $c->get(VariationTransformer::class),
+                $c->get(VariationAdapter::class),
+            ));
+
+        $container->singleton(VariationTombstoneHandler::class, fn (Container $c) =>
+            new VariationTombstoneHandler($c->get(VariationAdapter::class)));
+
         $container->singleton(ProductAdapter::class, fn (Container $c) =>
             new ProductAdapter($c->get(DatabaseConnectionInterface::class)));
 
@@ -171,6 +198,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(TermTombstoneHandler::class),
                 $c->get(AttributeUpsertHandler::class),
                 $c->get(AttributeTombstoneHandler::class),
+                $c->get(VariationUpsertHandler::class),
+                $c->get(VariationTombstoneHandler::class),
             ));
 
         $container->singleton(CommerceSubscriberRegistrar::class, fn (Container $c) =>
@@ -184,6 +213,10 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             new ProductQueryProvider($c->get(DatabaseConnectionInterface::class)));
         $container->singleton(ProductResource::class, fn () => new ProductResource());
         $container->singleton(TermResource::class, fn () => new TermResource());
+
+        $container->singleton(VariationQueryProvider::class, fn (Container $c) =>
+            new VariationQueryProvider($c->get(DatabaseConnectionInterface::class)));
+        $container->singleton(VariationResource::class, fn () => new VariationResource());
 
         $container->singleton(AttributeQueryProvider::class, fn (Container $c) =>
             new AttributeQueryProvider($c->get(DatabaseConnectionInterface::class)));
@@ -214,6 +247,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(AttributeQueryProvider::class),
                 $c->get(AttributeResource::class),
                 $c->get('commerce.attribute_term_query_factory'),
+                $c->get(VariationQueryProvider::class),
+                $c->get(VariationResource::class),
             ));
 
         // --- Repair ----------------------------------------------------------
@@ -232,6 +267,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(TermTransformer::class),
                 $c->get(AttributeExtractor::class),
                 $c->get(AttributeTransformer::class),
+                $c->get(VariationExtractor::class),
+                $c->get(VariationTransformer::class),
             ));
 
         // --- Operations ------------------------------------------------------
@@ -257,6 +294,7 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                         new CreateCommerceTaxonomiesMigration($conn),
                         new CreateCommerceEntityTaxonomiesMigration($conn),
                         new CreateCommerceAttributesMigration($conn),
+                        new CreateCommerceProductVariationsMigration($conn),
                     ];
                 },
             ));
@@ -316,6 +354,13 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             CommerceTaxonomies::ATTRIBUTE_PREFIX,
             'taxonomy_type',
             ProjectionDescriptor::MATCH_PREFIX,
+        ));
+
+        // No discriminator: commerce.product_variations holds exactly one aggregate type.
+        $projections->register(new ProjectionDescriptor(
+            'product_variation',
+            'commerce.product_variations',
+            'source_variation_id',
         ));
 
         /** @var RefreshCoordinator $coordinator */

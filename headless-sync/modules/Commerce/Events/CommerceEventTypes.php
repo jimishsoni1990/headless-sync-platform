@@ -46,6 +46,13 @@ final class CommerceEventTypes
     public const ATTRIBUTE_TERM_UPDATED = 'commerce.attribute_term.updated';
     public const ATTRIBUTE_TERM_DELETED = 'commerce.attribute_term.deleted';
 
+    // Product variations (P2-S5). An independently synchronised aggregate, not a nested part of
+    // its product: a variation has its own post id, its own WooCommerce CRUD hooks, its own
+    // price and its own lifecycle.
+    public const VARIATION_CREATED = 'commerce.product_variation.created';
+    public const VARIATION_UPDATED = 'commerce.product_variation.updated';
+    public const VARIATION_DELETED = 'commerce.product_variation.deleted';
+
     /** @var list<string> */
     public const ALL = [
         self::PRODUCT_CREATED,
@@ -60,5 +67,8 @@ final class CommerceEventTypes
         self::ATTRIBUTE_TERM_CREATED,
         self::ATTRIBUTE_TERM_UPDATED,
         self::ATTRIBUTE_TERM_DELETED,
+        self::VARIATION_CREATED,
+        self::VARIATION_UPDATED,
+        self::VARIATION_DELETED,
     ];
 }

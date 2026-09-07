@@ -536,84 +536,9 @@ final class AttributeIntegrationTest extends TestCase
 }
 
 /** In-memory attribute + term source. Implements only what these handlers reach. */
-final class AttributeSourceStub implements \HSP\Modules\Commerce\WpCommerceLoader
+/** In-memory attribute + term source. */
+final class AttributeSourceStub extends \HSP\Tests\Support\InMemoryCommerceLoader
 {
-    /** @var array<int, array<string,mixed>> */
-    public array $attributes = [];
-
-    /** @var array<int, array<string,mixed>> */
-    public array $terms = [];
-
-    /** @return array<string,mixed>|null */
-    public function loadAttribute(int $attributeId): ?array
-    {
-        return $this->attributes[$attributeId] ?? null;
-    }
-
-    /** @return list<int> */
-    public function listAttributeIdsAfter(int $afterId, int $limit): array
-    {
-        $ids = array_values(array_filter(
-            array_keys($this->attributes),
-            static fn (int $id): bool => $id > $afterId,
-        ));
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    /** @return list<string> */
-    public function attributeTaxonomyNames(): array
-    {
-        return array_values(array_map(
-            static fn (array $a): string => (string) $a['slug'],
-            $this->attributes,
-        ));
-    }
-
-    /** @return array<string,mixed>|null */
-    public function loadTerm(int $termId): ?array
-    {
-        return $this->terms[$termId] ?? null;
-    }
-
-    /** @return list<int> */
-    public function listTermIdsAfter(string $taxonomy, int $afterId, int $limit): array
-    {
-        $ids = [];
-
-        foreach ($this->terms as $id => $term) {
-            if ($id > $afterId && ($term['taxonomy'] ?? '') === $taxonomy) {
-                $ids[] = $id;
-            }
-        }
-
-        sort($ids);
-
-        return array_slice($ids, 0, $limit);
-    }
-
-    /** @return array<string,mixed>|null */
-    public function loadProduct(int $productId): ?array
-    {
-        return null;
-    }
-
-    public function productType(int $productId): ?string
-    {
-        return null;
-    }
-
-    /** @return list<int> */
-    public function listProductIdsAfter(int $afterId, int $limit): array
-    {
-        return [];
-    }
-
-    public function productExists(int $productId): bool
-    {
-        return false;
-    }
 }
 
 /** Event double carrying an explicit aggregate type, so one class serves both aggregates. */
