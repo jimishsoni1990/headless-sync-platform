@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Operations\Services;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Contracts\Operations\ActionResult;
 use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Reconciliation\ReconciliationService;
@@ -50,7 +52,7 @@ final class OperationsActionServiceTest extends TestCase
         // live/public post with no projection row → a detected missed capture, repaired by
         // re-emission (through the SAME ReplayService → recording emitter).
         $source = new ScriptedReconciliationSource('post', ['101']);
-        $reconService  = new ReconciliationService($this->conn, $source, $replayService);
+        $reconService  = new ReconciliationService($this->conn, $source, $replayService, ContentProjections::registry());
         $reconStrategy = new ReconciliationWorkerStrategy($reconService);
 
         $this->auditLines = [];

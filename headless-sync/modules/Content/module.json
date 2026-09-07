@@ -2,6 +2,7 @@
   "name": "content",
   "version": "1.0.0",
   "module_class": "HSP\\Modules\\Content\\ContentModule",
+  "service_provider": "HSP\\Modules\\Content\\ContentServiceProvider",
   "schema_version": "1.0.0",
   "requires": []
 }

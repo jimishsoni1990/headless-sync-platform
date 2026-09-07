@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Onboarding;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Contracts\Onboarding\PreflightCheckInterface;
 use HSP\Core\Contracts\Onboarding\PreflightResult;
@@ -357,6 +359,7 @@ final class OnboardingRestControllerTest extends TestCase
             new FakeReconConnection(),
             new FakeReconciliationSource(),
             new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+            ContentProjections::registry(),
         );
 
         return new OnboardingRestController(
@@ -397,6 +400,7 @@ final class OnboardingRestControllerTest extends TestCase
             new FakeReconConnection(),
             new FakeReconciliationSource(),
             new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+            ContentProjections::registry(),
         );
 
         // Empty WP source → expected_total 0.
@@ -466,6 +470,7 @@ final class OnboardingRestControllerTest extends TestCase
             new FakeReconConnection(),
             new FakeReconciliationSource(),
             new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+            ContentProjections::registry(),
         );
 
         return new BackfillService($gate, $reconciliation);

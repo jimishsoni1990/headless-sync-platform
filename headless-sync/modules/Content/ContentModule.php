@@ -47,12 +47,12 @@ final class ContentModule implements ModuleInterface
 
     public function getServiceProvider(): ServiceProviderInterface
     {
-        // Service provider delivered in a later P1A session.
-        // Returning a no-op provider satisfies the interface contract.
-        return new class implements ServiceProviderInterface {
-            public function register(object $container): void {}
-            public function boot(object $container): void {}
-        };
+        // DECISION AG (AG-1): a real provider, not the anonymous no-op this used to return.
+        // The composition root reaches the SAME class through module.json's `service_provider`
+        // key — it cannot call this method, because a module instance is resolved from the
+        // container and so cannot exist before its own provider has registered. Both paths
+        // name one class, so they cannot drift.
+        return new ContentServiceProvider();
     }
 
     /**

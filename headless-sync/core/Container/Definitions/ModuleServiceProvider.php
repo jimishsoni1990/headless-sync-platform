@@ -42,6 +42,9 @@ final class ModuleServiceProvider extends ServiceProvider
             new ModuleRegistry(
                 $c->get('module.discovery'),
                 $c->get('module.loader'),
+                // Availability decided at composition time by ModuleProviderComposer
+                // (DECISION AG AG-12); absent in contexts that build the container by hand.
+                $c->has('module.available_names') ? $c->get('module.available_names') : null,
             )
         );
 

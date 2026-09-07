@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Operations\Fakes;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Container\Container;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
 use HSP\Core\Observability\StructuredLogger;
@@ -48,6 +50,7 @@ final class WiringTestBindings
                 new ScriptedReaderConnection(),
                 new NoopReconciliationSource(),
                 new ReplayService(new ScriptedReaderConnection(), [new NoopReplayEmitter()]),
+                ContentProjections::registry(),
             );
 
             return new ReconciliationWorkerStrategy($service);

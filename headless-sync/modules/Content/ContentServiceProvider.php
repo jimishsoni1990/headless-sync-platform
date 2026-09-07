@@ -8,8 +8,10 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\EventProviderInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
-use HSP\Core\Contracts\ReplayEmitterInterface;
-use HSP\Core\Contracts\WpReconciliationSourceInterface;
+use HSP\Core\Contracts\ProjectionDescriptor;
+use HSP\Core\Contracts\ProjectionRegistryInterface;
+use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
+use HSP\Core\Contracts\ReplayEmitterRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Contracts\Operations\ConsoleWidget;
@@ -17,7 +19,6 @@ use HSP\Core\Contracts\Operations\WidgetRegistryInterface;
 use HSP\Core\Operations\Admin\AdminPageController;
 use HSP\Core\Operations\Diagnostics\ModuleInspector;
 use HSP\Core\Operations\Services\RefreshCoordinator;
-use HSP\Core\Replay\ReplayService;
 use HSP\Modules\Content\Operations\ContentEndpointProvider;
 use HSP\Modules\Content\Operations\ContentMetricsProvider;
 use HSP\Modules\Content\Operations\ContentModuleInspection;
@@ -233,17 +234,14 @@ final class ContentServiceProvider extends ServiceProvider
         // fifth handle — DECISION L Ruling 0) and delegates each emit to the emitter.
         // -------------------------------------------------------------------------
 
-        $container->singleton(ReplayEmitterInterface::class, fn (Container $c) =>
+        // Bound under the CONCRETE class, not ReplayEmitterInterface: a shared interface key
+        // is last-writer-wins, so a second module binding it would silently delete this one
+        // (DECISION AG AG-2). The emitter reaches core by registering into the core-owned
+        // ReplayEmitterRegistry in boot(). ReplayService itself is constructed by core.
+        $container->singleton(ContentReplayEmitter::class, fn (Container $c) =>
             new ContentReplayEmitter(
                 $c->get(EventProviderInterface::class),
                 $c->get(WpContentLoader::class),
-            )
-        );
-
-        $container->singleton(ReplayService::class, fn (Container $c) =>
-            new ReplayService(
-                $c->get(DatabaseConnectionInterface::class),
-                [$c->get(ReplayEmitterInterface::class)],
             )
         );
 
@@ -269,11 +267,12 @@ final class ContentServiceProvider extends ServiceProvider
         // -------------------------------------------------------------------------
         // Reconciliation (DECISION U) — the Content module owns the WP-side detection
         // source (WP reads + checksum recompute + pending-outbox). ReconciliationService
-        // (core) is bound in WorkerServiceProvider (it needs config page-size); here we
-        // provide only the module-owned source, mirroring the ReplayEmitterInterface split.
+        // (core) is bound in WorkerServiceProvider. Bound under the CONCRETE class for the
+        // same reason as the emitter above: the interface key was a scalar with room for
+        // exactly one module (DECISION AG AG-2). It reaches core via the registry in boot().
         // -------------------------------------------------------------------------
 
-        $container->singleton(WpReconciliationSourceInterface::class, fn (Container $c) =>
+        $container->singleton(WpReconciliationSource::class, fn (Container $c) =>
             new WpReconciliationSource(
                 $c->get(WpContentLoader::class),
                 $c->get(PageExtractor::class),
@@ -405,6 +404,42 @@ final class ContentServiceProvider extends ServiceProvider
     public function boot(object $container): void
     {
         assert($container instanceof Container);
+
+        // ---------------------------------------------------------------------
+        // DECISION AG (AG-2/AG-3) — register this module's replay emitter, its
+        // reconciliation source, and the projection descriptors for the aggregates it
+        // owns, into the CORE-owned registries. Registration is explicit and keyed by
+        // aggregate type; a second module registering the same type throws rather than
+        // silently taking ownership.
+        // ---------------------------------------------------------------------
+
+        /** @var ReplayEmitterRegistryInterface $emitters */
+        $emitters = $container->get(ReplayEmitterRegistryInterface::class);
+        $emitters->register($container->get(ContentReplayEmitter::class));
+
+        /** @var ReconciliationSourceRegistryInterface $sources */
+        $sources = $container->get(ReconciliationSourceRegistryInterface::class);
+        $sources->register($container->get(WpReconciliationSource::class));
+
+        /** @var ProjectionRegistryInterface $projections */
+        $projections = $container->get(ProjectionRegistryInterface::class);
+
+        // Categories and tags SHARE content.taxonomies and are told apart by taxonomy_type
+        // (DECISION AA). The discriminator is not optional decoration: the orphan sweep and
+        // the backfill count both list rows by table with no id to disambiguate them, so
+        // without it a category pass claims every tag row and the backfill inflates the
+        // category total by every tag.
+        foreach (
+            [
+            new ProjectionDescriptor('page',     'content.pages',      'source_post_id'),
+            new ProjectionDescriptor('post',     'content.posts',      'source_post_id'),
+            new ProjectionDescriptor('media',    'content.media',      'source_post_id'),
+            new ProjectionDescriptor('category', 'content.taxonomies', 'source_term_id', 'category', 'taxonomy_type'),
+            new ProjectionDescriptor('tag',      'content.taxonomies', 'source_term_id', 'post_tag', 'taxonomy_type'),
+            ] as $descriptor
+        ) {
+            $projections->register($descriptor);
+        }
 
         /** @var RefreshCoordinator $coordinator */
         $coordinator = $container->get(RefreshCoordinator::class);

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Onboarding;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
 use HSP\Core\Events\EventRegistry;
@@ -232,7 +234,7 @@ final class BackfillIntegrationTest extends TestCase
         );
         $replay  = new ReplayService($conn, [$emitter]);
         $source  = new StoreReconciliationSource($this->wp, $this->mysqli, $this->outbox);
-        $recon   = new ReconciliationService($conn, $source, $replay, 500);
+        $recon   = new ReconciliationService($conn, $source, $replay, ContentProjections::registry(), 500);
 
         return new BackfillService($this->gate(), $recon);
     }

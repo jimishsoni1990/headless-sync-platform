@@ -8,7 +8,12 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\QueueProviderInterface;
 use HSP\Core\Contracts\WorkerInterface;
-use HSP\Core\Contracts\WpReconciliationSourceInterface;
+use HSP\Core\Contracts\ProjectionRegistryInterface;
+use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
+use HSP\Core\Contracts\ReplayEmitterRegistryInterface;
+use HSP\Core\Projection\ProjectionRegistry;
+use HSP\Core\Reconciliation\ReconciliationSourceRegistry;
+use HSP\Core\Replay\ReplayEmitterRegistry;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Delivery\AdapterRegistry;
 use HSP\Core\Events\EventRegistry;
@@ -115,9 +120,32 @@ final class WorkerServiceProvider extends ServiceProvider
             );
         });
 
+        // DECISION AG (AG-2): the three registries are CORE-owned and created here, empty.
+        // Modules append to them in their own provider's boot(). Previously a module both
+        // constructed ReplayService and bound the emitter under a single interface key, so a
+        // second module's binding would have silently replaced the first's — and the
+        // reconciliation source had no collection shape at all.
+        $container->singleton(ReplayEmitterRegistryInterface::class, fn () =>
+            new ReplayEmitterRegistry()
+        );
+        $container->singleton(ReconciliationSourceRegistryInterface::class, fn () =>
+            new ReconciliationSourceRegistry()
+        );
+        $container->singleton(ProjectionRegistryInterface::class, fn () =>
+            new ProjectionRegistry()
+        );
+
+        // DECISION T: ReplayService is core orchestration over the module emitters, so core
+        // constructs it (AG-2 — a module must not construct a core service).
+        $container->singleton(ReplayService::class, fn (Container $c) =>
+            new ReplayService(
+                $c->get(DatabaseConnectionInterface::class),
+                $c->get(ReplayEmitterRegistryInterface::class),
+            )
+        );
+
         // DECISION T: ReplayWorkerStrategy owns entity/date-range replay, delegating to
-        // ReplayService (bound by ContentServiceProvider — it wires the module emitter and
-        // the delivery handle). Resolved lazily, so provider registration order is safe.
+        // ReplayService. Resolved lazily, so provider registration order is safe.
         $container->singleton('worker.strategy.replay', fn (Container $c) =>
             new ReplayWorkerStrategy($c->get(ReplayService::class))
         );
@@ -131,8 +159,9 @@ final class WorkerServiceProvider extends ServiceProvider
         );
 
         // DECISION U: ReconciliationService (core detector/orchestrator) + the strategy
-        // façade. The WP-side detection source (WpReconciliationSourceInterface) is bound by
-        // ContentServiceProvider (module-owned, mirrors ReplayEmitterInterface). Repair is
+        // façade. WP-side detection sources and projection descriptors come from the
+        // core-owned registries that modules populate (DECISION AG AG-2/AG-3) — so a second
+        // module's aggregates are reconciled, and core knows no domain table. Repair is
         // DECISION T re-emission only (ReplayService), never a direct PG write. Page size is
         // config-driven (DECISION U D7). Resolved lazily → provider order is safe.
         $container->singleton(ReconciliationService::class, function (Container $c) {
@@ -142,8 +171,9 @@ final class WorkerServiceProvider extends ServiceProvider
 
             return new ReconciliationService(
                 $c->get(DatabaseConnectionInterface::class),
-                $c->get(WpReconciliationSourceInterface::class),
+                $c->get(ReconciliationSourceRegistryInterface::class),
                 $c->get(ReplayService::class),
+                $c->get(ProjectionRegistryInterface::class),
                 $pageSize > 0 ? $pageSize : 500,
             );
         });

@@ -21,7 +21,8 @@ final class ModuleManifestTest extends TestCase
             'name'           => 'content',
             'version'        => '1.0.0',
             'module_class'   => 'HSP\\Modules\\Content\\ContentModule',
-            'schema_version' => '1.0.0',
+            'service_provider' => 'HSP\Tests\Support\FakeModuleServiceProvider',
+            'schema_version'   => '1.0.0',
             'requires'       => [],
         ];
     }
@@ -88,6 +89,7 @@ final class ModuleManifestTest extends TestCase
             ['version'],
             ['module_class'],
             ['schema_version'],
+            ['service_provider'],
         ];
     }
 

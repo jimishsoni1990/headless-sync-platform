@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Reconciliation;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Core\Workers\Strategies\ReconciliationWorkerStrategy;
@@ -31,7 +33,7 @@ final class ReconciliationWorkerStrategyTest extends TestCase
         $this->source  = new FakeReconciliationSource();
         $this->emitter = new FakeReplayEmitter();
         $replay        = new ReplayService(new FakeDbConnection(), [$this->emitter]);
-        $service       = new ReconciliationService($this->conn, $this->source, $replay, 500);
+        $service       = new ReconciliationService($this->conn, $this->source, $replay, ContentProjections::registry(), 500);
         $this->strategy = new ReconciliationWorkerStrategy($service);
     }
 

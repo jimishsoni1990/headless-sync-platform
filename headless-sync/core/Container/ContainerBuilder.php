@@ -15,7 +15,8 @@ use HSP\Core\Container\Definitions\OperationsServiceProvider;
 use HSP\Core\Container\Definitions\OutboxServiceProvider;
 use HSP\Core\Container\Definitions\QueueServiceProvider;
 use HSP\Core\Container\Definitions\WorkerServiceProvider;
-use HSP\Modules\Content\ContentServiceProvider;
+use HSP\Core\Module\ModuleDiscovery;
+use HSP\Core\Module\ModuleProviderComposer;
 
 /**
  * Builds and wires the DI container.
@@ -23,8 +24,14 @@ use HSP\Modules\Content\ContentServiceProvider;
  * This is the composition root: service providers are registered here,
  * the container is built, and the two-phase lifecycle (register → boot) runs.
  *
- * Adding bindings: add a ServiceProvider under core/Container/Definitions/ and
- * register it here. Module service providers are added by the module registry (P0-S3).
+ * Adding CORE bindings: add a ServiceProvider under core/Container/Definitions/ and
+ * register it below.
+ *
+ * Adding a MODULE: nothing changes here. DECISION AG (AG-1) — core must not import or
+ * hardcode a concrete module class. Each module declares `service_provider` in its
+ * module.json; ModuleProviderComposer discovers those, skips modules whose runtime
+ * requirements are unmet (AG-12), and hands the rest to the same ServiceRegistry as any
+ * core provider. Commerce, and every module after it, adds no line to this file.
  */
 final class ContainerBuilder
 {
@@ -62,7 +69,22 @@ final class ContainerBuilder
         // (DECISION W (a)/(e); DECISION K reuse / L Ruling 0 / E). core/Onboarding/, not
         // core/Operations/ (DECISION V (j) console unaffected).
         $registry->addProvider(new OnboardingServiceProvider($config));
-        $registry->addProvider(new ContentServiceProvider());
+
+        // Module service providers — discovered, never imported (DECISION AG AG-1).
+        // Providers for modules whose requirements are unmet are not added at all, so an
+        // unavailable module contributes no bindings and no boot behaviour (AG-12).
+        $composition = (new ModuleProviderComposer(new ModuleDiscovery($modulesBasePath)))->compose();
+        foreach ($composition->providers as $moduleProvider) {
+            $registry->addProvider($moduleProvider);
+        }
+
+        // The registry must run the lifecycle for AVAILABLE modules only; an unavailable
+        // module has no bindings, so loading it would fail rather than degrade.
+        $available   = $composition->availableModules;
+        $unavailable = $composition->unavailableModules;
+        $container->singleton('module.available_names', static fn (): array => $available);
+        $container->singleton('module.unavailable_names', static fn (): array => $unavailable);
+
         $registry->addProvider(new ModuleServiceProvider($modulesBasePath));
 
         $registry->registerAll($container);

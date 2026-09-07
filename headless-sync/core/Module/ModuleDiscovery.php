@@ -40,8 +40,22 @@ class ModuleDiscovery
         sort($paths);
 
         $manifests = [];
+        $seen      = [];
         foreach ($paths as $path) {
-            $manifests[] = $this->parseManifest($path);
+            $manifest = $this->parseManifest($path);
+
+            // Duplicate module names must fail loudly (DECISION AG AG-1). Two modules
+            // claiming one name would silently collide in every name-keyed structure —
+            // the registry map, the bootstrap-state option, module_versions.
+            if (isset($seen[$manifest->name])) {
+                throw new InvalidManifestException(
+                    "Duplicate module name '{$manifest->name}': declared in both"
+                    . " '{$seen[$manifest->name]}' and '{$path}'."
+                );
+            }
+            $seen[$manifest->name] = $path;
+
+            $manifests[] = $manifest;
         }
 
         return $manifests;

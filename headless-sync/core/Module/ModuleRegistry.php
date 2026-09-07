@@ -27,9 +27,17 @@ final class ModuleRegistry
     /** @var bool Guards against double-registration. */
     private bool $registered = false;
 
+    /**
+     * @param list<string>|null $availableModuleNames Names of modules whose runtime requirements
+     *        are satisfied (DECISION AG AG-12). A discovered module absent from this list has no
+     *        DI bindings — its provider was never composed — so it is skipped entirely rather
+     *        than loaded and degraded. Null means "no availability filtering", the pre-AG
+     *        behaviour, retained for tests that compose a registry directly.
+     */
     public function __construct(
         private readonly ModuleDiscovery $discovery,
         private readonly ModuleLoader $loader,
+        private readonly ?array $availableModuleNames = null,
     ) {}
 
     /**
@@ -48,6 +56,15 @@ final class ModuleRegistry
         $manifests = $this->discovery->discover();
 
         foreach ($manifests as $manifest) {
+            if (
+                $this->availableModuleNames !== null
+                && ! in_array($manifest->name, $this->availableModuleNames, true)
+            ) {
+                // Discovered but unavailable (AG-12): its provider was never composed, so it
+                // has no bindings. Skipping is the correct outcome, not a failure.
+                continue;
+            }
+
             $module = $this->loader->load($manifest);
             $this->modules[$manifest->name] = $module;
         }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Core\Replay;
 
 use HSP\Core\Contracts\ReplayEmitterInterface;
+use HSP\Core\Contracts\ReplayEmitterRegistryInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 
 /**
@@ -35,22 +36,31 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  */
 final class ReplayService
 {
-    /** @var array<string, ReplayEmitterInterface> aggregate_type → emitter */
-    private array $emitterByType = [];
+    /** @var ReplayEmitterRegistryInterface aggregate_type → emitter */
+    private readonly ReplayEmitterRegistryInterface $emitters;
 
     /**
-     * @param DatabaseConnectionInterface  $conn     Existing delivery handle (system.events read).
-     * @param iterable<ReplayEmitterInterface> $emitters One or more module emitters.
+     * @param DatabaseConnectionInterface $conn Existing delivery handle (system.events read).
+     * @param ReplayEmitterRegistryInterface|iterable<ReplayEmitterInterface> $emitters
+     *        The core-owned emitter registry (DECISION AG AG-2). An iterable of emitters is
+     *        still accepted and wrapped, so callers that compose a service by hand — chiefly
+     *        tests — keep working; production composition passes the registry.
      */
     public function __construct(
         private readonly DatabaseConnectionInterface $conn,
-        iterable $emitters,
+        ReplayEmitterRegistryInterface|iterable $emitters,
     ) {
-        foreach ($emitters as $emitter) {
-            foreach ($emitter->getSupportedAggregateTypes() as $type) {
-                $this->emitterByType[$type] = $emitter;
-            }
+        if ($emitters instanceof ReplayEmitterRegistryInterface) {
+            $this->emitters = $emitters;
+
+            return;
         }
+
+        $registry = new ReplayEmitterRegistry();
+        foreach ($emitters as $emitter) {
+            $registry->register($emitter);
+        }
+        $this->emitters = $registry;
     }
 
     /**
@@ -108,10 +118,8 @@ final class ReplayService
         string $correlationId,
         string $causationId,
     ): array {
-        $emitter = $this->emitterByType[$aggregateType]
-            ?? throw new \InvalidArgumentException(
-                "No replay emitter registered for aggregate type '{$aggregateType}'."
-            );
+        // Throws when no emitter owns this type — never a silent skip (DECISION AG AG-2).
+        $emitter = $this->emitters->get($aggregateType);
 
         $event = $emitter->emitForAggregate($aggregateType, $aggregateId, $correlationId, $causationId);
 

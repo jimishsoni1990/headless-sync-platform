@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Operations\OpenApi;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Container\Container;
 use HSP\Core\Container\Definitions\OnboardingServiceProvider;
 use HSP\Core\Contracts\Operations\EndpointAuth;
@@ -370,6 +372,7 @@ final class OpenApiDriftGuardTest extends TestCase
                 new FakeReconConnection(),
                 $c->get(WpReconciliationSourceInterface::class),
                 new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+                ContentProjections::registry(),
             ),
         );
 

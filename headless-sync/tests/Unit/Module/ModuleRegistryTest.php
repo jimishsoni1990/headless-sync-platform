@@ -43,7 +43,8 @@ final class ModuleRegistryTest extends TestCase
             'name'           => $name,
             'version'        => '1.0.0',
             'module_class'   => $class,
-            'schema_version' => '1.0.0',
+            'service_provider' => 'HSP\Tests\Support\FakeModuleServiceProvider',
+            'schema_version'   => '1.0.0',
             'requires'       => [],
         ], "/modules/{$name}/module.json");
     }

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Onboarding\Backfill;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Onboarding\Backfill\BackfillBlockedException;
 use HSP\Core\Onboarding\Backfill\BackfillGate;
 use HSP\Core\Onboarding\Backfill\BackfillReader;
@@ -71,6 +73,7 @@ final class BackfillServiceTest extends TestCase
             $spy,
             $source,
             new ReplayService(new FakeDbConnection(), [$emitter]),
+            ContentProjections::registry(),
         );
 
         $service = new BackfillService($this->readyGate(), $reconciliation);
@@ -92,6 +95,7 @@ final class BackfillServiceTest extends TestCase
             $spy,
             new FakeReconciliationSource(),
             new ReplayService(new FakeDbConnection(), [$emitter]),
+            ContentProjections::registry(),
         );
 
         // Stale heartbeat → gate blocks.

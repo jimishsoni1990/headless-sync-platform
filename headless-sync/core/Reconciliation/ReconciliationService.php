@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Core\Reconciliation;
 
+use HSP\Core\Contracts\ProjectionRegistryInterface;
+use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
 use HSP\Core\Contracts\SourceState;
 use HSP\Core\Contracts\WpReconciliationSourceInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -47,33 +49,46 @@ final class ReconciliationService
     public const MODE_FULL        = 'full';
 
     /**
-     * Projection table + id column per aggregate type, plus the taxonomy discriminator where the
-     * table is SHARED between aggregate types.
+     * Module reconciliation sources, keyed by aggregate type (DECISION AG AG-2).
      *
-     * Categories and tags project into one content.taxonomies table, told apart by taxonomy_type
-     * (DECISION AA). The orphan sweep lists rows BY TABLE, with no id to disambiguate them, so
-     * without the discriminator a 'category' pass claims every tag row as a category candidate.
+     * Was a single scalar WpReconciliationSourceInterface, which gave a second module's
+     * source nowhere to go. Projection metadata — table, source-id column and the
+     * discriminator for a SHARED table — now comes from the module-registered
+     * ProjectionRegistry (AG-3) rather than a hardcoded `content.*` map in core.
      *
-     * THIS MAP IS THE CONSUMING SIDE OF THE AGGREGATE SEAM (FLAG-RECON-COVERAGE-1). reconcile()
-     * silently skips any supported aggregate type missing here, so an omission is invisible at
-     * runtime: it means that type is never reconciled AND — since the onboarding backfill IS
-     * reconcileFull() (DECISION W (b)) — never backfilled either. Guarded by
-     * ReconciliationServiceTest::testProjectionCoversEverySupportedAggregateType().
+     * The discriminator still matters for exactly the reason DECISION AA gave: categories
+     * and tags share content.taxonomies, and the orphan sweep lists rows BY TABLE with no id
+     * to disambiguate them, so without it a 'category' pass claims every tag row.
+     *
+     * An aggregate type a source supports but no projection covers is reported in
+     * ReconciliationResult::$uncovered — never skipped in silence (FLAG-RECON-COVERAGE-1).
      */
-    private const PROJECTION = [
-        'page'     => ['table' => 'content.pages',      'id' => 'source_post_id'],
-        'post'     => ['table' => 'content.posts',      'id' => 'source_post_id'],
-        'category' => ['table' => 'content.taxonomies', 'id' => 'source_term_id', 'type' => 'category'],
-        'tag'      => ['table' => 'content.taxonomies', 'id' => 'source_term_id', 'type' => 'post_tag'],
-        'media'    => ['table' => 'content.media',      'id' => 'source_post_id'],
-    ];
+    private readonly ReconciliationSourceRegistryInterface $sources;
 
+    /**
+     * @param ReconciliationSourceRegistryInterface|WpReconciliationSourceInterface $sources
+     *        The core-owned source registry (DECISION AG AG-2). A single source is still
+     *        accepted and wrapped so hand-composed services — chiefly tests — keep working;
+     *        production composition passes the registry, which is what lets a SECOND module's
+     *        aggregates be reconciled at all.
+     * @param ProjectionRegistryInterface $projections Module-registered projection descriptors
+     *        (AG-3) — core no longer hardcodes `content.*`.
+     */
     public function __construct(
-        private readonly DatabaseConnectionInterface     $conn,
-        private readonly WpReconciliationSourceInterface $source,
-        private readonly ReplayService                   $replay,
-        private readonly int                             $pageSize = 500,
-    ) {}
+        private readonly DatabaseConnectionInterface       $conn,
+        ReconciliationSourceRegistryInterface|WpReconciliationSourceInterface $sources,
+        private readonly ReplayService                     $replay,
+        private readonly ProjectionRegistryInterface       $projections,
+        private readonly int                               $pageSize = 500,
+    ) {
+        if ($sources instanceof ReconciliationSourceRegistryInterface) {
+            $this->sources = $sources;
+        } else {
+            $registry = new ReconciliationSourceRegistry();
+            $registry->register($sources);
+            $this->sources = $registry;
+        }
+    }
 
     /**
      * Run a reconciliation pass.
@@ -95,16 +110,22 @@ final class ReconciliationService
         $scanned    = 0;
         $suppressed = 0;
         $repaired   = [];
+        $uncovered  = [];
 
-        foreach ($this->source->getSupportedAggregateTypes() as $type) {
-            if (! isset(self::PROJECTION[$type])) {
+        foreach ($this->sources->aggregateTypes() as $type) {
+            if (! $this->projections->has($type)) {
+                // A supported aggregate with no registered projection cannot be scanned.
+                // Record it so the pass cannot report success over a platform it only
+                // partially covered (DECISION AG AG-2) — the silent `continue` here is
+                // exactly what hid media and tags until DECISION AC.
+                $uncovered[] = $type;
                 continue;
             }
 
             // WP → PG: missed create / update (and checksum drift in checksum modes).
             $afterId = 0;
             do {
-                $ids = $this->source->listAggregateIds($type, $afterId, $this->pageSize);
+                $ids = $this->sources->get($type)->listAggregateIds($type, $afterId, $this->pageSize);
                 foreach ($ids as $id) {
                     $scanned++;
                     $afterId = max($afterId, (int) $id);
@@ -128,7 +149,7 @@ final class ReconciliationService
                 foreach ($this->findOrphans($type) as $id) {
                     $scanned++;
 
-                    $state = $this->source->getSourceState($type, $id);
+                    $state = $this->sources->get($type)->getSourceState($type, $id);
                     if ($state->exists && $state->public) {
                         continue; // not an orphan (covered by the forward pass)
                     }
@@ -143,7 +164,7 @@ final class ReconciliationService
             }
         }
 
-        return new ReconciliationResult($mode, $scanned, $suppressed, $repaired, $dryRun);
+        return new ReconciliationResult($mode, $scanned, $suppressed, $repaired, $dryRun, $uncovered);
     }
 
     // -------------------------------------------------------------------------
@@ -156,7 +177,7 @@ final class ReconciliationService
      */
     private function classifyForward(string $type, string $id, bool $useChecksum): ?string
     {
-        $state = $this->source->getSourceState($type, $id);
+        $state = $this->sources->get($type)->getSourceState($type, $id);
 
         // A non-public / absent WP entity is handled by the orphan sweep (full mode),
         // never by the forward pass — the forward pass only pushes public state to PG.
@@ -181,7 +202,7 @@ final class ReconciliationService
 
         // Checksum recompute (incremental/full; only staleness signal for categories — D2).
         if ($useChecksum) {
-            $current = $this->source->computeCurrentChecksum($type, $id);
+            $current = $this->sources->get($type)->computeCurrentChecksum($type, $id);
             if ($current !== null && $current !== (string) $row['checksum']) {
                 return 'checksum_drift';
             }
@@ -197,7 +218,7 @@ final class ReconciliationService
      */
     private function isInFlight(string $type, string $id): bool
     {
-        if ($this->source->hasPendingOutbox($type, $id)) {
+        if ($this->sources->get($type)->hasPendingOutbox($type, $id)) {
             return true;
         }
 
@@ -223,13 +244,13 @@ final class ReconciliationService
      */
     private function findOrphans(string $type): array
     {
-        $meta = self::PROJECTION[$type];
+        $meta = $this->projections->get($type);
 
         $rows = $this->conn->query(
-            "SELECT {$meta['id']} AS aggregate_id
-             FROM   {$meta['table']}
+            "SELECT {$meta->sourceIdColumn} AS aggregate_id
+             FROM   {$meta->table}
              WHERE  deleted_at IS NULL{$this->typeScope($type)}
-             ORDER BY {$meta['id']}",
+             ORDER BY {$meta->sourceIdColumn}",
         );
 
         return array_map(static fn (array $r): string => (string) $r['aggregate_id'], $rows);
@@ -240,12 +261,12 @@ final class ReconciliationService
      */
     private function projectionRow(string $type, string $id): ?array
     {
-        $meta = self::PROJECTION[$type];
+        $meta = $this->projections->get($type);
 
         $rows = $this->conn->query(
             "SELECT checksum, updated_at, deleted_at
-             FROM   {$meta['table']}
-             WHERE  {$meta['id']} = $1{$this->typeScope($type)}",
+             FROM   {$meta->table}
+             WHERE  {$meta->sourceIdColumn} = $1{$this->typeScope($type)}",
             [$id],
         );
 
@@ -253,15 +274,24 @@ final class ReconciliationService
     }
 
     /**
-     * The taxonomy_type predicate for aggregate types whose projection table is shared, or ''
+     * The discriminator predicate for aggregate types whose projection table is SHARED, or ''
      * for the tables that are not (DECISION AA query rule: identify BOTH taxonomy type and term
-     * identity). The value is a fixed literal from PROJECTION above — never user input.
+     * identity).
+     *
+     * The column and value come from a ProjectionDescriptor, which validates both as strict
+     * identifiers at registration and accepts them only from trusted module code — never from
+     * request input (DECISION AG AG-3). They are interpolated because an identifier cannot be
+     * bound as a parameter; the value is additionally single-quoted as a literal.
      */
     private function typeScope(string $type): string
     {
-        $taxonomy = self::PROJECTION[$type]['type'] ?? null;
+        $meta = $this->projections->get($type);
 
-        return $taxonomy === null ? '' : " AND taxonomy_type = '{$taxonomy}'";
+        if (! $meta->isDiscriminated()) {
+            return '';
+        }
+
+        return " AND {$meta->discriminatorColumn} = '{$meta->discriminatorValue}'";
     }
 
     // -------------------------------------------------------------------------

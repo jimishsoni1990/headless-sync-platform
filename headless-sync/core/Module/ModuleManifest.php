@@ -10,7 +10,16 @@ use HSP\Core\Module\Exception\InvalidManifestException;
  * Value object representing a parsed module.json manifest.
  *
  * Doc 2 §11: manifests are mandatory. Required fields: name, version,
- * module_class, schema_version. Optional: requires (defaults to []).
+ * module_class, schema_version, service_provider. Optional: requires (defaults to []).
+ *
+ * `service_provider` (DECISION AG AG-1) is what lets core compose a module's DI
+ * bindings WITHOUT importing the module: the composition root reads the class name
+ * from the manifest, instantiates it, and hands it to the ServiceRegistry like any
+ * core provider. It is declared here rather than read from
+ * ModuleInterface::getServiceProvider() because the module INSTANCE is resolved from
+ * the container and therefore cannot exist until its own provider has registered —
+ * the manifest breaks that cycle. `getServiceProvider()` still returns the same real
+ * provider for anything holding a module instance.
  */
 final class ModuleManifest
 {
@@ -22,6 +31,7 @@ final class ModuleManifest
         /** @var string[] */
         public readonly array $requires,
         public readonly string $manifestPath,
+        public readonly string $serviceProvider,
     ) {}
 
     /**
@@ -32,7 +42,7 @@ final class ModuleManifest
      */
     public static function fromArray(array $data, string $path): self
     {
-        $required = ['name', 'version', 'module_class', 'schema_version'];
+        $required = ['name', 'version', 'module_class', 'schema_version', 'service_provider'];
         foreach ($required as $field) {
             if (! isset($data[$field]) || ! is_string($data[$field]) || $data[$field] === '') {
                 throw new InvalidManifestException(
@@ -49,12 +59,13 @@ final class ModuleManifest
         }
 
         return new self(
-            name:          $data['name'],
-            version:       $data['version'],
-            moduleClass:   $data['module_class'],
-            schemaVersion: $data['schema_version'],
-            requires:      array_values(array_filter($requires, 'is_string')),
-            manifestPath:  $path,
+            name:            $data['name'],
+            version:         $data['version'],
+            moduleClass:     $data['module_class'],
+            schemaVersion:   $data['schema_version'],
+            requires:        array_values(array_filter($requires, 'is_string')),
+            manifestPath:    $path,
+            serviceProvider: $data['service_provider'],
         );
     }
 }

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Reconciliation;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Reconciliation\ReconciliationService;
 use HSP\Core\Replay\ReplayService;
 use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
@@ -38,7 +40,7 @@ final class ReconciliationServiceTest extends TestCase
 
     private function service(int $pageSize = 500): ReconciliationService
     {
-        return new ReconciliationService($this->conn, $this->source, $this->replay, $pageSize);
+        return new ReconciliationService($this->conn, $this->source, $this->replay, ContentProjections::registry(), $pageSize);
     }
 
     private function ts(string $iso): \DateTimeImmutable

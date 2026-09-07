@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Cli;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Cli\ReconcileCommand;
 use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Reconciliation\ReconciliationService;
@@ -36,7 +38,7 @@ final class ReconcileCommandTest extends TestCase
         $this->source  = new FakeReconciliationSource();
         $this->emitter = new FakeReplayEmitter();
         $replay        = new ReplayService(new FakeDbConnection(), [$this->emitter]);
-        $service       = new ReconciliationService($this->conn, $this->source, $replay, 500);
+        $service       = new ReconciliationService($this->conn, $this->source, $replay, ContentProjections::registry(), 500);
         $strategy      = new ReconciliationWorkerStrategy($service);
 
         $this->logLines = [];

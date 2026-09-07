@@ -67,7 +67,11 @@ final class TaxonomyQueryRuleTest extends TestCase
             'CategoryQueryProvider.php',   // /categories/{slug} + /tags/{slug}
             'PostQueryProvider.php',       // ?category= / ?tag= filters and the tags array
             'ContentMetricsProvider.php',  // operations console counts
-            'ReconciliationService.php',   // orphan sweep, which lists rows BY TABLE
+            // The orphan sweep still lists rows BY TABLE, but since DECISION AG (AG-3) it
+            // reads the table name from a module-registered ProjectionDescriptor rather than
+            // a hardcoded map, so the literal — and the discriminator that scopes it — now
+            // live where the module declares them. Core no longer names a domain table.
+            'ContentServiceProvider.php',
             'BackfillReader.php',          // onboarding progress counts
         ] as $expected) {
             self::assertContains($expected, $found, "scan missed {$expected}");

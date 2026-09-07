@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Operations\Admin;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Contracts\Operations\ConsoleAction;
 use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Operations\Admin\ConsoleActionController;
@@ -70,6 +72,7 @@ final class ConsoleActionControllerTest extends TestCase
             $conn,
             new ScriptedReconciliationSource('post', ['101']),
             $replayService,
+            ContentProjections::registry(),
         );
         $actions = new OperationsActionService(
             new ReplayWorkerStrategy($replayService),

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Onboarding;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Container\Container;
 use HSP\Core\Container\Definitions\OnboardingServiceProvider;
 use HSP\Core\Contracts\Onboarding\OnboardingStateInterface;
@@ -81,6 +83,7 @@ final class OnboardingWiringTest extends TestCase
                 new FakeReconConnection(),
                 $c->get(WpReconciliationSourceInterface::class),
                 new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+                ContentProjections::registry(),
             ),
         );
 
@@ -225,6 +228,7 @@ final class OnboardingWiringTest extends TestCase
                 new FakeReconConnection(),
                 $c->get(WpReconciliationSourceInterface::class),
                 new ReplayService(new FakeDbConnection(), [new FakeReplayEmitter()]),
+                ContentProjections::registry(),
             ),
         );
         $this->bindSelfRemediationDeps($container);
