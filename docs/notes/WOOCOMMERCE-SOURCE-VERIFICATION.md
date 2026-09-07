@@ -175,3 +175,58 @@ and the unique constraint was explicitly declined.
 **Hierarchy still projects.** `parent_id` is carried so a consumer can reconstruct the tree, and
 because WooCommerce category URLs nest (`/product-category/clothing/men/`). Reconstructing those
 URLs is permalink work and stays under FLAG-COMMPERMA-1; it is not an addressing question.
+
+---
+
+## 8. P2-S4 preflight — global attribute definitions and `pa_*` terms
+
+**Verified:** 2026-09-08, WooCommerce 11.1.0, `includes/wc-attribute-functions.php`.
+
+### Definitions live in a custom table, not in posts or terms
+
+`{$wpdb->prefix}woocommerce_attribute_taxonomies` (`:69`). This is why AG-9 keeps
+`commerce.attributes` as a separate projection: a global attribute definition is not a taxonomy
+term, and it has no `save_post` or `created_term` hook because it is neither a post nor a term.
+
+### Lifecycle hooks
+
+| Hook | Signature | Source |
+|---|---|---|
+| `woocommerce_attribute_added` | `($id, $data)` | `:591` |
+| `woocommerce_attribute_updated` | `($id, $data, $old_slug)` | `:615` |
+| `woocommerce_attribute_deleted` | `($id, $name, $taxonomy)` | `:778` |
+
+### Public accessor shape
+
+`wc_get_attribute($id)` (`:480-486`) returns an object with `id`, `name` (the human label,
+from `attribute_label`), `slug` (the **`pa_`-prefixed taxonomy name**, via
+`wc_attribute_taxonomy_name()`), `type`, `order_by`, and `has_archives`. Reading through this
+accessor rather than the custom table directly is what the protocol requires.
+
+`wc_attribute_taxonomy_name($name)` is `'pa_' . wc_sanitize_taxonomy_name($name)` (`:143`), so
+every global attribute taxonomy is `pa_<slug>`.
+
+### FINDING — `woocommerce_attribute_updated` carries `$old_slug`
+
+WooCommerce passes the PREVIOUS slug because renaming an attribute renames its taxonomy:
+`pa_colour` becomes `pa_color`, and every existing term moves with it. A projection keyed on
+`taxonomy_type` therefore has stale rows after a rename unless the update path accounts for it.
+
+Two consequences for P2-S4:
+
+1. The attribute-definition aggregate must capture the rename, not just the label change.
+2. The `pa_*` TERMS carry the taxonomy name as their discriminator, so a rename changes the
+   discriminator of rows the attribute event does not itself touch. Terms are reconcilable, so
+   a full reconcile repairs them — but the incremental path will not notice, because term ids
+   and term content are unchanged. This is worth stating explicitly rather than discovering
+   later; it is the same shape as the DECISION AE unprojected-ancestor limit: a documented
+   convergence window, not a defect.
+
+### Attribute terms are DYNAMIC taxonomies
+
+Unlike `product_cat`, there is no fixed list: `pa_*` taxonomies come and go with the
+attributes an operator defines. A projection descriptor for attribute terms therefore cannot
+name a single discriminator VALUE the way `product_cat` does — it needs prefix matching, which
+`ProjectionDescriptor` does not currently express. That is an infrastructure gap P2-S4 must
+close in core (AG-3 puts projection read metadata in the descriptor), not something to work
+around in the module.
