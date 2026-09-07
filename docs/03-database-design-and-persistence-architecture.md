@@ -487,6 +487,72 @@ Commerce workloads require:
 
 ---
 
+> ## ⚠ AMENDED BY DECISION AG (v1.39, 2026-09-07) — read before implementing §13–§18
+>
+> **The commerce DDL in §13–§18 below predates the platform column-type canon, DECISION 3, DECISION AA
+> and DECISION AD/AE/AF. It is RETAINED for history and is NOT the shape Phase 2 builds.** Where this
+> banner and the sections below disagree, `docs/ARCHITECTURE_DECISIONS.md` wins by precedence.
+> Superseded text is kept, not deleted.
+>
+> **1. Column-type canon supersedes the types written below (AG-11).** All timestamps are
+> `TIMESTAMPTZ`, never bare `TIMESTAMP`; checksums are the frozen `VARCHAR(64)` sha256 type; identity
+> follows the platform UUID canon. **But semantic columns do NOT clone Content's table shape** — a pure
+> join table needs no checksum for symmetry, a table never independently tombstoned needs no
+> `deleted_at`, and `meta_jsonb` appears only where the delivery contract actually carries extensible
+> metadata. Projections participating in DECISION 3 write suppression persist the appropriate
+> projection checksum; tombstone-capable projections follow DECISION I.
+>
+> **2. §18's mandatory cross-aggregate FOREIGN KEYS are superseded (AG-7).** The FK examples in §18 —
+> `product_variations.product_id → products.id`, `inventory.product_id → products.id`,
+> `attribute_terms.attribute_id → attributes.id` — **must not be created** where parent and child are
+> produced by separate events. Under at-least-once delivery, non-FIFO processing, replay,
+> reconciliation and overlapping cron cycles a child may legitimately arrive before its parent, and an
+> FK would turn valid out-of-order synchronization into a DLQ failure. Use typed identifiers, indexes,
+> reconciliation integrity and query-side joins — the same soft-reference resolution
+> `content.posts.featured_media_id → content.media` already ships (P1B-S2). **Primary keys, uniqueness,
+> check constraints, and structures created and owned atomically inside the SAME adapter transaction
+> are unaffected.**
+>
+> **3. §13's `stock_status` on `commerce.products` is superseded (AG-8).** `commerce.inventory` is the
+> single delivery projection that owns stock facts. Persisting the same mutable stock fact in both
+> tables would give one WordPress fact two projections, two checksums and two independent
+> write-suppress decisions that can disagree, with no rule for which wins. Product list, filter and
+> resource queries **JOIN** inventory at read time; stock is not copied back to avoid a join.
+>
+> **4. §15's Product-only inventory relationship is superseded (AG-14).** Inventory ownership is
+> **aggregate-aware** — an explicit owner identity (meaning equivalent to `owner_type` + `owner_id`) so
+> that a **product or a product variation** can own a row. **Do not split into
+> `commerce.product_inventory` / `commerce.variation_inventory`**, and do not duplicate variation stock
+> onto the product row. A variation that inherits parent-managed stock gets **no** invented duplicate
+> inventory fact. **Read model:** a missing inventory row means *state unavailable*, **never out of
+> stock**, and must never drop a valid product or variation from a listing (LEFT JOIN or equivalent).
+>
+> **5. §16–§17's separate taxonomy tables are superseded where they merely represent terms and
+> relationships (AG-9, extending DECISION AA).** `commerce.categories`, `commerce.attribute_terms` and
+> `commerce.product_categories` are replaced by **one shared `commerce.taxonomies`** discriminated by
+> `taxonomy_type` (`product_cat`, `pa_color`, `pa_size`, …) plus the generic
+> **`commerce.entity_taxonomies`** join — the `content.*` shape. **`commerce.attributes` REMAINS a
+> separate projection**, because WooCommerce **global attribute definitions are not taxonomy terms**:
+> they carry name, slug, type, ordering and archive semantics. Do not create a second
+> `commerce.attribute_terms` table for rows already represented as `pa_*` terms.
+> **`(taxonomy_type, slug)` is not the durable identity of a term and gets no UNIQUE constraint**
+> unless source verification proves it valid for the supported taxonomy semantics — a lookup index
+> only. If `product_cat` leaf slugs can repeat under different parents, addressing follows
+> **DECISION AD/AE/AF**: full ancestor path resolved at read time, **no stored path/URI column**, no
+> second hierarchy architecture.
+>
+> **6. §13's per-product `currency` column is superseded pending store-level Commerce configuration
+> semantics (Requirement C′).** Currency is store-level configuration in the standard single-store
+> WooCommerce model and must not be duplicated onto every product and variation row. Monetary columns
+> stay `NUMERIC` with **no imposed `(precision, scale)`** (Requirement C); exactness is enforced at the
+> application boundary by normalizing to a deterministic exact decimal **string** before checksum
+> construction, so `10`, `10.0` and `10.00` cannot churn the projection. PHP binary floating point is
+> never the canonical representation.
+>
+> **7. Phase 2 projects `simple` and `variable` products only (AG-13).** `grouped`, `external` and
+> custom third-party types are out of scope and are handled as normal out-of-scope source entities —
+> never coerced into `simple`, never partially projected.
+
 # 13. Products
 
 ## commerce.products

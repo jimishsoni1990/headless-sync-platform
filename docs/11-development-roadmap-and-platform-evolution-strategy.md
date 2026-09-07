@@ -1,7 +1,7 @@
 # Development Roadmap & Platform Evolution Strategy
 
 **Project:** Headless Sync Platform (HSP)
-**Version:** 1.2
+**Version:** 1.3
 **Status:** Approved
 **State:** Frozen
 
@@ -17,6 +17,18 @@ states PostgreSQL Search remains supported; the §7 "Search Queries" validation 
 it. The **§17 Search Roadmap ordering is unchanged** — PostgreSQL Search still precedes the
 provider contract and OpenSearch/Typesense; only its phase placement moved. Superseded §7
 entries are retained under a banner, not deleted. Nothing else in this document changes.
+
+
+**Amended by DECISION AG (2026-09-07; applied 2026-09-07).** **§11 Phase 2 — WooCommerce Catalog is
+ratified.** Deliverables and validation areas are unchanged; the amendment supplies the two things
+§11 never defined — **supported product types** (`simple` + `variable` only; grouped/external/custom
+are normal out-of-scope source, with mandatory type-transition and tombstone coverage) and **how a new
+module enters an already-onboarded installation** (DISCOVERED / AVAILABLE / READY, plus module-scoped
+bootstrap re-emission so WooCommerce installed after HSP converges its existing catalog with no
+reactivation and no manual step). The scope boundary is reaffirmed and widened to exclude Cart,
+Checkout, Payments, Shipping, Coupons, `product_tag` and local/custom attributes. Phase 2 expands into
+sessions **P2-S0…P2-S7** in `docs/IMPLEMENTATION_PLAN.md` §5b. Superseded commerce DDL stays under the
+Doc 3 §13–18 banner, not deleted. Nothing else in this document changes.
 
 **Depends On:**
 
@@ -570,6 +582,44 @@ Architectural weaknesses must be resolved first.
 ---
 
 # 11. Phase 2 — WooCommerce Catalog
+
+> ## ⚠ AMENDED BY DECISION AG (v1.39, 2026-09-07) — Phase 2 ratification
+>
+> The deliverables and validation areas below are **unchanged**. DECISION AG adds the two things this
+> section never defined, so that no later session reinterprets them:
+>
+> **1. Supported product types (AG-13).** "Products" and "Product Variations" mean WooCommerce
+> **`simple` and `variable`** products. `grouped`, `external`/affiliate and custom third-party product
+> types are **out of Phase 2 scope**: they are never coerced into `simple`, never partially projected,
+> and are handled deterministically through the platform's existing unsupported-source pattern. An
+> unsupported type is **normal out-of-scope source, not a processing failure** — no repeated retry, no
+> DLQ merely for being unsupported, no blocked reconciliation or bootstrap convergence, and excluded
+> from backfill expected counts. Product-type **transitions** are mandatory coverage: entering scope
+> projects normally, and leaving scope (`simple`/`variable` → unsupported) **tombstones** the
+> previously public projection through DECISION I / T / U rather than leaving it visible forever. A
+> future phase may add the excluded types inside the Commerce module with **no Core change**.
+>
+> **2. How a new module enters an existing installation (AG-12).** This section assumes Phase 2 arrives
+> on a fresh install. It does not, in general: HSP may already be installed and globally onboarded when
+> the Phase 2 update lands and WooCommerce already holds a catalog. Core therefore distinguishes
+> **DISCOVERED / AVAILABLE / READY(ACTIVE)** — a module is never runtime-ready merely because its
+> dependency is present; required module migrations must have applied first, and on failure the module
+> stays inactive while every other module keeps operating. A newly ready module with no completed
+> bootstrap state schedules a **module-scoped `ReconciliationService` re-emission** through the normal
+> pipeline, so **WooCommerce installed after HSP converges its existing catalog with no reactivation,
+> no manual migration and no manual reconcile** (ADR-054 Principle 8). No direct WordPress→PostgreSQL
+> copy, no second repair path, no in-request drain, no reset of global onboarding.
+>
+> **3. Scope boundary reaffirmed.** Orders and Customers remain excluded, and DECISION AG adds: Cart,
+> Checkout, Payments, Shipping workflows, Coupons, `product_tag`, and local/custom (non-global) product
+> attributes. **The WooCommerce cart stays WordPress-owned runtime functionality and is never projected
+> into PostgreSQL.**
+>
+> Phase 2 is expanded into sessions **P2-S0 … P2-S7** in `docs/IMPLEMENTATION_PLAN.md` §5b. The full
+> commerce data model — soft references instead of cross-aggregate FKs, inventory owning stock,
+> the shared `commerce.taxonomies` projection, media ownership and the column canon — is fixed by
+> DECISION AG and reflected in the Doc 3 §13–18 banner.
+
 
 ## Objective
 

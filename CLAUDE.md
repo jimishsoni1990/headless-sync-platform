@@ -205,20 +205,72 @@ UI (including onboarding) is React. See `docs/ARCHITECTURE_DECISIONS.md` DECISIO
   delegator to the migration engine) and `POST hsp/v1/onboarding/spawn-worker` (non-blocking
   `spawn_cron()`; no in-request drain — action, not bypass; each gate still blocks until it
   genuinely passes). See `docs/ARCHITECTURE_DECISIONS.md` DECISIONS W and X.
+- **Phase 2 — multi-module platform + WooCommerce Catalog (DECISION AG):** Phase 2's success test is
+  that **WooCommerce becomes the second independent domain module without special-casing Commerce in
+  Core**. **Core must not import or hardcode a concrete module** — `ModuleInterface::getServiceProvider()`
+  is the real composition seam and adding a module adds **no** line to `core/` (AG-1). Replay
+  emitters, reconciliation sources and **projection descriptors** are **Core-owned registries keyed by
+  aggregate type**, registered by modules, with duplicate registration throwing and **no silent skip**
+  of an uncovered aggregate; **Core — not a module — constructs `ReplayService`/`ReconciliationService`**
+  (AG-2, AG-3). Queue routing resolves `content.*→content`, `commerce.*→commerce`, `system.*→system`
+  through **one** explicit seam, and **`processing.projection_batch_size` stays the TOTAL cycle budget
+  shared fairly across active partitions — never multiplied per domain** (AG-4). Delivery filters use a
+  domain-neutral `QueryFilterInterface` with module-owned typed DTOs; **no untyped array bag, no filter
+  registry** (AG-5). **Module lifecycle is DISCOVERED → AVAILABLE → READY(ACTIVE)**, with data bootstrap
+  tracked separately: availability is **not** readiness, migrations must have applied first, and a newly
+  ready module bootstraps by **module-scoped `ReconciliationService` re-emission** — so **WooCommerce
+  installed after HSP converges its existing catalog with no reactivation, no manual migrate and no
+  manual reconcile** (AG-12; ADR-054 Principle 8). Bootstrap state is a module-keyed **WordPress
+  option** — never a PostgreSQL table, and a sibling module's state must never be erased.
+  **Commerce data model:** **no cross-aggregate foreign keys** between independently projected
+  aggregates — a child may legitimately arrive before its parent and an FK would turn valid
+  out-of-order sync into a DLQ failure, so Doc 3 §18 is superseded and soft references are used
+  (AG-7). **`commerce.inventory` owns stock** — no `stock_status` on the product projection — and
+  inventory is **aggregate-aware** so a product *or* a variation owns a row; **a missing inventory row
+  means state unknown, NEVER out of stock**, and must never drop a valid row from a listing (AG-8,
+  AG-14). Product categories and `pa_*` attribute terms share **one** `commerce.taxonomies` +
+  `commerce.entity_taxonomies` discriminated by `taxonomy_type`, while **`commerce.attributes` stays
+  separate because global attribute definitions are not terms** (AG-9, extending DECISION AA);
+  `(taxonomy_type, slug)` is **not** a term's durable identity and gets **no UNIQUE constraint**
+  without source verification, and ambiguous hierarchies follow **DECISION AD/AE/AF** — full ancestor
+  path at read time, no stored path column, no second hierarchy architecture. **`content.media` stays
+  the single attachment projection**: no duplicate Commerce copy, no `Commerce → Content` PHP import,
+  no hidden `Commerce SQL → content.media` dependency, and **Commerce product sync must still succeed
+  when the media capability is absent** (AG-10). Money is `NUMERIC` with **no imposed precision/scale**,
+  normalized to a deterministic decimal **string** before checksum construction; **currency is
+  store-level, not a per-product column** (Requirements C / C′). Phase 2 supports **`simple` +
+  `variable` products only**; other types are **normal out-of-scope source, not processing failures** —
+  never coerced, never DLQ'd for being unsupported, excluded from expected counts, and **tombstoned via
+  DECISION I/T/U when a supported product leaves scope** (AG-13). See
+  `docs/ARCHITECTURE_DECISIONS.md` DECISION AG.
 
 ---
 
-## MVP Scope (Blog only)
+## MVP Scope (Blog only) — **MVP is COMPLETE; Phase 2 is authorised**
+
+> **Superseded in part by DECISION AG (2026-09-07).** Phase 1A, the Early Operational Baseline, the
+> Architecture Validation Gate (GATE-S1…S4) and Phase 1B are all shipped, so the MVP boundary below is
+> **history, not a live prohibition**. **WooCommerce is now IN SCOPE** as Phase 2 — WooCommerce
+> Catalog (Doc 11 §11, ratified by DECISION AG, expanded into IMPLEMENTATION_PLAN.md §5b rows
+> P2-S1…P2-S7). Everything else in the out-of-scope list below still holds.
 
 In scope: Posts, Pages, Categories + the full platform pipeline (outbox, queue, worker,
 transformer, PostgreSQL projection, REST Delivery API).
 
 Out of scope for MVP (do not introduce):
 
-- WooCommerce, Membership, LMS, Directory, Booking
+- ~~WooCommerce~~ (**now Phase 2 — see DECISION AG**), Membership, LMS, Directory, Booking
 - GraphQL, OpenSearch
 - Redis as a hard requirement (optional only)
 - Multi-site / multi-tenancy
+
+**Phase 2 scope boundary (DECISION AG Part 6).** In: Products, Product Variations, Product
+Categories, Attributes, Attribute Terms, Inventory (`simple` + `variable` product types only —
+AG-13), the required Commerce filtering and Category queries, and the infrastructure changes
+strictly necessary to prove the second module. Out: Orders, Customers, Cart, Checkout, Payments,
+Shipping workflows, Coupons, `product_tag`, and local/custom (non-global) product attributes. **The
+WooCommerce cart stays WordPress-owned runtime functionality and is never projected into
+PostgreSQL.**
 
 ---
 
