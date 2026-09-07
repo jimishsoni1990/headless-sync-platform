@@ -102,8 +102,13 @@ final class PlaygroundRequestExecutor
         $route = $endpoint->route;
 
         if (str_contains($route, '{')) {
-            // Replace the first {placeholder} with the sanitized slug (may be empty → 404 upstream).
-            $route = preg_replace('/\{[^}]+\}/', rawurlencode($slug), $route, 1) ?? $route;
+            // Replace the first {placeholder} with the sanitized value (may be empty → 404
+            // upstream). Encoding is applied PER SEGMENT so a hierarchical path value survives:
+            // rawurlencode() on the whole string would turn `about/team` into `about%2Fteam`,
+            // which matches no route and 404s. Every other placeholder is a single slug with no
+            // `/`, so this is identical to the previous behaviour for them.
+            $encoded = implode('/', array_map('rawurlencode', explode('/', $slug)));
+            $route   = preg_replace('/\{[^}]+\}/', $encoded, $route, 1) ?? $route;
         }
 
         return '/' . trim($endpoint->namespace, '/') . $route;

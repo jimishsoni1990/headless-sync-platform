@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Rest;
 
 use HSP\Core\Contracts\FilterSet;
+use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
 
@@ -36,7 +37,11 @@ final class ContentRestRegistrar
     private const PUBLIC_STATUSES = ['publish'];
 
     public function __construct(
-        private readonly QueryProviderInterface $pageQueryProvider,
+        // Pages are hierarchical, so the page provider must offer BOTH capabilities during the
+        // v1 compatibility period: findByPath() is canonical, findBySlug() is the deprecated
+        // one-segment fallback (DECISION AD). When the fallback is retired the intersection
+        // narrows to HierarchicalQueryProviderInterface alone.
+        private readonly QueryProviderInterface&HierarchicalQueryProviderInterface $pageQueryProvider,
         private readonly QueryProviderInterface $postQueryProvider,
         private readonly QueryProviderInterface $categoryQueryProvider,
         private readonly QueryProviderInterface $mediaQueryProvider,
@@ -59,15 +64,24 @@ final class ContentRestRegistrar
             'args'                => $this->listingArgs(['slug', 'published_after']),
         ]);
 
-        register_rest_route(self::NAMESPACE, '/pages/(?P<slug>[a-z0-9_-]+)', [
+        // Pages are addressed by their FULL ancestor path (DECISION AD): `/pages/about/team`.
+        // The character class is the single-slug one plus `/` — the hierarchy separator is the
+        // ONLY thing widened here; the per-segment character policy is unchanged.
+        //
+        // NOTE the deliberate absence of a sanitize_callback. Every other single-resource route
+        // uses `sanitize_title`, which STRIPS `/` and would silently turn `about/team` into
+        // `aboutteam` — the exact trap this endpoint has to avoid. The path is instead sanitized
+        // segment-by-segment in the handler via sanitizePath(), which applies `sanitize_title` to
+        // each segment and rejects anything malformed. Sanitization still happens at the WordPress
+        // entry point, just one layer in, where it can reject rather than silently mangle.
+        register_rest_route(self::NAMESPACE, '/pages/(?P<path>[a-z0-9_/-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => $this->handlePageSingle(...),
             'permission_callback' => '__return_true',
             'args'                => [
-                'slug' => [
-                    'required'          => true,
-                    'type'              => 'string',
-                    'sanitize_callback' => 'sanitize_title',
+                'path' => [
+                    'required' => true,
+                    'type'     => 'string',
                 ],
             ],
         ]);
@@ -186,10 +200,38 @@ final class ContentRestRegistrar
         );
     }
 
+    /**
+     * Fetch one page by its full ancestor path (DECISION AD).
+     *
+     * Resolution order:
+     *   1. Exact path lookup — the canonical semantic. `/pages/about/team` resolves the page whose
+     *      hierarchy IS about → team, and nothing else.
+     *   2. A MULTI-segment miss is a 404, full stop. Never fall back to a leaf, or
+     *      `/pages/wrong-parent/team` would happily return `/about/team`.
+     *   3. A ONE-segment miss falls back to the DEPRECATED leaf lookup. This is the `hsp/v1`
+     *      compatibility arm and the only reason it exists: before this ruling `/pages/team`
+     *      returned a nested `team` page, and Doc 9 §26 forbids removing supported behaviour
+     *      outright. A top-level exact match always wins first, so the fallback is only ever
+     *      reached where the canonical answer does not exist. Removal is a lifecycle decision.
+     */
     public function handlePageSingle(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        $slug = sanitize_title((string) ($request->get_param('slug') ?? ''));
-        $row  = $this->pageQueryProvider->findBySlug($slug);
+        $path = $this->sanitizePath($request->get_param('path'));
+
+        if ($path === null) {
+            return new \WP_Error(
+                'hsp_invalid_path',
+                __('Invalid page path.', 'headless-sync'),
+                ['status' => 400]
+            );
+        }
+
+        $row = $this->pageQueryProvider->findByPath($path);
+
+        // DEPRECATED (DECISION AD ruling 2) — one-segment compatibility fallback only.
+        if ($row === null && ! str_contains($path, '/')) {
+            $row = $this->pageQueryProvider->findBySlug($path);
+        }
 
         if ($row === null) {
             return new \WP_Error(
@@ -420,6 +462,43 @@ final class ContentRestRegistrar
             );
         }
         return null;
+    }
+
+    /**
+     * Sanitize a hierarchical page path segment by segment (DECISION AD ruling 6).
+     *
+     * `sanitize_title()` is the project's slug sanitizer and it strips `/`, so running a whole
+     * path through it would collapse `about/team` into `aboutteam` and quietly resolve the wrong
+     * page. The separator is therefore handled here and only the SEGMENTS are sanitized, leaving
+     * the per-segment character policy identical to every other slug on the API.
+     *
+     * Leading and trailing separators are trimmed, so `/about/team/` — the shape a WordPress
+     * permalink actually has — is accepted and means the same thing as `about/team`.
+     *
+     * Returns null for a malformed path, which the caller turns into a 400: an empty internal
+     * segment (`about//team`) or a segment that sanitizes away to nothing. Traversal is covered
+     * twice over — the route's character class admits no `.` at all, and `sanitize_title('..')`
+     * is the empty string, which is rejected here.
+     */
+    private function sanitizePath(mixed $raw): ?string
+    {
+        $trimmed = trim((string) ($raw ?? ''), '/');
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $segments = explode('/', $trimmed);
+        $clean    = [];
+
+        foreach ($segments as $segment) {
+            $sanitized = sanitize_title($segment);
+            if ($sanitized === '') {
+                return null;
+            }
+            $clean[] = $sanitized;
+        }
+
+        return implode('/', $clean);
     }
 
     private function sanitizeStatus(mixed $raw): ?string

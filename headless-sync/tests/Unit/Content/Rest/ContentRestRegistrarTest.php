@@ -152,7 +152,7 @@ final class ContentRestRegistrarTest extends TestCase
     public function test_page_single_returns_404_for_missing_slug(): void
     {
         $registrar = $this->makeRegistrar(pageRow: null);
-        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['slug' => 'ghost']));
+        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'ghost']));
 
         self::assertInstanceOf(\WP_Error::class, $result);
         self::assertSame(404, $result->data['status']);
@@ -163,7 +163,7 @@ final class ContentRestRegistrarTest extends TestCase
     {
         // Query provider returns null for soft-deleted (deleted_at IS NULL predicate).
         $registrar = $this->makeRegistrar(pageRow: null);
-        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['slug' => 'dead-page']));
+        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'dead-page']));
 
         self::assertInstanceOf(\WP_Error::class, $result);
         self::assertSame(404, $result->data['status']);
@@ -173,7 +173,7 @@ final class ContentRestRegistrarTest extends TestCase
     {
         // Query provider returns null for non-publish (status='publish' predicate).
         $registrar = $this->makeRegistrar(pageRow: null);
-        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['slug' => 'draft-page']));
+        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'draft-page']));
 
         self::assertInstanceOf(\WP_Error::class, $result);
         self::assertSame(404, $result->data['status']);
@@ -221,10 +221,13 @@ final class ContentRestRegistrarTest extends TestCase
     // Happy paths
     // -------------------------------------------------------------------------
 
-    public function test_page_single_returns_200_for_found_slug(): void
+    public function test_page_single_returns_200_for_a_found_top_level_page(): void
     {
-        $registrar = $this->makeRegistrar(pageRow: $this->samplePageRow());
-        $result    = $registrar->handlePageSingle(new \WP_REST_Request(['slug' => 'about']));
+        $registrar = $this->makeRegistrar(
+            pageRow: $this->samplePageRow(),
+            pagePathRow: $this->samplePageRow(),
+        );
+        $result = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'about']));
 
         self::assertInstanceOf(\WP_REST_Response::class, $result);
         self::assertSame(200, $result->status);
@@ -276,6 +279,129 @@ final class ContentRestRegistrarTest extends TestCase
     }
 
     // =========================================================================
+    // Page path addressing at the REST boundary (DECISION AD)
+    // =========================================================================
+
+    /** The canonical lookup: an exact hierarchical path, resolved without touching the fallback. */
+    public function test_page_single_resolves_a_multi_segment_path_exactly(): void
+    {
+        $provider  = new FakeQueryProvider(
+            listResult: new CursorPage([], null),
+            singleRow:  $this->samplePageRow(),
+            pathRow:    $this->samplePageRow(),
+        );
+        $registrar = $this->makeRegistrarWithProviders(pageProvider: $provider);
+
+        $result = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'about/team']));
+
+        self::assertInstanceOf(\WP_REST_Response::class, $result);
+        self::assertSame(200, $result->status);
+        self::assertSame(['about/team'], $provider->pathCalls);
+        self::assertSame([], $provider->slugCalls, 'an exact path hit must never consult the leaf lookup');
+    }
+
+    /**
+     * The whole point of the ruling: `/pages/wrong-parent/team` must 404 rather than quietly
+     * returning `/about/team`. A multi-segment miss NEVER falls back.
+     */
+    public function test_page_single_never_leaf_falls_back_for_a_multi_segment_path(): void
+    {
+        // singleRow is deliberately non-null: a leaf lookup WOULD find something if it ran.
+        $provider  = new FakeQueryProvider(
+            listResult: new CursorPage([], null),
+            singleRow:  $this->samplePageRow(),
+            pathRow:    null,
+        );
+        $registrar = $this->makeRegistrarWithProviders(pageProvider: $provider);
+
+        $result = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'wrong-parent/team']));
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame(404, $result->data['status']);
+        self::assertSame([], $provider->slugCalls, 'multi-segment miss must not reach the fallback');
+    }
+
+    /** A top-level exact match wins outright — the fallback is never consulted. */
+    public function test_page_single_prefers_the_exact_top_level_page_over_the_fallback(): void
+    {
+        $provider  = new FakeQueryProvider(
+            listResult: new CursorPage([], null),
+            singleRow:  $this->samplePageRow(),
+            pathRow:    $this->samplePageRow(),
+        );
+        $registrar = $this->makeRegistrarWithProviders(pageProvider: $provider);
+
+        $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'team']));
+
+        self::assertSame(['team'], $provider->pathCalls);
+        self::assertSame([], $provider->slugCalls);
+    }
+
+    /**
+     * DEPRECATED v1 compatibility (DECISION AD ruling 2): a ONE-segment request that finds no
+     * top-level page falls back to the deterministic leaf lookup, so a call returning 200 before
+     * path addressing shipped does not become a 404.
+     */
+    public function test_page_single_falls_back_to_the_leaf_lookup_for_a_one_segment_miss(): void
+    {
+        $provider  = new FakeQueryProvider(
+            listResult: new CursorPage([], null),
+            singleRow:  $this->samplePageRow(),
+            pathRow:    null,
+        );
+        $registrar = $this->makeRegistrarWithProviders(pageProvider: $provider);
+
+        $result = $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'team']));
+
+        self::assertInstanceOf(\WP_REST_Response::class, $result);
+        self::assertSame(200, $result->status);
+        self::assertSame(['team'], $provider->pathCalls);
+        self::assertSame(['team'], $provider->slugCalls);
+    }
+
+    /**
+     * Per-segment sanitization (DECISION AD ruling 6): `/` survives the boundary — the single-slug
+     * sanitizer would have collapsed `about/team` into `aboutteam` — while each segment is still
+     * sanitized exactly as every other slug on the API.
+     */
+    public function test_page_path_is_sanitized_per_segment_and_the_separator_survives(): void
+    {
+        $provider  = new FakeQueryProvider(listResult: new CursorPage([], null), singleRow: null, pathRow: null);
+        $registrar = $this->makeRegistrarWithProviders(pageProvider: $provider);
+
+        $registrar->handlePageSingle(new \WP_REST_Request(['path' => '/About/Team-Two/']));
+
+        // Leading and trailing separators trimmed (a WordPress permalink carries them), each
+        // segment slugified, the separator preserved.
+        self::assertSame(['about/team-two'], $provider->pathCalls);
+
+        // A hostile segment is sanitized rather than passed through. The exact output differs
+        // between the test stub and real sanitize_title(), so assert what both guarantee.
+        $registrar->handlePageSingle(new \WP_REST_Request(['path' => 'about/te<script>am']));
+
+        self::assertCount(2, $provider->pathCalls);
+        self::assertStringStartsWith('about/', $provider->pathCalls[1]);
+        self::assertStringNotContainsString('<', $provider->pathCalls[1]);
+    }
+
+    /** A malformed path is rejected at the boundary rather than silently mangled into a lookup. */
+    public function test_page_single_rejects_a_malformed_path_with_400(): void
+    {
+        $provider  = new FakeQueryProvider(listResult: new CursorPage([], null), singleRow: null, pathRow: null);
+        $registrar = $this->makeRegistrarWithProviders(pageProvider: $provider);
+
+        foreach (['about//team', '/', '', '..'] as $malformed) {
+            $result = $registrar->handlePageSingle(new \WP_REST_Request(['path' => $malformed]));
+
+            self::assertInstanceOf(\WP_Error::class, $result, "'{$malformed}' must be rejected");
+            self::assertSame(400, $result->data['status']);
+            self::assertSame('hsp_invalid_path', $result->code);
+        }
+
+        self::assertSame([], $provider->pathCalls, 'a malformed path never reaches the provider');
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
@@ -286,13 +412,14 @@ final class ContentRestRegistrarTest extends TestCase
         ?array $postRow      = ['default'],
         array  $categoryRows = [],
         ?array $categoryRow  = ['default'],
+        ?array $pagePathRow  = null,
     ): ContentRestRegistrar {
         $pageRow     = $pageRow === ['default']     ? $this->samplePageRow()     : $pageRow;
         $postRow     = $postRow === ['default']     ? $this->samplePostRow()     : $postRow;
         $categoryRow = $categoryRow === ['default'] ? $this->sampleCategoryRow() : $categoryRow;
 
         return $this->makeRegistrarWithProviders(
-            pageProvider:     new FakeQueryProvider(listResult: new CursorPage($pageRows, null), singleRow: $pageRow),
+            pageProvider:     new FakeQueryProvider(listResult: new CursorPage($pageRows, null), singleRow: $pageRow, pathRow: $pagePathRow),
             postProvider:     new FakeQueryProvider(listResult: new CursorPage($postRows, null), singleRow: $postRow),
             categoryProvider: new FakeQueryProvider(listResult: new CursorPage($categoryRows, null), singleRow: $categoryRow),
         );

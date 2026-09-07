@@ -6,6 +6,7 @@ namespace HSP\Modules\Content\Queries;
 
 use HSP\Core\Contracts\CursorPage;
 use HSP\Core\Contracts\FilterSet;
+use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 
@@ -28,10 +29,19 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  * DECISION E (v1.6): depends on DatabaseConnectionInterface; no raw pg_* calls.
  * ADR-012: constructor injection only.
  */
-final class PageQueryProvider implements QueryProviderInterface
+final class PageQueryProvider implements QueryProviderInterface, HierarchicalQueryProviderInterface
 {
     private const DEFAULT_LIMIT = 20;
     private const MAX_LIMIT     = 100;
+
+    /**
+     * Defensive bound on the ancestor walk in findByPath() — NOT a limit on legitimate WordPress
+     * hierarchy depth (real page trees are two to five deep; this is an order of magnitude above
+     * anything an editor builds). Its job is to make a CORRUPT hierarchy terminate: a parent cycle
+     * (a → b → a) would otherwise recurse forever, and no cycle can ever reach `parent_id = 0`, so
+     * bounding the depth is what makes the query cycle-safe as well as depth-safe.
+     */
+    private const MAX_ANCESTOR_DEPTH = 50;
 
     /**
      * Featured image resolution (P1B-S2).
@@ -140,19 +150,22 @@ final class PageQueryProvider implements QueryProviderInterface
     }
 
     /**
-     * Resolve a single published page by slug.
+     * Resolve a single published page by bare leaf slug.
      *
-     * MITIGATION, NOT THE FIX — see FLAG-PAGESLUG-1. WordPress enforces page slug uniqueness
-     * WITHIN a parent, not globally, so `/about/team` and `/services/team` are both legal and both
-     * land here as slug='team'. Without an ORDER BY, `LIMIT 1` returned whichever row PostgreSQL
-     * happened to produce — potentially a DIFFERENT page between requests, which is the worst
-     * version of the bug because it cannot be reproduced or reported.
+     * DEPRECATED as page addressing (DECISION AD ruling 2). {@see findByPath()} is the canonical
+     * page lookup; this survives ONLY as the `hsp/v1` compatibility fallback the REST boundary
+     * reaches for when a ONE-segment request finds no top-level page of that name, so a call that
+     * returns 200 today does not become a 404 the day path lookup ships. Removal follows the Doc 9
+     * §26 lifecycle (Supported → Deprecated → Removed) at a formal contract transition, not here.
      *
-     * `ORDER BY p.parent_id, p.id` makes the answer deterministic and picks the least surprising
-     * one: parent_id 0 sorts first, so a top-level page wins over a nested namesake, with the id
-     * as a stable tiebreak beyond that. It does NOT make the endpoint able to address a specific
-     * nested page — that needs the published-contract change under FLAG-PAGESLUG-1 (path-based
-     * lookup or a parent filter), which is awaiting a ruling.
+     * Why it cannot be the permanent model: WordPress enforces page slug uniqueness WITHIN a
+     * parent, not globally, so `/about/team` and `/services/team` are both legal and both land
+     * here as slug='team'. Without an ORDER BY, `LIMIT 1` returned whichever row PostgreSQL
+     * happened to produce — potentially a DIFFERENT page between requests, the worst version of
+     * the bug because it cannot be reproduced or reported. `ORDER BY p.parent_id, p.id` makes the
+     * answer deterministic and picks the least surprising one (parent_id 0 first, so a top-level
+     * page wins over a nested namesake), but deterministic is not the same as addressable: this
+     * method still cannot name a specific nested page. That is what findByPath() is for.
      */
     public function findBySlug(string $slug): ?array
     {
@@ -169,6 +182,87 @@ final class PageQueryProvider implements QueryProviderInterface
             ),
             [$slug]
         );
+        return $rows[0] ?? null;
+    }
+
+    /**
+     * Resolve a page by its FULL ancestor path (DECISION AD) — `about/team`, not `team`.
+     *
+     * ONE query. A recursive CTE walks UP from every live page carrying the requested LEAF slug,
+     * prepending each ancestor's slug, and the outer filter keeps the branch that both reached the
+     * root (`parent_id = 0`) and reconstructed exactly the requested path. Two pages sharing a leaf
+     * slug are therefore independently addressable, and a wrong-parent request matches nothing
+     * rather than falling back to a namesake.
+     *
+     * Index-backed at both ends and free of N+1: the anchor reads `idx_content_pages_slug`, and
+     * each ancestor hop reads `uq_content_pages_source_post_id` — the same unique index the
+     * featured-media join already rides.
+     *
+     * ANCESTOR VISIBILITY (DECISION AD ruling 5): the public-set predicate is applied in the
+     * ANCHOR only, i.e. to the requested page. Ancestors are structural — they contribute a slug
+     * to the path and nothing else — so a published child under an unpublished or soft-deleted
+     * parent stays addressable, and the parent stays unreachable through its own endpoint.
+     *
+     * KNOWN LIMIT (FLAG-PAGEPATH-ANCESTOR-1): an ancestor that has NEVER been published has no
+     * projection row at all — HookWiring emits only when one side of a transition is in the public
+     * set — so its slug is unknown here and the descendant's path cannot be reconstructed. This is
+     * a projection-coverage question (OPEN-10), not a lookup one, and is flagged rather than
+     * worked around.
+     *
+     * NO stored path column, no cache, no new persistence: the path is derived from
+     * `slug` + `parent_id` + `source_post_id` at request time, so a parent rename is reflected as
+     * soon as the parent's own projection row is updated — nothing downstream can go stale.
+     */
+    public function findByPath(string $path): ?array
+    {
+        $segments = explode('/', $path);
+        $leaf     = (string) array_pop($segments);
+
+        if ($leaf === '') {
+            return null;
+        }
+
+        $rows = $this->db->query(
+            sprintf(
+                "WITH RECURSIVE ancestry AS (
+                 SELECT leaf.source_post_id AS leaf_id,
+                        leaf.parent_id      AS next_parent,
+                        leaf.slug::text     AS path,
+                        1                   AS depth
+                 FROM   content.pages leaf
+                 WHERE  leaf.slug = \$1
+                   AND  leaf.deleted_at IS NULL
+                   AND  leaf.status = 'publish'
+
+                 UNION ALL
+
+                 SELECT a.leaf_id,
+                        anc.parent_id,
+                        anc.slug || '/' || a.path,
+                        a.depth + 1
+                 FROM   ancestry a
+                 JOIN   content.pages anc ON anc.source_post_id = a.next_parent
+                 WHERE  a.next_parent <> 0
+                   AND  a.depth < %d
+             )
+             SELECT %s
+             FROM   content.pages p
+             %s
+             WHERE  p.source_post_id = (
+                        SELECT leaf_id
+                        FROM   ancestry
+                        WHERE  next_parent = 0 AND path = \$2
+                        ORDER  BY leaf_id
+                        LIMIT  1
+                    )
+             LIMIT 1",
+                self::MAX_ANCESTOR_DEPTH,
+                self::COLUMNS,
+                self::FEATURED_MEDIA_JOIN,
+            ),
+            [$leaf, $path]
+        );
+
         return $rows[0] ?? null;
     }
 

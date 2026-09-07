@@ -73,9 +73,21 @@ final class ContentEndpointProvider implements EndpointProviderInterface
         );
     }
 
+    /**
+     * Pages are hierarchical, so the published parameter is a PATH, not a slug (DECISION AD).
+     * This is a WIDENING of the same endpoint — the route count is unchanged and there is no
+     * second page-addressing API.
+     */
     private function pageSingle(): EndpointDescriptor
     {
-        return $this->single('/pages/{slug}', 'Fetch a single page by slug.', $this->pageSchema());
+        return $this->single(
+            route: '/pages/{path}',
+            description: 'Fetch a single page by its full hierarchical path (e.g. about/team).',
+            itemSchema: $this->pageSchema(),
+            paramName: 'path',
+            paramDescription: 'Full ancestor path, `/`-separated (e.g. about/team). '
+                . 'A one-segment path addresses a top-level page.',
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -202,15 +214,25 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     }
 
     /** A single-resource-by-slug endpoint: one required path param, the bare resource shape. */
-    private function single(string $route, string $description, SchemaObject $itemSchema): EndpointDescriptor
-    {
+    /**
+     * @param string $paramName        Path parameter name — `slug` for the flat resources,
+     *                                 `path` for hierarchical pages (DECISION AD).
+     * @param string $paramDescription Its published description.
+     */
+    private function single(
+        string $route,
+        string $description,
+        SchemaObject $itemSchema,
+        string $paramName = 'slug',
+        string $paramDescription = 'Resource slug.'
+    ): EndpointDescriptor {
         return new EndpointDescriptor(
             method: 'GET',
             route: $route,
             namespace: self::NAMESPACE,
             displayGroup: 'Content',
             description: $description,
-            parameters: [EndpointParameter::path('slug', 'string', 'Resource slug.')],
+            parameters: [EndpointParameter::path($paramName, 'string', $paramDescription)],
             responseSchema: $itemSchema,
             requestSchema: null,
             auth: EndpointAuth::Public,

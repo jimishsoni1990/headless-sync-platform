@@ -38,7 +38,7 @@ final class ContentEndpointProviderTest extends TestCase
         $routes = array_map(static fn (EndpointDescriptor $e) => $e->route, $endpoints);
         self::assertEqualsCanonicalizing(
             [
-                '/pages', '/pages/{slug}',
+                '/pages', '/pages/{path}',
                 '/posts', '/posts/{slug}',
                 '/categories', '/categories/{slug}',
                 '/media', '/media/{slug}',
@@ -92,7 +92,7 @@ final class ContentEndpointProviderTest extends TestCase
     {
         $byRoute = $this->byRoute();
 
-        foreach (['/pages/{slug}', '/posts/{slug}', '/categories/{slug}'] as $route) {
+        foreach (['/posts/{slug}', '/categories/{slug}', '/media/{slug}', '/tags/{slug}'] as $route) {
             $ep = $byRoute[$route];
             self::assertFalse($ep->paginated);
             self::assertCount(1, $ep->parameters);
@@ -100,6 +100,23 @@ final class ContentEndpointProviderTest extends TestCase
             self::assertSame(EndpointParameter::IN_PATH, $ep->parameters[0]->in);
             self::assertTrue($ep->parameters[0]->required);
         }
+    }
+
+    /**
+     * Pages are hierarchical, so their published path parameter is a PATH, not a slug
+     * (DECISION AD). The flat resources above keep `slug` — the capability is explicit, not
+     * spread across every endpoint.
+     */
+    public function test_the_page_single_endpoint_takes_a_required_hierarchical_path_param(): void
+    {
+        $ep = $this->byRoute()['/pages/{path}'];
+
+        self::assertFalse($ep->paginated);
+        self::assertCount(1, $ep->parameters);
+        self::assertSame('path', $ep->parameters[0]->name);
+        self::assertSame(EndpointParameter::IN_PATH, $ep->parameters[0]->in);
+        self::assertTrue($ep->parameters[0]->required);
+        self::assertStringContainsString('about/team', $ep->parameters[0]->description);
     }
 
     public function test_response_shapes_expose_only_published_fields_not_internal_columns(): void

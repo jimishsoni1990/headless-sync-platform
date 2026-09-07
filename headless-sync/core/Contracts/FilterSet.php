@@ -12,7 +12,7 @@ namespace HSP\Core\Contracts;
  *
  * Modules extend or wrap this as needed. The base class provides the common filters
  * exercised by the six Phase 1A read endpoints:
- *   - slug       (pages/{slug}, posts/{slug}, categories/{slug})
+ *   - slug       (posts/{slug}, categories/{slug}; pages use the hierarchical path route)
  *   - status     (constrained to the public set per OPEN-10; null = default public set)
  *   - category   (posts listing — category slug; resolved projection-side, never WP term_id)
  *   - tag        (posts listing — tag slug; same projection-side resolution — P1B-S3)

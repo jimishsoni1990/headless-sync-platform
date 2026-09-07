@@ -146,7 +146,7 @@ final class ConsoleAjaxControllerTest extends TestCase
         };
 
         // A hostile slug with tags; sanitize_text_field strips them at the boundary.
-        $_POST = ['endpoint' => 'GET /hsp/v1/pages/{slug}', 'slug' => "he<script>llo", 'query' => ''];
+        $_POST = ['endpoint' => 'GET /hsp/v1/pages/{path}', 'slug' => "he<script>llo", 'query' => ''];
 
         try {
             $this->controller->handleExecute();

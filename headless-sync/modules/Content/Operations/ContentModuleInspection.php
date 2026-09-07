@@ -34,7 +34,7 @@ final class ContentModuleInspection implements ModuleInspectionProviderInterface
             eventTypes: array_values(ContentEventTypes::ALL),
             endpoints: [
                 '/pages',
-                '/pages/{slug}',
+                '/pages/{path}',
                 '/posts',
                 '/posts/{slug}',
                 '/categories',
