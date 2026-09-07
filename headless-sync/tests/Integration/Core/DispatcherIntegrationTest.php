@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Core;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
@@ -289,6 +291,7 @@ final class DispatcherIntegrationTest extends TestCase
             new EventDispatcher(
                 $this->openForceNewConn(),
                 $this->makeQueueProvider(),
+                ContentProjections::router(),
             ),
         );
     }

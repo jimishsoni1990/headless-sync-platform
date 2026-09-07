@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Core\Workers\Strategies;
 
 use HSP\Core\Contracts\EventInterface;
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\QueueProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
@@ -50,12 +51,23 @@ use HSP\Core\Workers\WorkerStrategyInterface;
  */
 final class EventWorkerStrategy implements WorkerStrategyInterface
 {
-    private const QUEUE_NAME = 'content';
+    /**
+     * Round-robin cursor over the active partitions (DECISION AG AG-4).
+     *
+     * The projection stage calls execute() repeatedly inside ONE bounded cycle, sharing a
+     * single `processing.projection_batch_size` budget across every active partition — the
+     * budget is NOT multiplied per domain. Starting each call one past the last successful
+     * claim is what stops a saturated domain from monopolising that shared budget and
+     * starving another. Per-cycle instance state only; ADR-054 statelessness is about state
+     * held BETWEEN cron executions, and the engine constructs this per cycle.
+     */
+    private int $partitionCursor = 0;
 
     public function __construct(
         private readonly QueueProviderInterface      $queue,
         private readonly EventRegistry               $eventRegistry,
         private readonly DatabaseConnectionInterface $db,
+        private readonly PartitionRouterInterface    $router,
         private readonly int                         $retryLimit = 10,
         /** Optional runtime counters (DECISION Q); null → no counting. */
         private readonly ?WorkerCounters             $counters = null,
@@ -63,7 +75,7 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
 
     public function execute(WorkerExecutionContext $context): bool
     {
-        $job = $this->queue->claim(self::QUEUE_NAME, $context->workerId);
+        $job = $this->claimFairly($context->workerId);
 
         if ($job === null) {
             return false;
@@ -122,7 +134,39 @@ final class EventWorkerStrategy implements WorkerStrategyInterface
 
     public function getQueueNames(): array
     {
-        return [self::QUEUE_NAME];
+        return $this->router->activePartitions();
+    }
+
+    /**
+     * Claim one job, rotating across the active partitions so no domain starves another.
+     *
+     * Tries every active partition at most once per call, starting at the cursor. The first
+     * partition that yields a job wins and the cursor advances past it, so the next call
+     * begins with a different domain. Returns null only when EVERY partition is empty.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function claimFairly(string $workerId): ?array
+    {
+        $partitions = $this->router->activePartitions();
+        $count      = count($partitions);
+
+        if ($count === 0) {
+            return null;
+        }
+
+        for ($i = 0; $i < $count; $i++) {
+            $index = ($this->partitionCursor + $i) % $count;
+            $job   = $this->queue->claim($partitions[$index], $workerId);
+
+            if ($job !== null) {
+                $this->partitionCursor = ($index + 1) % $count;
+
+                return $job;
+            }
+        }
+
+        return null;
     }
 
     // -------------------------------------------------------------------------

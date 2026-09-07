@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Support;
 
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\ProjectionDescriptor;
 use HSP\Core\Contracts\ProjectionRegistryInterface;
 use HSP\Core\Projection\ProjectionRegistry;
+use HSP\Core\Queue\PartitionRouter;
 
 /**
  * The Content module's projection descriptors, for tests that build a
@@ -34,6 +36,25 @@ final class ContentProjections
     public static function empty(): ProjectionRegistryInterface
     {
         return new ProjectionRegistry();
+    }
+
+    /**
+     * A partition router with the Content domain routed, as ContentServiceProvider::boot()
+     * registers it (DECISION AG AG-4).
+     *
+     * @param array<string,string> $extra Additional domain => partition mappings, for tests
+     *        that exercise fair rotation across more than one domain.
+     */
+    public static function router(array $extra = []): PartitionRouterInterface
+    {
+        $router = new PartitionRouter(['content', 'commerce', 'system']);
+        $router->register('content', 'content');
+
+        foreach ($extra as $domain => $partition) {
+            $router->register($domain, $partition);
+        }
+
+        return $router;
     }
 
     /** @return list<ProjectionDescriptor> */

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Replay;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
 use HSP\Core\Events\EventRegistry;
@@ -320,9 +322,9 @@ final class ReplayEngineIntegrationTest extends TestCase
         $this->relayOnly();
 
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
-        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $guard = 0;
         while ($strategy->execute($this->ctx('01900000-0000-7000-8000-00000000face'))) {
             if (++$guard > 200) {

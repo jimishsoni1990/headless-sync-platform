@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Queries;
 
 use HSP\Core\Contracts\CursorPage;
-use HSP\Core\Contracts\FilterSet;
+use HSP\Core\Contracts\QueryFilterInterface;
 use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -73,8 +73,16 @@ final class PageQueryProvider implements QueryProviderInterface, HierarchicalQue
         private readonly DatabaseConnectionInterface $db,
     ) {}
 
-    public function list(FilterSet $filters): CursorPage
+    public function list(QueryFilterInterface $filters): CursorPage
     {
+        // AG-5: reject a filter from another domain explicitly. Silently reading the
+        // wrong DTO would return plausible-looking nonsense rather than an error.
+        if (! $filters instanceof ContentFilterSet) {
+            throw new \InvalidArgumentException(
+                self::class . ' requires a ' . ContentFilterSet::class . ', got ' . $filters::class . '.'
+            );
+        }
+
         $limit  = min($filters->limit ?? self::DEFAULT_LIMIT, self::MAX_LIMIT);
         $status = $filters->status ?? 'publish';
 

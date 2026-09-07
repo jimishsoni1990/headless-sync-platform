@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Content\Queries;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -38,7 +38,7 @@ final class PageQueryProviderTest extends TestCase
              'meta_jsonb' => '{}'],
         ]);
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertNull($page->nextCursor);
@@ -49,7 +49,7 @@ final class PageQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         $sql = $this->db->sqlAt(0);
         self::assertStringContainsString('deleted_at IS NULL', $sql);
@@ -62,7 +62,7 @@ final class PageQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(status: 'publish'));
+        $this->provider->list(new ContentFilterSet(status: 'publish'));
 
         self::assertContains('publish', $this->db->paramsAt(0));
     }
@@ -76,7 +76,7 @@ final class PageQueryProviderTest extends TestCase
         $this->db->queueResults([]);
         $after = new \DateTimeImmutable('2024-06-01T00:00:00Z');
 
-        $this->provider->list(new FilterSet(publishedAfter: $after));
+        $this->provider->list(new ContentFilterSet(publishedAfter: $after));
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -103,7 +103,7 @@ final class PageQueryProviderTest extends TestCase
         $rows = $this->makeRows(20);
         $this->db->queueResults($rows);
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertNull($page->nextCursor);
     }
@@ -114,7 +114,7 @@ final class PageQueryProviderTest extends TestCase
         $rows = $this->makeRows(21);
         $this->db->queueResults($rows);
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertCount(20, $page->rows, 'Extra row must be stripped from returned rows');
         self::assertNotNull($page->nextCursor);
@@ -126,7 +126,7 @@ final class PageQueryProviderTest extends TestCase
         $rows = $this->makeRows(21);
         $this->db->queueResults($rows);
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         $cursor = $page->nextCursor;
         self::assertNotNull($cursor);
@@ -139,7 +139,7 @@ final class PageQueryProviderTest extends TestCase
         $rows = $this->makeRows(21);
         $this->db->queueResults($rows);
 
-        $page   = $this->provider->list(new FilterSet());
+        $page   = $this->provider->list(new ContentFilterSet());
         $cursor = $page->nextCursor;
         self::assertNotNull($cursor);
 
@@ -163,7 +163,7 @@ final class PageQueryProviderTest extends TestCase
 
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(cursor: $cursor));
+        $this->provider->list(new ContentFilterSet(cursor: $cursor));
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -195,7 +195,7 @@ final class PageQueryProviderTest extends TestCase
         ];
         $this->db->queueResults($rows);
 
-        $page = $this->provider->list(new FilterSet(limit: 2));
+        $page = $this->provider->list(new ContentFilterSet(limit: 2));
 
         self::assertCount(2, $page->rows);
         $cursor = $page->nextCursor;
@@ -215,7 +215,7 @@ final class PageQueryProviderTest extends TestCase
         $this->db->queueResults([]);
 
         // Should not throw; invalid cursor is treated as absent.
-        $page = $this->provider->list(new FilterSet(cursor: 'not-valid-base64!!!'));
+        $page = $this->provider->list(new ContentFilterSet(cursor: 'not-valid-base64!!!'));
 
         self::assertNull($page->nextCursor);
     }
@@ -228,7 +228,7 @@ final class PageQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(limit: 500));
+        $this->provider->list(new ContentFilterSet(limit: 500));
 
         // limit+1 = 101 must be the LIMIT param
         self::assertContains(101, $this->db->paramsAt(0));
@@ -239,7 +239,7 @@ final class PageQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         // default limit+1 = 21
         self::assertContains(21, $this->db->paramsAt(0));

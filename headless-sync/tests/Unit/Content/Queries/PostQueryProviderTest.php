@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Content\Queries;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -33,7 +33,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([$this->makeRow(1)]);
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertNull($page->nextCursor);
@@ -43,7 +43,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -60,7 +60,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(categorySlug: 'news'));
+        $this->provider->list(new ContentFilterSet(categorySlug: 'news'));
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -76,7 +76,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(categorySlug: 'news'));
+        $this->provider->list(new ContentFilterSet(categorySlug: 'news'));
 
         $sql = $this->db->sqlAt(0);
         self::assertStringNotContainsString('term_id', $sql);
@@ -87,7 +87,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         $sql = $this->db->sqlAt(0);
 
@@ -105,7 +105,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults($this->makeRows(21));
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertCount(20, $page->rows);
         self::assertNotNull($page->nextCursor);
@@ -115,7 +115,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults($this->makeRows(5));
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertNull($page->nextCursor);
     }
@@ -127,7 +127,7 @@ final class PostQueryProviderTest extends TestCase
 
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(cursor: $cursor));
+        $this->provider->list(new ContentFilterSet(cursor: $cursor));
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -146,7 +146,7 @@ final class PostQueryProviderTest extends TestCase
         ];
         $this->db->queueResults($rows);
 
-        $page = $this->provider->list(new FilterSet(limit: 2));
+        $page = $this->provider->list(new ContentFilterSet(limit: 2));
 
         self::assertCount(2, $page->rows);
         $cursor = $page->nextCursor;
@@ -168,7 +168,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         // default limit + 1 = 21 passed to LIMIT param
         self::assertContains(21, $this->db->paramsAt(0));
@@ -179,7 +179,7 @@ final class PostQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(limit: 500));
+        $this->provider->list(new ContentFilterSet(limit: 500));
 
         // capped limit + 1 = 101
         self::assertContains(101, $this->db->paramsAt(0));

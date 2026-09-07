@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Content\Adapters\MediaAdapter;
 use HSP\Modules\Content\Events\ContentEventTypes;
@@ -128,7 +128,7 @@ final class MediaProjectionIntegrationTest extends TestCase
         self::assertNotNull($row['deleted_at']);
 
         // Soft-deleted media must disappear from the published contract.
-        self::assertCount(0, (new MediaQueryProvider($this->db))->list(new FilterSet())->rows);
+        self::assertCount(0, (new MediaQueryProvider($this->db))->list(new ContentFilterSet())->rows);
         self::assertNull((new MediaQueryProvider($this->db))->findBySlug('sunset'));
     }
 
@@ -181,7 +181,7 @@ final class MediaProjectionIntegrationTest extends TestCase
         $cursor   = null;
 
         do {
-            $page = $provider->list(new FilterSet(cursor: $cursor, limit: 7));
+            $page = $provider->list(new ContentFilterSet(cursor: $cursor, limit: 7));
             foreach ($page->rows as $row) {
                 $seen[] = $row['slug'];
             }

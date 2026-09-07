@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Gate;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
 use HSP\Core\Events\EventRegistry;
@@ -157,14 +159,14 @@ final class ReliabilityValidationTest extends TestCase
 
         // ---- Stage 2: Dispatch (system.events → system.queue_jobs) ----
         $queue      = new DatabaseQueueProvider($this->db);
-        $dispatcher = new EventDispatcher($this->db, $queue, 100);
+        $dispatcher = new EventDispatcher($this->db, $queue, ContentProjections::router(), 100);
         $batch      = $dispatcher->dispatchBatch();
         self::assertSame(12, $batch->count(), 'dispatcher enqueued all 12 events');
         self::assertSame(12, $this->countRows('system.queue_jobs'), '12 queue jobs created');
 
         // ---- Stage 3 + 4: Worker claims each job → ContentSubscriber → adapter → projection ----
         $registry = $this->makeWiredEventRegistry();
-        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, ContentProjections::router(), retryLimit: 10);
 
         // Drain the queue: one execute() per available job (the WorkerEngine loop, unrolled).
         $processed = 0;
@@ -237,7 +239,7 @@ final class ReliabilityValidationTest extends TestCase
         $relay->tick();
 
         $queue = new DatabaseQueueProvider($this->db, ['retry_limit' => 3]);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
         self::assertSame(1, $this->countRows('system.queue_jobs'));
 
         // Force the job to the retry limit so the next failure is terminal.
@@ -248,7 +250,7 @@ final class ReliabilityValidationTest extends TestCase
         $failing->register(ContentEventTypes::POST_CREATED, function (): void {
             throw new \RuntimeException('projection boom (forced for DLQ proof)');
         });
-        $failStrategy = new EventWorkerStrategy($queue, $failing, $this->db, retryLimit: 3);
+        $failStrategy = new EventWorkerStrategy($queue, $failing, $this->db, ContentProjections::router(), retryLimit: 3);
 
         self::assertTrue($failStrategy->execute($this->ctx('01900000-0000-7000-8000-0000000dead1')));
 
@@ -274,7 +276,7 @@ final class ReliabilityValidationTest extends TestCase
 
         // ---- Drive the replayed job to its correct final projection state with a HEALTHY worker ----
         $healthy = $this->makeWiredEventRegistry();
-        $ok      = new EventWorkerStrategy($queue, $healthy, $this->db, retryLimit: 3);
+        $ok      = new EventWorkerStrategy($queue, $healthy, $this->db, ContentProjections::router(), retryLimit: 3);
         self::assertTrue($ok->execute($this->ctx('01900000-0000-7000-8000-0000000dead2')), 'replayed job claimed + processed');
 
         // Correct final state: the projection now exists and matches the source.
@@ -449,9 +451,9 @@ final class ReliabilityValidationTest extends TestCase
         ))->tick();
 
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
-        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $guard = 0;
         while ($strategy->execute($this->ctx('01900000-0000-7000-8000-00000000beef'))) {
             if (++$guard > 100) {
@@ -492,9 +494,9 @@ final class ReliabilityValidationTest extends TestCase
         ))->tick();
 
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
-        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $guard = 0;
         while ($strategy->execute($this->ctx('01900000-0000-7000-8000-00000000face'))) {
             if (++$guard > 200) {

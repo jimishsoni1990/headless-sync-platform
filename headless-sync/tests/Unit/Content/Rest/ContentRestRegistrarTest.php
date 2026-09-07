@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Tests\Unit\Content\Rest;
 
 use HSP\Core\Contracts\CursorPage;
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Rest\ContentRestRegistrar;
 use PHPUnit\Framework\TestCase;
 
@@ -272,7 +272,7 @@ final class ContentRestRegistrarTest extends TestCase
 
         // Must succeed (not 400) — a valid structurally-correct cursor.
         self::assertInstanceOf(\WP_REST_Response::class, $result);
-        // The FilterSet passed to the provider must carry the raw cursor token, not the
+        // The ContentFilterSet passed to the provider must carry the raw cursor token, not the
         // decoded payload — the provider receives an opaque cursor and decodes internally.
         self::assertNotNull($fakePageProvider->lastFilters);
         self::assertSame($cursor, $fakePageProvider->lastFilters->cursor);

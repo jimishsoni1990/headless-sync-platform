@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Content\Queries;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Queries\MediaQueryProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -35,13 +35,13 @@ final class MediaQueryProviderTest extends TestCase
     public function test_a_listing_issues_one_query_regardless_of_page_size(): void
     {
         $this->db->queueResults([$this->row('a')]);
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
         $singleRowPageQueries = count($this->db->queries);
 
         $this->db       = new FakeQueryConnection();
         $this->provider = new MediaQueryProvider($this->db);
         $this->db->queueResults(array_map($this->row(...), range(1, 20)));
-        $this->provider->list(new FilterSet(limit: 20));
+        $this->provider->list(new ContentFilterSet(limit: 20));
         $fullPageQueries = count($this->db->queries);
 
         self::assertSame(1, $singleRowPageQueries);
@@ -56,7 +56,7 @@ final class MediaQueryProviderTest extends TestCase
     public function test_listing_sql_matches_the_partial_index_predicate_and_sort(): void
     {
         $this->db->queueResults([]);
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         $sql = $this->db->sqlAt(0);
 
@@ -71,7 +71,7 @@ final class MediaQueryProviderTest extends TestCase
     public function test_no_status_predicate_is_applied(): void
     {
         $this->db->queueResults([]);
-        $this->provider->list(new FilterSet(status: 'publish'));
+        $this->provider->list(new ContentFilterSet(status: 'publish'));
 
         // Attachments carry post_status='inherit'; filtering on the {publish} public set
         // would return an empty listing for every site.
@@ -86,7 +86,7 @@ final class MediaQueryProviderTest extends TestCase
     {
         $this->db->queueResults([$this->row(1)]);
 
-        $page = $this->provider->list(new FilterSet(limit: 5));
+        $page = $this->provider->list(new ContentFilterSet(limit: 5));
 
         self::assertNull($page->nextCursor);
         self::assertTrue($page->isLastPage());
@@ -98,7 +98,7 @@ final class MediaQueryProviderTest extends TestCase
         // The provider fetches limit+1 to detect a further page.
         $this->db->queueResults(array_map($this->row(...), range(1, 3)));
 
-        $page = $this->provider->list(new FilterSet(limit: 2));
+        $page = $this->provider->list(new ContentFilterSet(limit: 2));
 
         self::assertCount(2, $page->rows, 'the probe row is trimmed');
         self::assertNotNull($page->nextCursor);
@@ -107,13 +107,13 @@ final class MediaQueryProviderTest extends TestCase
     public function test_cursor_round_trips_through_the_seek_predicate_as_bound_params(): void
     {
         $this->db->queueResults(array_map($this->row(...), range(1, 3)));
-        $cursor = $this->provider->list(new FilterSet(limit: 2))->nextCursor;
+        $cursor = $this->provider->list(new ContentFilterSet(limit: 2))->nextCursor;
         self::assertNotNull($cursor);
 
         $this->db       = new FakeQueryConnection();
         $this->provider = new MediaQueryProvider($this->db);
         $this->db->queueResults([]);
-        $this->provider->list(new FilterSet(cursor: $cursor, limit: 2));
+        $this->provider->list(new ContentFilterSet(cursor: $cursor, limit: 2));
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -128,7 +128,7 @@ final class MediaQueryProviderTest extends TestCase
     public function test_a_garbage_cursor_is_ignored_rather_than_injected(): void
     {
         $this->db->queueResults([]);
-        $this->provider->list(new FilterSet(cursor: 'not-base64!!'));
+        $this->provider->list(new ContentFilterSet(cursor: 'not-base64!!'));
 
         self::assertStringNotContainsString('not-base64', $this->db->sqlAt(0));
     }

@@ -7,6 +7,7 @@ namespace HSP\Core\Container\Definitions;
 use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
@@ -90,6 +91,7 @@ final class DispatcherServiceProvider extends ServiceProvider
                 new EventDispatcher(
                     $c->get('dispatcher.connection.pgsql'),
                     $c->get(DatabaseQueueProvider::class),
+                    $c->get(PartitionRouterInterface::class),
                     $batchSize > 0 ? $batchSize : 100,
                 ),
             );

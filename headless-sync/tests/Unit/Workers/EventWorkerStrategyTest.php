@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Workers;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Workers\Strategies\EventWorkerStrategy;
 use HSP\Core\Workers\WorkerExecutionContext;
@@ -50,6 +52,7 @@ final class EventWorkerStrategyTest extends TestCase
             $this->queue,
             $this->registry,
             $this->db,
+            ContentProjections::router(),
             retryLimit: 10,
         );
 

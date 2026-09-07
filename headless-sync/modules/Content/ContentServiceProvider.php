@@ -8,6 +8,7 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\EventProviderInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\ProjectionDescriptor;
 use HSP\Core\Contracts\ProjectionRegistryInterface;
 use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
@@ -420,6 +421,12 @@ final class ContentServiceProvider extends ServiceProvider
         /** @var ReconciliationSourceRegistryInterface $sources */
         $sources = $container->get(ReconciliationSourceRegistryInterface::class);
         $sources->register($container->get(WpReconciliationSource::class));
+
+        // Domain → partition routing (AG-4). The module declares where its own events go;
+        // core does not know that `content.*` exists.
+        /** @var PartitionRouterInterface $router */
+        $router = $container->get(PartitionRouterInterface::class);
+        $router->register('content', 'content');
 
         /** @var ProjectionRegistryInterface $projections */
         $projections = $container->get(ProjectionRegistryInterface::class);

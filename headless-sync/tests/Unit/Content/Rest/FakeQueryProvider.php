@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Tests\Unit\Content\Rest;
 
 use HSP\Core\Contracts\CursorPage;
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 
@@ -19,7 +19,7 @@ use HSP\Core\Contracts\QueryProviderInterface;
  */
 final class FakeQueryProvider implements QueryProviderInterface, HierarchicalQueryProviderInterface
 {
-    public ?FilterSet $lastFilters = null;
+    public ?ContentFilterSet $lastFilters = null;
 
     /** @var list<string> every path passed to findByPath(), in order. */
     public array $pathCalls = [];
@@ -33,7 +33,7 @@ final class FakeQueryProvider implements QueryProviderInterface, HierarchicalQue
         private readonly ?array     $pathRow = null,
     ) {}
 
-    public function list(FilterSet $filters): CursorPage
+    public function list(\HSP\Core\Contracts\QueryFilterInterface $filters): CursorPage
     {
         $this->lastFilters = $filters;
         return $this->listResult;

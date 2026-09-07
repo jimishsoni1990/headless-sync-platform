@@ -30,7 +30,7 @@ interface QueryProviderInterface
      *
      * @return CursorPage  Raw projection rows + opaque next-cursor (null = last page)
      */
-    public function list(FilterSet $filters): CursorPage;
+    public function list(QueryFilterInterface $filters): CursorPage;
 
     /**
      * Return a single projection row by slug, or null if absent or soft-deleted.

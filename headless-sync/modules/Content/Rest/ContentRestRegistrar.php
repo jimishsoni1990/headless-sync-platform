@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Modules\Content\Rest;
 
-use HSP\Core\Contracts\FilterSet;
 use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
 
@@ -188,7 +188,7 @@ final class ContentRestRegistrar
             return $cursorError;
         }
 
-        $filters = new FilterSet(
+        $filters = new ContentFilterSet(
             status:         $this->sanitizeStatus($request->get_param('status')),
             publishedAfter: $this->sanitizeDate($request->get_param('published_after')),
             cursor:         $this->sanitizeCursor($request->get_param('cursor')),
@@ -251,7 +251,7 @@ final class ContentRestRegistrar
             return $cursorError;
         }
 
-        $filters = new FilterSet(
+        $filters = new ContentFilterSet(
             status:         $this->sanitizeStatus($request->get_param('status')),
             categorySlug:   $this->sanitizeCategorySlug($request->get_param('category')),
             tagSlug:        $this->sanitizeCategorySlug($request->get_param('tag')),
@@ -289,7 +289,7 @@ final class ContentRestRegistrar
             return $cursorError;
         }
 
-        $filters = new FilterSet(
+        $filters = new ContentFilterSet(
             cursor: $this->sanitizeCursor($request->get_param('cursor')),
             limit:  $this->sanitizeLimit($request->get_param('per_page')),
         );
@@ -325,7 +325,7 @@ final class ContentRestRegistrar
 
         // No status filter: attachments carry post_status='inherit', outside the {publish}
         // public set (OPEN-10), so membership is "not soft-deleted" — as for categories.
-        $filters = new FilterSet(
+        $filters = new ContentFilterSet(
             publishedAfter: $this->sanitizeDate($request->get_param('published_after')),
             cursor:         $this->sanitizeCursor($request->get_param('cursor')),
             limit:          $this->sanitizeLimit($request->get_param('per_page')),
@@ -360,7 +360,7 @@ final class ContentRestRegistrar
             return $cursorError;
         }
 
-        $filters = new FilterSet(
+        $filters = new ContentFilterSet(
             cursor: $this->sanitizeCursor($request->get_param('cursor')),
             limit:  $this->sanitizeLimit($request->get_param('per_page')),
         );

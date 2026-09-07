@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\PostResource;
@@ -129,7 +129,7 @@ final class FeaturedImageIntegrationTest extends TestCase
         $this->seedPost(2, 'without-image', featuredMediaId: 0);
         $this->seedPost(3, 'dangling', featuredMediaId: 999);
 
-        $page = (new PostQueryProvider($this->db))->list(new FilterSet(limit: 10));
+        $page = (new PostQueryProvider($this->db))->list(new ContentFilterSet(limit: 10));
         $body = (new PostResource())->toCollection($page->rows, $page->nextCursor);
 
         self::assertCount(3, $body['data'], 'every post is listed regardless of image state');

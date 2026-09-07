@@ -8,7 +8,9 @@ use HSP\Bootstrap\CredentialResolver;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Cli\DlqCommand;
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\QueueProviderInterface;
+use HSP\Core\Queue\PartitionRouter;
 use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Queue\DeadLetterRepository;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueConnection;
@@ -41,6 +43,17 @@ final class QueueServiceProvider extends ServiceProvider
     public function register(object $container): void
     {
         assert($container instanceof Container);
+
+        // Domain → partition routing (DECISION AG AG-4). Core-owned and created empty;
+        // each module registers its own domain in its provider's boot(). Constructed with
+        // the configured partition whitelist so routing a domain to a partition the queue
+        // provider would reject fails at boot rather than deep inside a cron cycle.
+        $container->singleton(PartitionRouterInterface::class, function (): PartitionRouter {
+            /** @var list<string> $partitions */
+            $partitions = $this->config['queue']['partitions'] ?? ['content', 'commerce', 'system'];
+
+            return new PartitionRouter($partitions);
+        });
 
         $container->singleton('queue.connection.pgsql', function () {
             // Lazy connection: the CONNECTOR closure is handed down to

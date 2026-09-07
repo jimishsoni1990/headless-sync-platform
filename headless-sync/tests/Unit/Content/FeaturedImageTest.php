@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Extractors\PageExtractor;
 use HSP\Modules\Content\Extractors\PostExtractor;
 use HSP\Modules\Content\Extractors\ProtectedMeta;
@@ -123,11 +123,11 @@ final class FeaturedImageTest extends TestCase
     {
         $oneRow = new FakeQueryConnection();
         $oneRow->queueResults([$this->row(1)]);
-        (new PostQueryProvider($oneRow))->list(new FilterSet(limit: 20));
+        (new PostQueryProvider($oneRow))->list(new ContentFilterSet(limit: 20));
 
         $fullPage = new FakeQueryConnection();
         $fullPage->queueResults(array_map($this->row(...), range(1, 20)));
-        (new PostQueryProvider($fullPage))->list(new FilterSet(limit: 20));
+        (new PostQueryProvider($fullPage))->list(new ContentFilterSet(limit: 20));
 
         self::assertCount(1, $oneRow->queries);
         self::assertCount(
@@ -142,7 +142,7 @@ final class FeaturedImageTest extends TestCase
     {
         $db = new FakeQueryConnection();
         $db->queueResults([]);
-        (new PostQueryProvider($db))->list(new FilterSet());
+        (new PostQueryProvider($db))->list(new ContentFilterSet());
 
         $sql = $db->sqlAt(0);
 

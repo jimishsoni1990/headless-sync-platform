@@ -7,7 +7,7 @@ namespace HSP\Tests\Integration\Gate;
 use HSP\Core\Contracts\CanonicalModelInterface;
 use HSP\Core\Contracts\CursorPage;
 use HSP\Core\Contracts\EventInterface;
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
 use HSP\Core\Database\PostgresDatabaseConnection;
@@ -219,7 +219,7 @@ final class ExtensibilityValidationTest extends TestCase
         self::assertInstanceOf(ResourceInterface::class, $resource, 'the new resource rides the EXISTING core contract');
 
         // Listing endpoint behaviour: contract-shaped envelope from projection rows.
-        $page       = $query->list(new FilterSet());
+        $page       = $query->list(new ContentFilterSet());
         $collection = $resource->toCollection($page->rows, $page->nextCursor);
 
         self::assertArrayHasKey('data', $collection, 'collection envelope has data (ResourceInterface contract)');
@@ -561,7 +561,7 @@ final class AuthorQueryProvider implements QueryProviderInterface
         private readonly PostgresDatabaseConnection $db,
     ) {}
 
-    public function list(FilterSet $filters): CursorPage
+    public function list(\HSP\Core\Contracts\QueryFilterInterface $filters): CursorPage
     {
         $limit = min($filters->limit ?? 20, 100);
         $rows  = $this->db->query(

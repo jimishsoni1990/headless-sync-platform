@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Workers;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Container\Container;
 use HSP\Core\Container\Definitions\WorkerServiceProvider;
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\QueueProviderInterface;
 use HSP\Core\Contracts\WorkerInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -57,8 +60,11 @@ final class WorkerServiceProviderWiringTest extends TestCase
         $container->singleton(QueueProviderInterface::class, fn () => new DatabaseQueueProvider($db));
         // Heartbeat publisher rides the worker-runtime handle (DECISION L Ruling 0).
         $container->singleton('queue.connection.pgsql', fn () => $db);
+        // Normally bound by QueueServiceProvider; the projection stage resolves it to know
+        // which partitions to drain (DECISION AG AG-4).
+        $container->singleton(PartitionRouterInterface::class, fn () => ContentProjections::router());
         $container->singleton('dispatcher.strategy', fn (Container $c) => new DispatcherWorkerStrategy(
-            new EventDispatcher($db, $c->get(DatabaseQueueProvider::class), 100),
+            new EventDispatcher($db, $c->get(DatabaseQueueProvider::class), ContentProjections::router(), 100),
         ));
 
         // Register the real WorkerServiceProvider — it binds the rest (event/maintenance

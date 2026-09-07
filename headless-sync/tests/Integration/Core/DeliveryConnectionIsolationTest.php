@@ -463,7 +463,7 @@ final class DeliveryConnectionIsolationTest extends TestCase
             $deliveryConn = new PostgresDatabaseConnection($deliveryRaw);
             $queryProvider = new PageQueryProvider($deliveryConn);
 
-            $filterSet = new \HSP\Core\Contracts\FilterSet(
+            $filterSet = new \HSP\Modules\Content\Queries\ContentFilterSet(
                 status: 'publish',
                 limit: 10,
             );

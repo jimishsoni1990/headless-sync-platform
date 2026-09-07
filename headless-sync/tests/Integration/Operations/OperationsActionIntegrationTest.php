@@ -258,9 +258,9 @@ final class OperationsActionIntegrationTest extends TestCase
         ))->tick();
 
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
-        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $guard = 0;
         while ($strategy->execute($this->ctx('01900000-0000-7000-8000-0000000fac54'))) {
             if (++$guard > 200) {

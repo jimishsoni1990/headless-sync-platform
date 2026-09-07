@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Core\Events\Dispatcher;
 
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
 
@@ -19,10 +20,12 @@ use HSP\Core\Queue\Providers\Database\DatabaseQueueProvider;
  *   UNIQUE(event_id) on system.queue_jobs (migration 0011) blocks re-dispatch permanently
  *   for completed events (rows retained; status=UPDATE not DELETE).
  *
- * Queue name resolution (Phase 1A):
- *   Hardcoded to 'content' — all Phase 1A events are content-domain events.
- *   Multi-queue routing is not in any frozen doc or the P1A-S6d authority; it is deferred
- *   to a future ADR when a second domain is introduced (DECISION L v1.12).
+ * Queue name resolution (DECISION AG AG-4):
+ *   Resolved per event from its DOMAIN — the first segment of the OPEN-1 event name, which
+ *   EventRegistry already validates — through the core-owned PartitionRouter. DECISION L
+ *   (v1.12) hardcoded 'content' here and deferred routing "to a future ADR when a second
+ *   domain is introduced"; AG-4 is that ruling. An event whose domain has no registered
+ *   partition raises rather than being parked in another domain's queue.
  *
  * Connection constraints (DECISION E v1.6 / DECISION K v1.11):
  *   - system.events read: DatabaseConnectionInterface (delivery FORCE_NEW handle)
@@ -38,6 +41,7 @@ final class EventDispatcher
     public function __construct(
         private readonly DatabaseConnectionInterface $conn,
         private readonly DatabaseQueueProvider       $queueProvider,
+        private readonly PartitionRouterInterface    $router,
         private readonly int                         $batchSize = self::DEFAULT_BATCH_SIZE,
     ) {}
 
@@ -56,7 +60,7 @@ final class EventDispatcher
 
         try {
             $rows = $this->conn->query(
-                "SELECT e.id
+                "SELECT e.id, e.event_type
                  FROM   system.events e
                  WHERE  NOT EXISTS (
                             SELECT 1
@@ -75,7 +79,10 @@ final class EventDispatcher
             }
 
             foreach ($rows as $row) {
-                $this->queueProvider->enqueueIdempotent((string) $row['id'], 'content');
+                $this->queueProvider->enqueueIdempotent(
+                    (string) $row['id'],
+                    $this->router->partitionForEventType((string) $row['event_type']),
+                );
             }
 
             $this->conn->commit();

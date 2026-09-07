@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Queries;
 
 use HSP\Core\Contracts\CursorPage;
-use HSP\Core\Contracts\FilterSet;
+use HSP\Core\Contracts\QueryFilterInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
 
@@ -25,7 +25,7 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  *
  * Membership: attachments carry post_status='inherit', so the {publish} public set
  * (OPEN-10) does not apply — a media row is public while it is not soft-deleted, the
- * same rule categories use. The FilterSet status filter is therefore not applied here.
+ * same rule categories use. The ContentFilterSet status filter is therefore not applied here.
  *
  * DECISION E (v1.6): depends on DatabaseConnectionInterface; no raw pg_* calls.
  * ADR-012: constructor injection only.
@@ -44,8 +44,16 @@ final class MediaQueryProvider implements QueryProviderInterface
     }
 
     /** @return CursorPage<array<string,mixed>> */
-    public function list(FilterSet $filters): CursorPage
+    public function list(QueryFilterInterface $filters): CursorPage
     {
+        // AG-5: reject a filter from another domain explicitly. Silently reading the
+        // wrong DTO would return plausible-looking nonsense rather than an error.
+        if (! $filters instanceof ContentFilterSet) {
+            throw new \InvalidArgumentException(
+                self::class . ' requires a ' . ContentFilterSet::class . ', got ' . $filters::class . '.'
+            );
+        }
+
         $limit = min($filters->limit ?? self::DEFAULT_LIMIT, self::MAX_LIMIT);
 
         $cursorPublishedAt = null;

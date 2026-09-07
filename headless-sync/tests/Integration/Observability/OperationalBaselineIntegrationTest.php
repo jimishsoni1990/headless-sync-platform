@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Observability;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Contracts\EventInterface;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\EventRegistry;
@@ -77,7 +79,7 @@ final class OperationalBaselineIntegrationTest extends TestCase
             throw new \RuntimeException('handler boom');
         });
 
-        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, retryLimit: 3);
+        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, ContentProjections::router(), retryLimit: 3);
 
         $ctx = $this->ctx('01900000-0000-7000-8000-0000000000f1');
         self::assertTrue($strategy->execute($ctx), 'a job was claimed and processed');
@@ -174,7 +176,7 @@ final class OperationalBaselineIntegrationTest extends TestCase
             $invoked = true;
         });
 
-        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, retryLimit: 5);
+        $strategy = new EventWorkerStrategy($queue, $registry, $this->db, ContentProjections::router(), retryLimit: 5);
         self::assertTrue($strategy->execute($this->ctx('01900000-0000-7000-8000-0000000000f3')));
 
         self::assertFalse($invoked, 'stale event: handler not invoked → zero projection writes');
@@ -327,7 +329,7 @@ final class OperationalBaselineIntegrationTest extends TestCase
         $dispatch    = new \HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy(
             new \HSP\Core\Events\Dispatcher\EventDispatcher($this->db, $queue, 100),
         );
-        $projection  = new EventWorkerStrategy($queue, $registry, $this->db, retryLimit: 5, counters: $counters);
+        $projection  = new EventWorkerStrategy($queue, $registry, $this->db, ContentProjections::router(), retryLimit: 5, counters: $counters);
         $maintenance = new MaintenanceWorkerStrategy($queue, ['partitions' => ['content']]);
 
         $engine = new WorkerEngine(

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Content\Queries;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -33,7 +33,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults([$this->makeRow('alpha')]);
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertNull($page->nextCursor);
@@ -43,7 +43,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         $sql = $this->db->sqlAt(0);
         self::assertStringContainsString('deleted_at IS NULL', $sql);
@@ -57,7 +57,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         $sql = $this->db->sqlAt(0);
         self::assertStringContainsString('ORDER BY name ASC, id ASC', $sql);
@@ -71,7 +71,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults($this->makeRows(51));
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertCount(50, $page->rows);
         self::assertNotNull($page->nextCursor);
@@ -81,7 +81,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults($this->makeRows(3));
 
-        $page = $this->provider->list(new FilterSet());
+        $page = $this->provider->list(new ContentFilterSet());
 
         self::assertNull($page->nextCursor);
     }
@@ -90,7 +90,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults($this->makeRows(51));
 
-        $page   = $this->provider->list(new FilterSet());
+        $page   = $this->provider->list(new ContentFilterSet());
         $cursor = $page->nextCursor;
         self::assertNotNull($cursor);
 
@@ -117,7 +117,7 @@ final class CategoryQueryProviderTest extends TestCase
         ];
         $this->db->queueResults($rows);
 
-        $page = $this->provider->list(new FilterSet(limit: 2));
+        $page = $this->provider->list(new ContentFilterSet(limit: 2));
 
         self::assertCount(2, $page->rows);
         $cursor = $page->nextCursor;
@@ -139,7 +139,7 @@ final class CategoryQueryProviderTest extends TestCase
 
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(cursor: $cursor));
+        $this->provider->list(new ContentFilterSet(cursor: $cursor));
 
         $sql    = $this->db->sqlAt(0);
         $params = $this->db->paramsAt(0);
@@ -154,7 +154,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $page = $this->provider->list(new FilterSet(cursor: '!!!invalid!!!'));
+        $page = $this->provider->list(new ContentFilterSet(cursor: '!!!invalid!!!'));
 
         self::assertNull($page->nextCursor);
     }
@@ -205,7 +205,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet(limit: 999));
+        $this->provider->list(new ContentFilterSet(limit: 999));
 
         // limit+1 = 201 must be the LIMIT param
         self::assertContains(201, $this->db->paramsAt(0));
@@ -215,7 +215,7 @@ final class CategoryQueryProviderTest extends TestCase
     {
         $this->db->queueResults([]);
 
-        $this->provider->list(new FilterSet());
+        $this->provider->list(new ContentFilterSet());
 
         // default limit+1 = 51
         self::assertContains(51, $this->db->paramsAt(0));

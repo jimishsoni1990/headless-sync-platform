@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Workers;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\DispatcherWorkerStrategy;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
@@ -521,7 +523,7 @@ final class ProcessingCycleIntegrationTest extends TestCase
             100,
         );
         $dispatch = new DispatcherWorkerStrategy(
-            new EventDispatcher($db, new DatabaseQueueProvider($db), 100),
+            new EventDispatcher($db, new DatabaseQueueProvider($db), ContentProjections::router(), 100),
         );
         $projection = $this->makeEventStrategy($db);
         $queue      = new DatabaseQueueProvider($db);
@@ -546,6 +548,7 @@ final class ProcessingCycleIntegrationTest extends TestCase
             new DatabaseQueueProvider($db),
             $this->makeWiredEventRegistry($db),
             $db,
+            ContentProjections::router(),
             retryLimit: 10,
         );
     }

@@ -8,6 +8,7 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\QueueProviderInterface;
 use HSP\Core\Contracts\WorkerInterface;
+use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\ProjectionRegistryInterface;
 use HSP\Core\Contracts\ReconciliationSourceRegistryInterface;
 use HSP\Core\Contracts\ReplayEmitterRegistryInterface;
@@ -115,6 +116,7 @@ final class WorkerServiceProvider extends ServiceProvider
                 $c->get(QueueProviderInterface::class),
                 $c->get(EventRegistry::class),
                 $c->get(DatabaseConnectionInterface::class),
+                $c->get(PartitionRouterInterface::class),
                 retryLimit: 10,
                 counters:   $c->get(WorkerCounters::class),
             );

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Content;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Queue\Providers\Database\DatabaseQueueConnection;
@@ -260,7 +262,7 @@ final class ResolveStageGuardIntegrationTest extends TestCase
             'backoff_cap_seconds'        => 3600,
         ]);
 
-        return new EventWorkerStrategy($provider, $registry, $deliveryConn);
+        return new EventWorkerStrategy($provider, $registry, $deliveryConn, ContentProjections::router());
     }
 
     // =========================================================================

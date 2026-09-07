@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
@@ -73,7 +73,7 @@ final class TagsIntegrationTest extends TestCase
         $this->seedTerm(2, 'php', 'PHP', 'post_tag');
         $this->seedTerm(3, 'news', 'News', 'post_tag');
 
-        $rows = (new CategoryQueryProvider($this->db))->list(new FilterSet(limit: 50))->rows;
+        $rows = (new CategoryQueryProvider($this->db))->list(new ContentFilterSet(limit: 50))->rows;
 
         self::assertCount(1, $rows);
         self::assertSame('guides', $rows[0]['slug']);
@@ -84,7 +84,7 @@ final class TagsIntegrationTest extends TestCase
         $this->seedTerm(1, 'guides', 'Guides', 'category');
         $this->seedTerm(2, 'php', 'PHP', 'post_tag');
 
-        $rows = (new CategoryQueryProvider($this->db, 'post_tag'))->list(new FilterSet(limit: 50))->rows;
+        $rows = (new CategoryQueryProvider($this->db, 'post_tag'))->list(new ContentFilterSet(limit: 50))->rows;
 
         self::assertCount(1, $rows);
         self::assertSame('php', $rows[0]['slug']);
@@ -101,7 +101,7 @@ final class TagsIntegrationTest extends TestCase
         $this->seedPost(2, 'untagged');
         $this->linkTerm($a, $tagId);
 
-        $page = (new PostQueryProvider($this->db))->list(new FilterSet(tagSlug: 'php', limit: 50));
+        $page = (new PostQueryProvider($this->db))->list(new ContentFilterSet(tagSlug: 'php', limit: 50));
 
         self::assertCount(1, $page->rows);
         self::assertSame('tagged', $page->rows[0]['slug']);
@@ -115,7 +115,7 @@ final class TagsIntegrationTest extends TestCase
         $post  = $this->seedPost(1, 'tagged-only');
         $this->linkTerm($post, $tagId);
 
-        $page = (new PostQueryProvider($this->db))->list(new FilterSet(categorySlug: 'news', limit: 50));
+        $page = (new PostQueryProvider($this->db))->list(new ContentFilterSet(categorySlug: 'news', limit: 50));
 
         self::assertCount(0, $page->rows, '?category=news must not match a post carrying the TAG news');
     }
@@ -128,7 +128,7 @@ final class TagsIntegrationTest extends TestCase
 
         $this->db->execute("UPDATE content.taxonomies SET deleted_at = now() WHERE id = \$1", [$tagId]);
 
-        $page = (new PostQueryProvider($this->db))->list(new FilterSet(tagSlug: 'php', limit: 50));
+        $page = (new PostQueryProvider($this->db))->list(new ContentFilterSet(tagSlug: 'php', limit: 50));
         self::assertCount(0, $page->rows, 'a deleted tag matches nothing');
 
         $row = (new PostQueryProvider($this->db))->findBySlug('tagged');
@@ -197,7 +197,7 @@ final class TagsIntegrationTest extends TestCase
         self::assertSame(['php'], array_column($body['tags'], 'slug'), 'the pipeline linked the tag');
 
         // …and the post is still reachable through the tag filter.
-        $page = (new PostQueryProvider($this->db))->list(new FilterSet(tagSlug: 'php', limit: 10));
+        $page = (new PostQueryProvider($this->db))->list(new ContentFilterSet(tagSlug: 'php', limit: 10));
         self::assertCount(1, $page->rows);
 
         // BOTH taxonomies survive the full-replace rewrite — a category-only rewrite would have
@@ -226,7 +226,7 @@ final class TagsIntegrationTest extends TestCase
         $cursor   = null;
 
         do {
-            $page = $provider->list(new FilterSet(tagSlug: 'php', cursor: $cursor, limit: 7));
+            $page = $provider->list(new ContentFilterSet(tagSlug: 'php', cursor: $cursor, limit: 7));
             foreach ($page->rows as $row) {
                 $seen[] = $row['slug'];
             }

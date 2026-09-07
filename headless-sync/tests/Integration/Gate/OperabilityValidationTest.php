@@ -234,7 +234,7 @@ final class OperabilityValidationTest extends TestCase
         $this->relayTick();
 
         $queue = new DatabaseQueueProvider($this->db, ['retry_limit' => 3]);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
         self::assertSame(1, $this->countRows('system.queue_jobs'), 'one queue job dispatched');
 
         // Force the job to the retry limit so the next failure is terminal (dead-letters now).
@@ -246,7 +246,7 @@ final class OperabilityValidationTest extends TestCase
         $failing->register(ContentEventTypes::POST_CREATED, function (): void {
             throw new \RuntimeException('diagnostic boom (forced for OPEN-3 proof)');
         });
-        $strategy = new EventWorkerStrategy($queue, $failing, $this->db, retryLimit: 3);
+        $strategy = new EventWorkerStrategy($queue, $failing, $this->db, ContentProjections::router(), retryLimit: 3);
 
         self::assertTrue($strategy->execute($this->ctx('01900000-0000-7000-8000-000000d1a6ff')), 'the exhausted job was claimed and terminally failed');
 
@@ -431,9 +431,9 @@ final class OperabilityValidationTest extends TestCase
         $this->relayTick();
 
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
-        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $this->makeWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $guard = 0;
         while ($strategy->execute($this->ctx('01900000-0000-7000-8000-00000000face'))) {
             if (++$guard > 200) {

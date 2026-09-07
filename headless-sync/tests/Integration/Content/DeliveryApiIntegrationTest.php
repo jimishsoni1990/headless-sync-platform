@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Queries\PageQueryProvider;
@@ -68,7 +68,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPage(postId: 2, slug: 'contact', status: 'publish');
 
         $provider = new PageQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(2, $page->rows);
         $slugs = array_column($page->rows, 'slug');
@@ -82,7 +82,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPage(postId: 11, slug: 'deleted', status: 'publish', deletedAt: '2024-01-01 00:00:00+00');
 
         $provider = new PageQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertSame('live', $page->rows[0]['slug']);
@@ -94,7 +94,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPage(postId: 21, slug: 'live-page', status: 'publish');
 
         $provider = new PageQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertSame('live-page', $page->rows[0]['slug']);
@@ -106,7 +106,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPage(postId: 31, slug: 'new', status: 'publish', publishedAt: '2025-01-01 00:00:00+00');
 
         $provider = new PageQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet(
+        $page     = $provider->list(new ContentFilterSet(
             publishedAfter: new \DateTimeImmutable('2024-01-01T00:00:00Z')
         ));
 
@@ -129,17 +129,17 @@ final class DeliveryApiIntegrationTest extends TestCase
         $provider = new PageQueryProvider($this->db);
 
         // Page 1: limit 2
-        $p1 = $provider->list(new FilterSet(limit: 2));
+        $p1 = $provider->list(new ContentFilterSet(limit: 2));
         self::assertCount(2, $p1->rows);
         self::assertNotNull($p1->nextCursor);
 
         // Page 2: next 2
-        $p2 = $provider->list(new FilterSet(limit: 2, cursor: $p1->nextCursor));
+        $p2 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p1->nextCursor));
         self::assertCount(2, $p2->rows);
         self::assertNotNull($p2->nextCursor);
 
         // Page 3: last 1
-        $p3 = $provider->list(new FilterSet(limit: 2, cursor: $p2->nextCursor));
+        $p3 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p2->nextCursor));
         self::assertCount(1, $p3->rows);
         self::assertNull($p3->nextCursor);
 
@@ -168,13 +168,13 @@ final class DeliveryApiIntegrationTest extends TestCase
 
         $provider = new PageQueryProvider($this->db);
 
-        $p1 = $provider->list(new FilterSet(limit: 2));
+        $p1 = $provider->list(new ContentFilterSet(limit: 2));
         self::assertCount(2, $p1->rows);
 
-        $p2 = $provider->list(new FilterSet(limit: 2, cursor: $p1->nextCursor));
+        $p2 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p1->nextCursor));
         self::assertCount(2, $p2->rows);
 
-        $p3 = $provider->list(new FilterSet(limit: 2, cursor: $p2->nextCursor));
+        $p3 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p2->nextCursor));
         self::assertCount(1, $p3->rows);
         self::assertNull($p3->nextCursor);
 
@@ -228,7 +228,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPost(postId: 51, slug: 'second-post', status: 'publish');
 
         $provider = new PostQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(2, $page->rows);
     }
@@ -239,7 +239,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPost(postId: 61, slug: 'dead-post', status: 'publish', deletedAt: '2024-01-01 00:00:00+00');
 
         $provider = new PostQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertSame('live-post', $page->rows[0]['slug']);
@@ -251,7 +251,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPost(postId: 71, slug: 'published', status: 'publish');
 
         $provider = new PostQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertSame('published', $page->rows[0]['slug']);
@@ -266,7 +266,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedEntityTaxonomy($post1Id, $catUuid);
 
         $provider = new PostQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet(categorySlug: 'news'));
+        $page     = $provider->list(new ContentFilterSet(categorySlug: 'news'));
 
         self::assertCount(1, $page->rows);
         self::assertSame('news-post', $page->rows[0]['slug']);
@@ -277,7 +277,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedPost(postId: 82, slug: 'no-cat-post', status: 'publish');
 
         $provider = new PostQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet(categorySlug: 'nonexistent-cat'));
+        $page     = $provider->list(new ContentFilterSet(categorySlug: 'nonexistent-cat'));
 
         self::assertCount(0, $page->rows);
     }
@@ -295,9 +295,9 @@ final class DeliveryApiIntegrationTest extends TestCase
 
         $provider = new PostQueryProvider($this->db);
 
-        $p1 = $provider->list(new FilterSet(limit: 2));
-        $p2 = $provider->list(new FilterSet(limit: 2, cursor: $p1->nextCursor));
-        $p3 = $provider->list(new FilterSet(limit: 2, cursor: $p2->nextCursor));
+        $p1 = $provider->list(new ContentFilterSet(limit: 2));
+        $p2 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p1->nextCursor));
+        $p3 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p2->nextCursor));
 
         $all = array_merge(
             array_column($p1->rows, 'slug'),
@@ -322,9 +322,9 @@ final class DeliveryApiIntegrationTest extends TestCase
 
         $provider = new PostQueryProvider($this->db);
 
-        $p1 = $provider->list(new FilterSet(limit: 2));
-        $p2 = $provider->list(new FilterSet(limit: 2, cursor: $p1->nextCursor));
-        $p3 = $provider->list(new FilterSet(limit: 2, cursor: $p2->nextCursor));
+        $p1 = $provider->list(new ContentFilterSet(limit: 2));
+        $p2 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p1->nextCursor));
+        $p3 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p2->nextCursor));
 
         $all = array_merge(
             array_column($p1->rows, 'slug'),
@@ -374,7 +374,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedTaxonomy(termId: 201, slug: 'sport', name: 'Sport');
 
         $provider = new CategoryQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(2, $page->rows);
     }
@@ -385,7 +385,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedTaxonomy(termId: 211, slug: 'dead-cat', name: 'Dead', deletedAt: '2024-01-01 00:00:00+00');
 
         $provider = new CategoryQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         self::assertCount(1, $page->rows);
         self::assertSame('live-cat', $page->rows[0]['slug']);
@@ -398,7 +398,7 @@ final class DeliveryApiIntegrationTest extends TestCase
         $this->seedTaxonomy(termId: 222, slug: 'mango', name: 'Mango');
 
         $provider = new CategoryQueryProvider($this->db);
-        $page     = $provider->list(new FilterSet());
+        $page     = $provider->list(new ContentFilterSet());
 
         $names = array_column($page->rows, 'name');
         self::assertSame(['Apple', 'Mango', 'Zebra'], $names);
@@ -412,9 +412,9 @@ final class DeliveryApiIntegrationTest extends TestCase
 
         $provider = new CategoryQueryProvider($this->db);
 
-        $p1 = $provider->list(new FilterSet(limit: 2));
-        $p2 = $provider->list(new FilterSet(limit: 2, cursor: $p1->nextCursor));
-        $p3 = $provider->list(new FilterSet(limit: 2, cursor: $p2->nextCursor));
+        $p1 = $provider->list(new ContentFilterSet(limit: 2));
+        $p2 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p1->nextCursor));
+        $p3 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p2->nextCursor));
 
         $all = array_merge(
             array_column($p1->rows, 'slug'),
@@ -434,10 +434,10 @@ final class DeliveryApiIntegrationTest extends TestCase
 
         $provider = new CategoryQueryProvider($this->db);
 
-        $p1 = $provider->list(new FilterSet(limit: 2));
+        $p1 = $provider->list(new ContentFilterSet(limit: 2));
         self::assertCount(2, $p1->rows);
 
-        $p2 = $provider->list(new FilterSet(limit: 2, cursor: $p1->nextCursor));
+        $p2 = $provider->list(new ContentFilterSet(limit: 2, cursor: $p1->nextCursor));
         self::assertCount(1, $p2->rows);
         self::assertNull($p2->nextCursor);
 

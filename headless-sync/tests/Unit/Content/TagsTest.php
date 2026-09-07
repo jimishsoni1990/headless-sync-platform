@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Unit\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\PostResource;
@@ -57,7 +57,7 @@ final class TagsTest extends TestCase
         $db = new FakeQueryConnection();
         $db->queueResults([]);
 
-        (new CategoryQueryProvider($db, 'post_tag'))->list(new FilterSet());
+        (new CategoryQueryProvider($db, 'post_tag'))->list(new ContentFilterSet());
 
         self::assertStringContainsString('taxonomy_type = $', $db->sqlAt(0));
         self::assertContains('post_tag', $db->paramsAt(0));
@@ -81,7 +81,7 @@ final class TagsTest extends TestCase
         $db = new FakeQueryConnection();
         $db->queueResults([]);
 
-        (new CategoryQueryProvider($db))->list(new FilterSet());
+        (new CategoryQueryProvider($db))->list(new ContentFilterSet());
 
         self::assertContains('category', $db->paramsAt(0));
     }
@@ -95,7 +95,7 @@ final class TagsTest extends TestCase
         $db = new FakeQueryConnection();
         $db->queueResults([]);
 
-        (new PostQueryProvider($db))->list(new FilterSet(tagSlug: 'news'));
+        (new PostQueryProvider($db))->list(new ContentFilterSet(tagSlug: 'news'));
 
         $sql = $db->sqlAt(0);
         self::assertStringContainsString('EXISTS (', $sql);
@@ -108,7 +108,7 @@ final class TagsTest extends TestCase
         $db = new FakeQueryConnection();
         $db->queueResults([]);
 
-        (new PostQueryProvider($db))->list(new FilterSet(categorySlug: 'news'));
+        (new PostQueryProvider($db))->list(new ContentFilterSet(categorySlug: 'news'));
 
         // Before tags existed this predicate was unnecessary; with both taxonomies in one table
         // its absence would let ?category=news match a TAG named news.
@@ -120,7 +120,7 @@ final class TagsTest extends TestCase
         $db = new FakeQueryConnection();
         $db->queueResults([]);
 
-        (new PostQueryProvider($db))->list(new FilterSet(categorySlug: 'guides', tagSlug: 'news'));
+        (new PostQueryProvider($db))->list(new ContentFilterSet(categorySlug: 'guides', tagSlug: 'news'));
 
         $sql = $db->sqlAt(0);
         self::assertSame(2, substr_count($sql, 'EXISTS ('), 'both filters applied, ANDed');
@@ -133,7 +133,7 @@ final class TagsTest extends TestCase
         $db = new FakeQueryConnection();
         $db->queueResults([]);
 
-        (new PostQueryProvider($db))->list(new FilterSet());
+        (new PostQueryProvider($db))->list(new ContentFilterSet());
 
         self::assertStringNotContainsString('EXISTS (', $db->sqlAt(0));
     }
@@ -146,11 +146,11 @@ final class TagsTest extends TestCase
     {
         $oneRow = new FakeQueryConnection();
         $oneRow->queueResults([$this->row(1)]);
-        (new PostQueryProvider($oneRow))->list(new FilterSet(limit: 20));
+        (new PostQueryProvider($oneRow))->list(new ContentFilterSet(limit: 20));
 
         $fullPage = new FakeQueryConnection();
         $fullPage->queueResults(array_map($this->row(...), range(1, 20)));
-        (new PostQueryProvider($fullPage))->list(new FilterSet(limit: 20));
+        (new PostQueryProvider($fullPage))->list(new ContentFilterSet(limit: 20));
 
         self::assertCount(1, $oneRow->queries);
         self::assertCount(
@@ -165,7 +165,7 @@ final class TagsTest extends TestCase
     {
         $db = new FakeQueryConnection();
         $db->queueResults([]);
-        (new PostQueryProvider($db))->list(new FilterSet());
+        (new PostQueryProvider($db))->list(new ContentFilterSet());
 
         $sql = $db->sqlAt(0);
         self::assertStringContainsString('json_agg', $sql);

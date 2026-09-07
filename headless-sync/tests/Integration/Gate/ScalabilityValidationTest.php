@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Gate;
 
+use HSP\Tests\Support\ContentProjections;
+
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Core\Events\Dispatcher\EventDispatcher;
 use HSP\Core\Events\EventRegistry;
@@ -373,8 +375,8 @@ final class ScalabilityValidationTest extends TestCase
         // 1. Relay + dispatch the normal-load batch so it is sitting in the queue, mid-flight.
         $this->relayTick();
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
-        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, retryLimit: 10);
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
+        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $ctxId = '01900000-0000-7000-8000-00000000c3c3';
 
         // 2. Process PART of the normal load (2 of 6 jobs), leaving the rest queued.
@@ -388,7 +390,7 @@ final class ScalabilityValidationTest extends TestCase
         self::assertSame('content.post.updated', $replayResult->emitted[0]['event_type']);
         self::assertSame('content.page.updated', $replayResult2->emitted[0]['event_type']);
         $this->relayTick();
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
         // 4. Drain EVERYTHING remaining — normal followers and replay events, fully interleaved
         //    in one queue, one worker loop. This is the "under load" processing.
@@ -520,9 +522,9 @@ final class ScalabilityValidationTest extends TestCase
         $this->relayTick();
 
         $queue = new DatabaseQueueProvider($this->db);
-        (new EventDispatcher($this->db, $queue, 100))->dispatchBatch();
+        (new EventDispatcher($this->db, $queue, ContentProjections::router(), 100))->dispatchBatch();
 
-        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, retryLimit: 10);
+        $strategy = new EventWorkerStrategy($queue, $this->makeReplayWiredEventRegistry(), $this->db, ContentProjections::router(), retryLimit: 10);
         $guard = 0;
         while ($strategy->execute($this->ctx('01900000-0000-7000-8000-00000000fee1'))) {
             if (++$guard > 200) {

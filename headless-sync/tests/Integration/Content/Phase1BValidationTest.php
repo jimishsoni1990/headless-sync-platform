@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Content;
 
-use HSP\Core\Contracts\FilterSet;
+use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Reconciliation\WpReconciliationSource;
@@ -84,8 +84,8 @@ final class Phase1BValidationTest extends TestCase
 
         $provider = new PageQueryProvider($this->db);
 
-        $small = $provider->list(new FilterSet(limit: 1));
-        $large = $provider->list(new FilterSet(limit: 20));
+        $small = $provider->list(new ContentFilterSet(limit: 1));
+        $large = $provider->list(new ContentFilterSet(limit: 20));
 
         self::assertCount(1, $small->rows);
         self::assertCount(20, $large->rows);
@@ -108,7 +108,7 @@ final class Phase1BValidationTest extends TestCase
         $cursor   = null;
 
         do {
-            $page = $provider->list(new FilterSet(cursor: $cursor, limit: 7));
+            $page = $provider->list(new ContentFilterSet(cursor: $cursor, limit: 7));
             foreach ($page->rows as $row) {
                 $seen[] = $row['slug'];
             }
