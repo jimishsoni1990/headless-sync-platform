@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce;
 
 use HSP\Core\Contracts\EventProviderInterface;
-use HSP\Core\Events\Outbox\Exception\OutboxWriteException;
 use HSP\Modules\Commerce\Events\CommerceEventTypes;
 
 /**
@@ -221,13 +220,16 @@ final class HookWiring
             return;
         }
 
-        // The PARENT's type decides scope (AG-13): a variation of a product retyped out of
-        // Phase 2 is out of scope with it. Nothing is captured, so it cannot retry, reach the
-        // DLQ, or block convergence — and anything already projected is tombstoned by the
-        // handler, which reaches the same conclusion through the loader.
+        // As for products, SCOPE IS NOT DECIDED HERE. The old comment on this branch claimed
+        // "anything already projected is tombstoned by the handler" — which is exactly what
+        // cannot happen when the event is never emitted. A variation whose parent leaves Phase 2
+        // scope stayed visible until the next full reconciliation.
+        //
+        // A parent id of 0 is still refused, because a variation with no parent is structurally
+        // unaddressable rather than merely out of scope.
         $parentId = $this->variationParentId($variationId);
 
-        if ($parentId <= 0 || ! ProductScope::isSupportedType($this->productType($parentId))) {
+        if ($parentId <= 0) {
             return;
         }
 
@@ -379,11 +381,22 @@ final class HookWiring
             return;
         }
 
-        // Out-of-scope types are not captured — normal source, not a failure (AG-13).
-        if (! ProductScope::isSupportedType($this->productType($productId))) {
-            return;
-        }
-
+        // SCOPE IS NOT DECIDED HERE (AG-13). It used to be: an unsupported product type returned
+        // early and captured nothing. That was wrong in the one direction that matters — a
+        // `variable` product retyped to `grouped` emitted NOTHING, so its already-public
+        // projection was never told it had left scope and kept being served. Live testing caught
+        // it; the unit tests did not, because they proved the HANDLER tombstones on such an event
+        // and separately proved capture drops it, and nobody ran the two together.
+        //
+        // The handler must decide anyway, and is authoritative: state sync (ADR-044) means the
+        // type is re-read at PROCESSING time, and it can differ from the type at capture time. A
+        // scope check here can only ever duplicate that decision — and, being the earlier one,
+        // silently veto it.
+        //
+        // AG-13's requirements still hold, because they are about PROCESSING, not capture: the
+        // handler tombstones an out-of-scope product and returns successfully, so nothing retries,
+        // nothing reaches the DLQ, reconciliation is unaffected, and expected counts still come
+        // from the reconciliation source, which excludes unsupported types.
         $this->handled[$productId] = true;
 
         $this->capture($eventType, $productId);
@@ -470,7 +483,7 @@ final class HookWiring
                 'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
                 'payload'           => $payload,
             ]);
-        } catch (OutboxWriteException $e) {
+        } catch (\Throwable $e) {
             // Never re-thrown: a capture failure must not fatal the editor request. It is
             // logged and surfaced as an admin notice, and reconciliation is the backstop
             // (DECISION 1) — but it is never swallowed silently.
@@ -495,19 +508,6 @@ final class HookWiring
         $postType = get_post_type($postId);
 
         return is_string($postType) ? $postType : '';
-    }
-
-    private function productType(int $postId): string
-    {
-        if (! function_exists('wc_get_product')) {
-            return '';
-        }
-
-        $product = wc_get_product($postId);
-
-        return is_object($product) && method_exists($product, 'get_type')
-            ? (string) $product->get_type()
-            : '';
     }
 
     private function isRevisionOrAutosave(int $postId): bool

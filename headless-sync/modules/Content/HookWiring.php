@@ -91,7 +91,7 @@ final class HookWiring
     {
         try {
             $this->eventProvider->provide($eventType, $aggregateId, $context);
-        } catch (OutboxWriteException $e) {
+        } catch (\Throwable $e) {
             // A failed capture is a lost sync until reconciliation — never swallow silently.
             $aggregateType = explode('.', $eventType)[1] ?? '';
             error_log(sprintf(

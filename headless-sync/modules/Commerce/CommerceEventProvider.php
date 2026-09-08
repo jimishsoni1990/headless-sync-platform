@@ -32,17 +32,36 @@ final class CommerceEventProvider implements EventProviderInterface
 {
     private const EVENT_VERSION = 1;
 
-    /** Second dot-segment → aggregate_type. */
-    private const AGGREGATE_TYPE_MAP = [
-        'product'  => 'product',
-        'product_category' => 'product_category',
-        'attribute'        => 'attribute',
-        'attribute_term'   => 'attribute_term',
-    ];
-
     public function __construct(private readonly OutboxWriterInterface $outboxWriter)
     {
     }
+    /**
+     * The aggregate type for an event type.
+     *
+     * OPEN-1 fixes the shape as `<domain>.<aggregate>.<action>`, so **the second segment IS the
+     * aggregate type** — always, by definition. This used to be a hardcoded map from segment to
+     * aggregate type in which every single entry was an identity mapping, which meant it could
+     * add no information and could only ever be WRONG: P2-S5 and P2-S6 added the
+     * `product_variation` and `inventory` aggregates and did not extend it, so capturing either
+     * threw. Live testing found it on the first product save.
+     *
+     * The caller has already checked the event type against {@see CommerceEventTypes::ALL}, so a
+     * segment reaching here is a declared aggregate by construction. Deriving it removes the
+     * class of bug entirely rather than fixing one instance of it.
+     */
+    private function aggregateTypeFor(string $eventType): string
+    {
+        $segment = explode('.', $eventType)[1] ?? '';
+
+        if ($segment === '') {
+            throw new \InvalidArgumentException(
+                "Cannot resolve aggregate type for event '{$eventType}' — no aggregate segment."
+            );
+        }
+
+        return $segment;
+    }
+
 
     /** @return string[] */
     public function getSupportedEventTypes(): array
@@ -62,11 +81,7 @@ final class CommerceEventProvider implements EventProviderInterface
             );
         }
 
-        $segment       = explode('.', $eventType)[1] ?? '';
-        $aggregateType = self::AGGREGATE_TYPE_MAP[$segment]
-            ?? throw new \InvalidArgumentException(
-                "Cannot resolve aggregate type for event '{$eventType}'."
-            );
+        $aggregateType = $this->aggregateTypeFor($eventType);
 
         return $this->outboxWriter->write(
             eventType:       $eventType,

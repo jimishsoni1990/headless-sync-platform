@@ -140,19 +140,83 @@ final class CommerceHookWiringTest extends TestCase
     // AG-13 — unsupported types never enter the pipeline
     // -------------------------------------------------------------------------
 
-    public function testUnsupportedProductTypesAreNotCaptured(): void
+    /**
+     * An unsupported product type IS captured — and this test changed intent deliberately.
+     *
+     * It used to assert the opposite: that capture drops out-of-scope types entirely. That looked
+     * like a faithful reading of AG-13 ("an unsupported type is normal out-of-scope source, not a
+     * processing failure") but it broke the requirement in the same ruling that a product LEAVING
+     * scope must tombstone. A `variable` product retyped to `grouped` emitted nothing, so its
+     * already-public projection was never told and kept being served. Live testing on a real
+     * WooCommerce store found it; no unit or integration test did, because
+     * {@see ProductTypeTransitionTest} proved the handler tombstones such an event while this test
+     * proved the event is never sent — and nothing ran the two together.
+     *
+     * Scope now belongs to the handler alone, which is the only place it CAN live: state sync
+     * (ADR-044) re-reads the type at processing time, so the type at capture time is not
+     * authoritative anyway.
+     *
+     * AG-13's actual requirements are about processing and still hold — the handler tombstones and
+     * returns successfully, so nothing retries, nothing dead-letters, and expected counts still
+     * come from the reconciliation source, which excludes unsupported types.
+     */
+    public function testAnUnsupportedProductTypeIsStillCapturedSoTheHandlerCanTombstoneIt(): void
     {
         $this->givenProduct(42, 'grouped');
-        $this->givenProduct(43, 'external');
 
-        $this->hooks->onProductCreated(42);
-        $this->hooks->onProductUpdated(43);
+        $this->hooks->onProductUpdated(42);
 
         self::assertSame(
-            [],
+            [
+                [CommerceEventTypes::PRODUCT_UPDATED, '42'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '42'],
+            ],
             $this->events->emitted,
-            'an out-of-scope product must never reach the queue, so it can never retry or dead-letter',
+            'capture must not veto a scope decision the handler has to make anyway',
         );
+    }
+
+    /**
+     * The transition end to end: capture AND handler, in one test.
+     *
+     * This is the pairing whose absence let the defect through. Asserting "capture emits" and
+     * "the handler tombstones" in two separate files proves nothing about whether a product
+     * leaving scope actually disappears.
+     */
+    public function testLeavingSupportedScopeProducesAnEventThatTombstones(): void
+    {
+        $this->givenProduct(42, 'grouped');
+        $this->hooks->onProductUpdated(42);
+
+        self::assertNotSame([], $this->events->emitted, 'the transition must be captured');
+
+        // Now drive the real handler with the event capture produced.
+        $adapter = new SpyProductAdapter();
+        $loader  = new \HSP\Tests\Support\InMemoryCommerceLoader();
+
+        $loader->products[42] = [
+            'id' => 42, 'sku' => '', 'slug' => 'x', 'name' => 'X',
+            'description' => '', 'short_description' => '', 'status' => 'publish',
+            'product_type' => 'grouped', 'catalog_visibility' => 'visible', 'featured' => false,
+            'price' => null, 'regular_price' => null, 'sale_price' => null,
+            'featured_media_id' => 0, 'gallery_media_ids' => [],
+            'published_at' => '2026-01-01 00:00:00', 'modified_at' => '2026-01-01 00:00:00',
+            'meta' => [], 'category_ids' => [], 'attribute_term_ids' => [],
+        ];
+
+        $handler = new \HSP\Modules\Commerce\Handlers\ProductUpsertHandler(
+            $loader,
+            new \HSP\Modules\Commerce\Extractors\ProductExtractor(
+                new \HSP\Modules\Commerce\Validation\ProductValidator()
+            ),
+            new \HSP\Modules\Commerce\Transformers\ProductTransformer(),
+            $adapter,
+        );
+
+        $handler->handle(new FakeCommerceEvent(CommerceEventTypes::PRODUCT_UPDATED, 'product', '42'));
+
+        self::assertSame(0, $adapter->persistCalls, 'an out-of-scope product must not project');
+        self::assertSame(1, $adapter->tombstoneCalls, 'it must TOMBSTONE, not linger');
     }
 
     // -------------------------------------------------------------------------

@@ -30,15 +30,6 @@ final class EventProvider implements EventProviderInterface
 {
     private const EVENT_VERSION = 1;
 
-    /** Maps aggregate segment (second dot-component) to aggregate_type string. */
-    private const AGGREGATE_TYPE_MAP = [
-        'page'     => 'page',
-        'post'     => 'post',
-        'category' => 'category',
-        'media'    => 'media',
-        'tag'      => 'tag',
-    ];
-
     public function __construct(
         private readonly OutboxWriterInterface $outboxWriter,
     ) {}
@@ -61,7 +52,7 @@ final class EventProvider implements EventProviderInterface
     {
         $this->assertSupportedEventType($eventType);
 
-        $aggregateType   = $this->resolveAggregateType($eventType);
+        $aggregateType   = $this->aggregateTypeFor($eventType);
         $correlationId   = $context['correlation_id'] ?? $this->newUuid();
         $causationId     = $context['causation_id'] ?? null;
         $sourceUpdatedAt = $context['source_updated_at']
@@ -85,17 +76,32 @@ final class EventProvider implements EventProviderInterface
     // Helpers
     // -------------------------------------------------------------------------
 
-    private function resolveAggregateType(string $eventType): string
+    /**
+     * The aggregate type for an event type.
+     *
+     * OPEN-1 fixes the shape as `<domain>.<aggregate>.<action>`, so **the second segment IS the
+     * aggregate type** — always, by definition. This used to be a hardcoded map from segment to
+     * aggregate type in which every entry was an identity mapping, which meant it could add no
+     * information and could only ever be WRONG. Commerce's copy proved it: P2-S5 and P2-S6 added
+     * two aggregates without extending the map, and capturing either one threw — which, before the
+     * guard below was widened, fataled the product save that triggered it.
+     *
+     * The caller has already checked the event type against ALL, so a segment reaching here is a
+     * declared aggregate by construction. Deriving it removes the class of bug rather than fixing
+     * one instance of it.
+     */
+    private function aggregateTypeFor(string $eventType): string
     {
-        // e.g. 'content.post.created' → segment[1] = 'post'
-        $parts = explode('.', $eventType);
-        $segment = $parts[1] ?? '';
-        return self::AGGREGATE_TYPE_MAP[$segment]
-            ?? throw new \InvalidArgumentException(
-                "Cannot resolve aggregate type for event '{$eventType}'."
-            );
-    }
+        $segment = explode('.', $eventType)[1] ?? '';
 
+        if ($segment === '') {
+            throw new \InvalidArgumentException(
+                "Cannot resolve aggregate type for event '{$eventType}' — no aggregate segment."
+            );
+        }
+
+        return $segment;
+    }
     private function assertSupportedEventType(string $eventType): void
     {
         if (! in_array($eventType, ContentEventTypes::ALL, true)) {
