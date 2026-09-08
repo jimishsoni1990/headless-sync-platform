@@ -451,8 +451,46 @@ final class ProcessingCycleIntegrationTest extends TestCase
         );
     }
 
+    /**
+     * CONTROLLED PERFORMANCE GATE — skipped unless HSP_PERFORMANCE_GATE=1 (DECISION AI).
+     *
+     * This is the only wall-clock assertion in the suite that measures the HOST as much as the
+     * platform: it times 100 events through relay → dispatch → project, and every one of those
+     * costs a round trip to MySQL and PostgreSQL. On a workstation talking to containers across a
+     * virtualised network boundary, that latency dominates. Six consecutive runs of an unchanged
+     * tree produced 8.14 s, 9.97 s, 10.18 s, 12.72 s, 14.52 s and 25.05 s against a 10.0 s line —
+     * a 3x spread straddling the threshold.
+     *
+     * DECISION AI's ruling on what to do about that is the important part, because two of the
+     * three available moves are wrong:
+     *
+     *   - RAISING the threshold is prohibited (AI-5). A budget relaxed to fit a noisy machine
+     *     stops protecting anything, and the next real regression is absorbed in silence.
+     *   - SUBTRACTING a measured baseline is prohibited (AI-4). A self-calibrating wall-clock
+     *     test risks calibrating away the very regression it exists to catch.
+     *   - SKIPPING EXPLICITLY, and enforcing where the measurement is trustworthy, is the ruling.
+     *
+     * So the threshold below is unchanged and the gate runs in CI, where the databases are
+     * colocated with the runner. Note that this is NOT "containers are slow" encoded as
+     * architecture — colocated CI containers are perfectly acceptable (AI-2). The defect is the
+     * host topology, not containerisation.
+     *
+     * A skip REPORTS AS SKIPPED, never as passed, so release evidence can show whether the gate
+     * actually executed.
+     *
+     * What this gate does NOT replace: the mixed-domain proof that Commerce has not consumed the
+     * DECISION AB margin, which is a separate required question answered by
+     * {@see \HSP\Tests\Integration\Workers\TwoModuleSystemTest} (AI-6).
+     */
     public function test_a_full_default_batch_drains_within_the_cycle_time_budget(): void
     {
+        if (getenv('HSP_PERFORMANCE_GATE') !== '1') {
+            self::markTestSkipped(
+                'Controlled performance gate (DECISION AI): set HSP_PERFORMANCE_GATE=1 to run it. '
+                . 'It is enforced in CI against colocated databases, because a workstation talking '
+                . 'to containers measures host I/O more than it measures the platform.'
+            );
+        }
         // PERFORMANCE DoD (P1B-S0): a full batch must drain inside cycle_time_budget_seconds, or
         // the Phase 1B aggregates have eaten the headroom that keeps cadence + batch size the
         // only throughput levers (ADR-054 §4).

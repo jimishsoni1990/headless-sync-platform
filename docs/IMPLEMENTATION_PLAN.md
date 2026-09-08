@@ -342,6 +342,49 @@ These are listed as pointers only. No detail is provided here; do not implement 
 
 **Phase 4 — API Expansion** (Doc 11 §13): Composition APIs (`/compose/homepage` etc.), advanced filtering, caching enhancements, resource versioning improvements.
 
+> **Added by DECISION AH (2026-09-08) — Commerce permalink reconstruction.** FLAG-COMMPERMA-1 was
+> ruled **Case B authorised, implementation scheduled here**. Phase 4 must deliver, in one coherent
+> piece:
+>
+> 1. **A Commerce-owned store-config aggregate/projection** (`commerce.store_config`) — ONE
+>    store-level source, following the existing canonical-model / adapter / checksum / tombstone
+>    rules. Commerce owns it, **not** Core: no generic `core.settings` projection on the strength of
+>    one use case (AH-2).
+> 2. **Verified settings capture + invalidation** through the NORMAL pipeline
+>    (capture → `commerce.store_config.changed` → outbox → relay → dispatch → handler), preferring a
+>    **narrow option-specific hook**; a generic `updated_option` only when tightly guarded to the
+>    exact option. Capturing every WordPress option change as a Commerce event is prohibited (AH-4).
+> 3. **Initial bootstrap + reconciliation coverage**, so an existing store converges without waiting
+>    for an admin settings edit.
+> 4. **A Product permalink resolver** operating on projected state at read time.
+> 5. **A Product Category permalink resolver**, resolving hierarchy from current projected
+>    relationships — **no stored category paths**, DECISION AD/AE/AF path semantics for ambiguous
+>    leaf slugs, and no WordPress term id in the public addressing contract (AH-8).
+> 6. **`%product_cat%` expansion**, with the category-selection rule **verified against supported
+>    WooCommerce behaviour** — never an arbitrary first-row/lowest-id/alphabetical choice (AH-6).
+> 7. **The `links.permalink` delivery contract** — a RELATIVE public path, computed at read time,
+>    **never persisted** (AH-5, AH-7).
+> 8. **No stored derived URLs** anywhere: `permalink`, `path`, `uri`, `url` remain absent from every
+>    Commerce projection.
+> 9. **No delivery-time WordPress reads** (Rule 6 / ADR-040).
+> 10. **Compatibility tests** against the supported WooCommerce permalink configurations.
+>
+> **Preflight obligation (AH-3):** `product_base`, `category_base` and `attribute_base` must NOT be
+> assumed to be the complete input set. Before any migration or API work, verify the COMPLETE state
+> required to reproduce WooCommerce's public relative path — including any WordPress-level permalink
+> mode, trailing-slash or site-relative semantics the supported version actually consults. **Only
+> verified settings may be projected; an arbitrary option dump is prohibited.**
+>
+> **Test transition (AH-9):** `test_no_commerce_projection_stores_a_derived_url` stays permanently
+> valid. `test_no_commerce_endpoint_publishes_a_permalink` is Phase-2-scoped and must be **replaced
+> or amended, never deleted**, by a test proving the permalink exists only as a delivery-time derived
+> field, that no projection stores it, that no WordPress request occurs during resolution, that a
+> store-config change alters the path without rewriting Product rows, and that a hierarchy change
+> alters it without stored descendant URLs.
+>
+> **No `/hsp/v1/store` endpoint is required** to satisfy this. The configuration projection is first
+> an internal capability; a store endpoint may be evaluated on independent Phase 4 merit only.
+
 **Phase 5 — Search Expansion** (Doc 11 §14): Search provider contract; optional OpenSearch / Typesense providers. PostgreSQL search remains supported — and **PostgreSQL full-text search itself arrives here**, deferred out of Phase 1B by **DECISION Y**; the Doc 11 §17 roadmap ordering (PostgreSQL Search first, then the provider contract, then OpenSearch/Typesense) is unchanged.
 
 **Phase 6 — Future Domain Modules** (Doc 11 §15): Membership, LMS, Directory, Booking, Events, custom business applications. New domains as modules only; no core modifications.

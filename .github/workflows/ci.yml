@@ -1,0 +1,181 @@
+name: CI
+
+# Two jobs on purpose, and the split is DECISION AI.
+#
+#   `checks`      — everything that is machine-independent: unit tests, integration tests,
+#                   static analysis, lint. Runs on every push and PR.
+#   `performance` — the wall-clock cycle-budget gate, which measures the HOST as much as the
+#                   platform and is therefore only meaningful where the databases are colocated
+#                   with the runner. Skipped everywhere else, visibly.
+#
+# Both jobs use service containers. That is deliberate and not a contradiction of the flag that
+# produced this file: DECISION AI (AI-2) is explicit that "containers are slow" must NOT be
+# encoded as architecture. A GitHub Actions service container shares the runner's network
+# namespace, so the round trip is loopback — which is the opposite of a workstation reaching a
+# Docker VM across a virtualised boundary. Colocation is the property that matters, not the
+# absence of containers.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Read by tests/bootstrap.php and every self-skipping integration test.
+  HSP_TEST_PGSQL_HOST: 127.0.0.1
+  HSP_TEST_PGSQL_PORT: '5432'
+  HSP_TEST_PGSQL_USER: hsp
+  HSP_TEST_PGSQL_PASSWORD: hsp_secret
+  HSP_TEST_PGSQL_DATABASE: hsp_test
+  HSP_TEST_MYSQL_HOST: 127.0.0.1
+  HSP_TEST_MYSQL_PORT: '3306'
+  HSP_TEST_MYSQL_USER: root
+  HSP_TEST_MYSQL_PASSWORD: root
+  HSP_TEST_MYSQL_DATABASE: hsp_test
+
+jobs:
+  checks:
+    name: Tests, static analysis, lint
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: headless-sync
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: hsp
+          POSTGRES_PASSWORD: hsp_secret
+          POSTGRES_DB: hsp_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U hsp -d hsp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: hsp_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          # The plugin header's "Requires PHP" is the platform minimum; CI runs the version the
+          # project actually targets. pgsql and mysqli are what make the integration suite run
+          # rather than self-skip — a green suite that skipped every integration test is the
+          # failure mode this line exists to prevent.
+          php-version: '8.3'
+          extensions: pgsql, pdo_pgsql, mysqli, mbstring, json
+          coverage: none
+          tools: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Unit tests
+        run: vendor/bin/phpunit --testsuite Unit
+
+      - name: Integration tests
+        # The performance gate is NOT enabled here: this job's purpose is correctness, and a
+        # wall-clock assertion that occasionally fails would train everyone to re-run CI.
+        run: vendor/bin/phpunit --testsuite Integration
+
+      - name: Static analysis (PHPStan level 8)
+        run: composer analyse
+
+      - name: Lint (PSR-12 + WPCS security sniffs)
+        run: composer lint
+
+  performance:
+    name: Performance gate (DECISION AI)
+    runs-on: ubuntu-latest
+    # Runs after correctness, so a timing failure is never confused with a broken build.
+    needs: checks
+
+    defaults:
+      run:
+        working-directory: headless-sync
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: hsp
+          POSTGRES_PASSWORD: hsp_secret
+          POSTGRES_DB: hsp_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U hsp -d hsp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: hsp_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pgsql, pdo_pgsql, mysqli, mbstring, json
+          coverage: none
+          tools: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Cycle-budget gate
+        # HSP_PERFORMANCE_GATE=1 is what turns the assertion on (DECISION AI AI-3). Without it the
+        # test reports SKIPPED — never passed — so release evidence can show whether the gate
+        # actually executed.
+        #
+        # If this step fails consistently, that is a STOP-and-flag (AI-5): investigate query
+        # efficiency, adapter work, source loading, access patterns, batch allocation and
+        # round-trip count. Do NOT raise cycle_time_budget_seconds, projection_batch_size, the
+        # cron cadence, the PHP timeout or the connection count to make it green.
+        env:
+          HSP_PERFORMANCE_GATE: '1'
+        run: |
+          vendor/bin/phpunit \
+            --filter 'test_a_full_default_batch_drains_within_the_cycle_time_budget' \
+            --testsuite Integration
+
+      - name: Mixed-domain SLA evidence
+        # A SEPARATE required question (AI-6): the gate above asks whether one full batch fits the
+        # cycle; this asks whether adding Commerce consumed the DECISION AB margin or starved
+        # Content. Neither replaces the other, so both run.
+        run: |
+          vendor/bin/phpunit \
+            --filter 'TwoModuleSystemTest' \
+            --testsuite Integration

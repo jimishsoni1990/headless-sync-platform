@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.39  
+Version: 1.41  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,8 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.41 | 2026-09-08 | **DECISION AI — the full-batch cycle budget becomes a controlled CI performance gate (architect ruling 2026-09-08; resolves FLAG-PERFCYCLE-1).** Option (a) chosen; (b) baseline subtraction and (c) raising the threshold both rejected. **(AI-1)** the guarantee is unchanged — an extrapolated default projection batch must drain in **under half of `processing.cycle_time_budget_seconds`** (under 10 s against the shipped 20 s), and that threshold does not move because one workstation has unstable database round-trip latency. **(AI-2)** the assertion is reclassified a **PERFORMANCE GATE** rather than a machine-independent integration test, executing where database services are **colocated**, stable and reproducible; **"containers are slow" must not be encoded as architecture** — colocated CI containers are acceptable, the defect is the noisy host topology. **(AI-3)** local runs may skip behind an **explicit, visible** environment guard (`HSP_PERFORMANCE_GATE=1`); a skipped gate reports **skipped, never passed**, CI enables it explicitly, and release evidence must show it actually ran. **(AI-4)** **no self-calibration** — no measured baseline, subtraction formula or host calibration factor, because that machinery risks subtracting away a real regression. **(AI-5)** the threshold does not rise; a consistent failure on the controlled runner is a **STOP-and-flag** and investigation of query efficiency, adapter work, source loading, access patterns, batch allocation and round-trip count **before** any budget change (DECISION AG Part 5 item 10 remains in force). **(AI-6)** the mixed-domain proof stays **separately required** — the full-batch gate and the Commerce-does-not-starve-Content scenarios answer different questions and neither replaces the other. **No production behaviour changes**: not the cycle budget, batch size, cadence, PHP timeout, connection count or execution architecture. |
+| 1.40 | 2026-09-08 | **DECISION AH — permalink reconstruction: Case B authorised, implementation scheduled for Phase 4 (architect ruling 2026-09-08; resolves FLAG-COMMPERMA-1).** Requirement A classified the outcome Case B at the P2-S2/P2-S3 preflights; this ruling settles it. **The flag is RESOLVED — record it as *architecture decided, implementation scheduled*, never as an open gap.** Phase 2 remains correct as shipped (no stored product or category permalink, no derived URL/path/URI column, no permalink in the endpoint contract) and does **not** reopen. **(AH-1)** a Commerce-owned store-level configuration projection (`commerce.store_config`) is authorised **in Phase 4** — ONE store-level source, never duplicated onto products/variations/taxonomies and never a per-entity derived permalink, so changing `product_base` updates the configuration projection **only** rather than rewriting every Product row. **(AH-2)** **Commerce owns it, not Core** — no generic `core.settings`/`system.wordpress_settings` projection pre-emptively; a Core contract only once **two** real modules demonstrate a shared capability. **(AH-3)** minimum configuration is `product_base`, `category_base`, `attribute_base` with **token semantics intact** (`%product_cat%` is part of the template, not a separate value, and must not be flattened) — and those three must **NOT** be assumed complete: the Phase 4 preflight verifies the full required state, including any WordPress-level permalink mode, trailing-slash or site-relative semantics the supported version consults; **only verified settings may be projected, never an arbitrary option dump.** **(AH-4)** invalidation flows through the **normal pipeline** (capture → `commerce.store_config.changed` → outbox → relay → dispatch → handler), preferring a **narrow option-specific hook**, with generic `updated_option` acceptable only when tightly guarded to the exact option; bootstrap and reconciliation must include current configuration so an existing store converges without an admin edit; no direct WP→PG repair path. **(AH-5)** permalinks resolve at **READ time** from projected state — no stored `permalink`/`path`/`uri`/`url` columns, no rewrite fan-out, no WordPress query during delivery. **(AH-6)** **HSP owns the resolution algorithm** — `%product_cat%` selection is **verified against supported WooCommerce behaviour**, never an arbitrary first-row/lowest-id/alphabetical choice, and HSP promises supported core behaviour rather than third-party permalink-filter parity. **(AH-7)** the delivery contract is a read-time `links.permalink` carrying a **RELATIVE public path** (the WordPress host and the frontend host may differ), never persisted; **no `/hsp/v1/store` endpoint is required** to solve this flag, though Phase 4 may evaluate one on independent merit. **(AH-8)** Product Category permalinks follow the same model — hierarchy resolved from projected relationships, **no stored category paths**, ambiguous leaf slugs use the DECISION AD/AE/AF path semantics, and **no WordPress term id enters the public addressing contract.** **(AH-9)** `test_no_commerce_projection_stores_a_derived_url` is **permanently valid in principle**; the endpoint guard is Phase-2-scoped and must be **replaced or amended, never deleted**, when Phase 4 introduces the approved contract. Adds an explicit Phase 4 roadmap item (store-config aggregate, verified capture/invalidation, bootstrap, both resolvers, `%product_cat%` expansion, `links.permalink`, no stored URLs, no delivery-time WP reads, compatibility tests). |
 | 1.39 | 2026-09-07 | **DECISION AG — Phase 2 ratification: HSP becomes a genuinely multi-module platform, and the WooCommerce Catalog domain model is fixed (P2-S0; architect rulings 2026-09-07).** Records **fourteen rulings + four standing requirements**. **AG-1…AG-11 resolve the eleven blocking flags raised in this session's ratification review; AG-12, AG-13 and AG-14 are proactive architect rulings, NOT flag resolutions.** **Multi-module infrastructure (P2-S1):** **(AG-1)** core must not import or hardcode a concrete module — `ModuleInterface::getServiceProvider()` becomes a real contract, `ContainerBuilder`'s `ContentServiceProvider` import is retired, Commerce adds no line to core, and the isolation guard scans core→module as well as module→module. **(AG-2)** replay and reconciliation become **Core-owned registries keyed by aggregate type** (`ReplayEmitterRegistryInterface` / `ReconciliationSourceRegistryInterface`) — a single container key was last-writer-wins and would have **silently deleted** Content's emitter; Core (not a module) constructs `ReplayService`/`ReconciliationService`; duplicate aggregate registration throws; missing coverage is never silently `continue`d; backfill enumerates all ACTIVE sources. **(AG-3)** the three hardcoded `content.*` projection maps become a **module-registered `ProjectionRegistryInterface`/`ProjectionDescriptor`** — core must not know every domain table; identifiers come only from trusted module registration and are validated (`BackfillReader` interpolates the table name into SQL); no arbitrary-SQL escape hatch, no new persistence. **(AG-4)** one explicit **domain→partition routing seam** (`content.*→content`, `commerce.*→commerce`, `system.*→system`) replaces the hardcoded `'content'` — this is the routing ADR DECISION L v1.12 deferred; **`processing.projection_batch_size` stays the TOTAL cycle budget, shared fairly across active partitions (deterministic round-robin), never multiplied per domain**; no weighted scheduling or priority queues without a new ruling. **(AG-5)** `FilterSet` is superseded by a domain-neutral **`QueryFilterInterface`** with module-owned typed DTOs (`ContentFilterSet`, `ProductFilterSet`); providers explicitly reject a foreign domain filter; **no untyped array bag and no QueryFilterRegistry**. **(AG-6)** `system.module_versions` finally gets an **idempotent writer**, only after a module's migrations reach its declared schema version; `system.schema_versions` remains the authoritative migration-state record. **Commerce domain model:** **(AG-7)** Doc 3 §18's mandatory cross-aggregate FKs are **superseded** — variation→product, inventory→product and attribute-term→attribute use **soft references**, because at-least-once, non-FIFO, replay and overlapping cycles mean a child may legitimately arrive before its parent and the database must not turn valid out-of-order sync into a DLQ failure; PK/unique/check constraints and same-transaction structures are unaffected. **(AG-8)** **`commerce.inventory` owns stock state** — the duplicated `stock_status` is removed from the product projection (one fact, two checksums, two write-suppress decisions that can disagree); product reads JOIN inventory rather than copying it back. **(AG-9)** DECISION AA extends to Commerce: **one shared `commerce.taxonomies` + `commerce.entity_taxonomies`** discriminated by `taxonomy_type`, superseding Doc 3's `commerce.categories`/`attribute_terms`/`product_categories` **where they merely represent terms and relationships** — but **`commerce.attributes` remains separate because global attribute DEFINITIONS are not taxonomy terms**; `product_tag`, local/custom attributes and a second `attribute_terms` table are out of scope. **(AG-10)** `content.media` stays the single attachment projection — **no duplicate Commerce copy, no Commerce→Content PHP import, no hidden `Commerce SQL → content.media` dependency**; expanded media is optional capability composition through a Core contract with **bulk** resolution, and **Commerce product sync must still succeed when that capability is absent**. **(AG-11)** the PostgreSQL column canon applies platform-wide to `commerce.*`, but **semantic columns do not clone** — a join table needs no checksum for symmetry, a never-tombstoned table needs no `deleted_at`, `meta_jsonb` follows the contract. **Proactive rulings:** **(AG-12)** module lifecycle gains **three conditions — DISCOVERED / AVAILABLE / READY(ACTIVE)** — with data bootstrap (`pending`/`complete`) tracked separately; **a module is never runtime-ready merely because `isAvailable()` is true**, migration failure leaves it not-active while every other module keeps running, and an unavailable module contributes nothing (no capture, emitters, sources, descriptors, routing, endpoints or backfill counts). **WooCommerce installed AFTER HSP must converge the existing catalog with no reactivation, no manual migrate and no manual reconcile**, via an explicit Core-owned lifecycle coordinator (not hidden in `CommerceServiceProvider`) and the EXISTING Migration Engine — P2-S1 is authorised to fix the engine if module migrations can only run at plugin activation; **no second migration system**. Module bootstrap state = a module-keyed WordPress option (`hsp_module_bootstrap_state`, or one option per module if that is what gives lost-update safety) — **lifecycle state, not metrics, and no PostgreSQL table**; a sibling module's state must never be erased. Bootstrap runs as module-scoped `ReconciliationService` re-emission — no direct WP→PG copy, no second repair path, no in-request drain, no reset of global onboarding, Content stays online. **(AG-13)** Phase 2 supports **`simple` + `variable` only**; grouped/external/custom are **normal out-of-scope source entities, not processing failures** — no repeated retry, no DLQ, no blocked reconciliation or bootstrap, and excluded from expected counts; **all four type transitions are mandatory coverage**, and simple/variable→unsupported must **tombstone** through DECISION I/T/U rather than leaving a permanently visible projection. **(AG-14)** inventory ownership is **aggregate-aware** (`owner_type`/`owner_id`) so a variation can own its stock — **no `product_inventory`/`variation_inventory` split and no variation stock duplicated onto the product**; a variation inheriting parent-managed stock gets **no** invented duplicate fact; **missing inventory is never "out of stock"** and never removes a valid product from a listing (LEFT JOIN, tolerant reads). **Standing requirements:** **(A)** permalink parity is a **verification target** — P2-S2 (products) and P2-S3 (categories) preflight the installed WooCommerce permalink configuration and classify Case A/B/C, with **P2-S7 reporting Product and Product Category permalink compatibility separately as PROVEN or EXPLICITLY DEFERRED WITH FLAG**; no hardcoded `/product/{slug}`, no forced stored permalink column, no WP read at delivery time. **(B)** WooCommerce **catalog visibility is not `post_status`** — a published-but-hidden product stays out of list endpoints. **(C)** money stays **`NUMERIC` with no imposed precision/scale**, normalized to a **deterministic exact decimal string before checksum construction** so `10`/`10.0`/`10.00` cannot churn the projection; PHP floats are never canonical. **(C′)** **currency is store-level**, not a per-product column — Doc 3's per-product `currency` is superseded pending store-level configuration semantics. **Cross-cutting:** every aggregate proves **create → update → leave-scope → tombstone → replay → reconciliation**; relationships are tested through **real handlers**; the `product_cat` hierarchy is preflighted before the migration, `(taxonomy_type, slug)` is **never** the durable identity and gets **no UNIQUE constraint** without verification, and ambiguous leaf slugs follow **DECISION AD/AE/AF** (full ancestor path at read time, reusing `HierarchicalQueryProviderInterface`, no second hierarchy architecture, no stored path column) — with **no legacy one-segment arm**, since DECISION AF already removed it for pages. Mixed-domain performance is benchmarked together, and **if the DECISION AB ≈20.1 s margin cannot absorb Commerce the session STOPS and flags** rather than raising budgets. Inserts **P2-S1…P2-S7** into IMPLEMENTATION_PLAN.md §5b; amends Doc 3 §13–18 and Doc 11 §11 under banners (original text retained); Implications table updated; CLAUDE.md SETTLED + MVP-scope reconciled. **Docs only — no production code.** |
 | 1.38 | 2026-09-07 | **DECISION AF — the one-segment leaf fallback reaches Removed, completing DECISION AD ruling 2 (scope-owner directive 2026-09-07; the "explicit lifecycle session" ruling 2 reserved removal for).** `/hsp/v1/pages/{path}` is now **exact-path lookup and nothing else** — every miss is a 404 at any depth, and `/pages/team` resolves the top-level page of that name or nothing. **(1)** The fallback call is gone from `ContentRestRegistrar::handlePageSingle()`. **(2) The mitigation SQL is DELETED, not merely orphaned:** `PageQueryProvider::findBySlug()` carried the FLAG-PAGESLUG-1 bare-slug lookup (`ORDER BY parent_id, id`), and merely ceasing to call it would have left a method handing an arbitrary nested page to any future caller. It cannot be deleted — `QueryProviderInterface` requires it and pages need that interface for the listing's `list()` — so it now **delegates to `findByPath($slug)`**, giving a bare page slug the one meaning AD ruling 2 already defines for a one-segment address (the top-level page of that name) and making the two impossible to drift apart. **(3) Corrects DECISION AD ruling 7 on a point of fact:** that ruling anticipated the registrar's page slot narrowing to `HierarchicalQueryProviderInterface` alone; **it does not** — the intersection stays, because the `/pages` LISTING still calls `list()`. What ended was the single-route handler's *use of* `findBySlug()`, not the need for the interface. **(4)** WordPress parity in the FLAG-PAGEPATH-ANCESTOR-1 case is now reached exactly as **DECISION AE predicted**: the fallback used to return a published child whose ancestor is unprojected — a page WordPress itself 404s — and with no bare-slug back door left, the test that pinned the old behaviour now pins parity. **On the lifecycle, stated plainly:** Deprecated (AD) and Removed (AF) fall on the same calendar day, a short window by any reading of Doc 9 §26. It is a legitimate lifecycle completion rather than the direct cut-over ruling 2 prohibited, because the platform is at **version 0.1.0 and unreleased** — `hsp/v1` has no external consumers to strand — and AD explicitly reserved removal for an explicit lifecycle session. **This must not be cited as precedent for a same-day retirement on a released contract**, which would still require a genuine migration window or an `hsp/v2` transition (Doc 9 §7). No schema, migration, persistence, capture-model, contract, route or descriptor change; ADR-055 stays at 11 routes. |
 | 1.37 | 2026-09-07 | **DECISION AE — unprojected page ancestors are a documented limit, not a defect (FLAG-PAGEPATH-ANCESTOR-1 settled; scope-owner directive 2026-09-07, resolved on empirical evidence).** Option **(a) accept and document**; (b) deferred to a future OPEN-10 ruling; (c) prohibited by ADR-040. **The flag as raised over-stated the problem, and the correction is the substance.** Verified against live WordPress: `wp_insert_post()` skips slug generation for `draft`/`pending`/`auto-draft`, so a never-published parent normally has an **empty `post_name`** — `get_page_uri()` on the published child then returns the **leaf alone** (`team`, not `about/team`) and `get_page_by_path()` resolves it under **neither** address. WordPress advertises a permalink it cannot route, so in the normal draft case **HSP is at parity — there is no address to miss.** The real divergence is one narrow sub-case: a parent that has **never been published yet carries an explicitly-set slug** (permalink edited on a draft, or an import setting `post_name`), which WordPress *does* resolve and HSP cannot, because the parent has no projection row. The already-published-then-unpublished case was never affected — rows are soft-deleted, never removed, so the slug survives and the path resolves (asserted). **(1)** The limit is accepted and documented. **(2)** It is **pinned by test**, not merely described, so a future OPEN-10 change cannot alter it silently. **(3)** The deprecated one-segment leaf fallback (AD ruling 2) is currently **more permissive than WordPress** here — it returns a child WordPress itself 404s — so retiring it at the Doc 9 §26 transition brings this case to exact parity, a fix rather than a regression. **(b) was not taken** because it changes what the pipeline captures (**OPEN-10**, frozen) and would place never-public content in the delivery store: today the projection holds non-public rows only for content that was public at least once, and widening that turns any future query-predicate slip into a leak of unpublished material — a bug class this codebase has already hit three times. If WordPress fidelity in that sub-case is later judged worth it, **it is an OPEN-10 ruling and must be taken as one**; this decision does not pre-empt it. No schema, migration, persistence, capture-model, contract or code change — one integration test added. |
@@ -2085,6 +2087,181 @@ P2-S7  Full mixed-domain validation + lifecycle/tombstone validation + replay/re
 The vertical order is deliberate — **product → taxonomy/category → attribute definition/term → variation → inventory** — so Variations arrive **after** the attribute semantics they depend on, removing the temporary/duplicate attribute model the naive ordering would force. **P2-S3 and P2-S4 must not be recombined to preserve tidier numbering.**
 
 **P2-S1 ships no Commerce code**, so it proves the Core architecture with a **test-scoped second-domain fixture** that behaves like an independent module but contains **no WooCommerce business logic**. A fake production Commerce module must not be created to satisfy P2-S1. P2-S1 proves the architecture is generically multi-module; **P2-S2 proves Commerce actually consumes it** (`ContentModule` + `CommerceModule` registering simultaneously through the exact generic mechanism, with zero new concrete Commerce reference under `core/`).
+
+---
+
+### DECISION AH — Permalink Reconstruction: Case B Authorised, Implementation Scheduled for Phase 4
+
+**Status: Accepted (architect ruling 2026-09-08). Resolves FLAG-COMMPERMA-1.**
+
+Requirement A (DECISION AG) made permalink parity a Phase 2 verification target and required the
+outcome to be classified Case A / B / C. The P2-S2 and P2-S3 preflights classified it **Case B** — a
+store-level configuration projection is required — and Case B mandates STOP-and-flag rather than
+invention inside a build session. This decision is that ruling.
+
+**The flag is RESOLVED. It is NOT an unresolved architecture gap: the architecture is decided and
+the implementation is scheduled.** Record it as *architecture decided, implementation scheduled for
+Phase 4*, never as an open gap.
+
+**Phase 2 remains correct as shipped** — no stored product permalink, no stored category permalink,
+no derived URL/path/URI column, and no permalink field in the Commerce endpoint contract. Phase 2
+does not reopen.
+
+**(AH-1) A Commerce-owned store-level configuration projection IS authorised — in Phase 4.**
+Conceptually `commerce.store_config`; the exact table shape is a Phase 4 implementation detail
+following the existing canonical-model / adapter / checksum / tombstone rules. It is **ONE
+store-level source**. Permalink configuration is **never duplicated onto** `commerce.products`,
+`commerce.product_variations` or `commerce.taxonomies`, and **no derived permalink is persisted per
+entity**. The consequence is the point: changing `product_base` from `/product/%product_cat%/` to
+`/shop/%product_cat%/` must update the configuration projection **only** — never rewrite every
+Product row.
+
+**(AH-2) Commerce owns it, not Core.** This is WooCommerce-domain state. Do **not** create a generic
+`core.settings`, `system.wordpress_settings` or `platform_permalink_settings` projection because
+Content might one day want something similar — Core must not absorb domain semantics pre-emptively.
+A Core contract may be introduced **only** once two real modules demonstrate a genuinely shared
+capability. Do not generalise from one use case.
+
+**(AH-3) Minimum configuration, with token semantics intact.** The Phase 4 source model preserves at
+minimum the verified WooCommerce semantics for `product_base`, `category_base` and `attribute_base`.
+`product_base` keeps its **template** form — `/product/`, `/shop/`, `/%product_cat%/`,
+`/shop/%product_cat%/` — and must not be flattened into a prematurely derived path. `%product_cat%`
+is **not a separate configuration value**; it is part of the template, and its expansion is the
+resolver's job.
+
+**Those three values must NOT be assumed to be the complete input set.** Before any Phase 4
+migration or API work, verify the COMPLETE state required to reproduce WooCommerce's public relative
+path structure — including whether correct reconstruction also depends on WordPress-level settings
+such as permalink mode/structure, trailing-slash behaviour, site-relative path semantics, or other
+settings the supported WooCommerce version actually consults. **Only verified required settings may
+be added; an arbitrary dump of WordPress options is prohibited.** The aggregate carries the minimum
+stable state the supported permalink contract needs.
+
+**(AH-4) Invalidation flows through the normal pipeline.** Configuration changes travel
+capture → `commerce.store_config.changed` → outbox → relay → dispatch → handler → projection, like
+every other aggregate. Verify the exact hooks against the supported version first; the **preferred
+direction is a narrow option-specific update hook** for the verified option. A generic
+`updated_option` hook is acceptable **only when narrowly guarded to the exact supported option(s)** —
+capturing every WordPress option change as a Commerce event is prohibited. Any additional
+WordPress-level setting found necessary at the Phase 4 preflight needs its own verified invalidation
+mechanism. **Module bootstrap and reconciliation must include the current store configuration**, so
+an existing store converges without waiting for an admin settings edit. No direct WordPress → PostgreSQL
+repair path, and no settings updater that bypasses the event pipeline.
+
+**(AH-5) Permalinks are resolved at READ time.** Never persist `product_permalink`,
+`category_permalink`, `path`, `uri` or `url` as derived columns. Resolution composes
+`commerce.store_config` + `commerce.products` + `commerce.taxonomies`/hierarchy at read time, so a
+base change, a hierarchy change or a slug change is reflected as soon as its own projection
+converges — with **no descendant or product URL rewrite fan-out**, and **no WordPress query during
+delivery** (Rule 6 / ADR-040).
+
+**(AH-6) HSP owns the resolution algorithm.** Every frontend must not independently reimplement
+WooCommerce's permalink-selection rules. This matters most for `%product_cat%`, because a product may
+belong to several categories: Phase 4 must **verify** WooCommerce's supported public behaviour for
+choosing the category portion and implement the equivalent deterministic behaviour from projected
+state. Do **not** arbitrarily pick the first row returned, the lowest taxonomy id, or the
+alphabetically first category unless verification proves that is the supported behaviour. Where
+WooCommerce's behaviour is filter/plugin-extensible beyond what HSP can reproduce generically, HSP
+implements and documents **supported core WooCommerce behaviour** and promises no third-party
+permalink-filter parity. The goal is to match supported WordPress/WooCommerce behaviour as closely
+and deterministically as practical — not to reproduce arbitrary plugin-defined runtime filters
+without their logic.
+
+**(AH-7) Delivery contract: a read-time derived link.** The primary contract is a computed
+`links.permalink` on the affected resource — e.g. `ProductResource` → `links.permalink:
+/clothing/blue-shirt/`, `ProductCategoryResource` → `links.permalink:
+/product-category/clothing/shirts/`. The value is a **RELATIVE PUBLIC PATH** unless a later API
+ruling explicitly authorises absolute URLs, because the WordPress host and the headless frontend host
+may differ and HSP reproduces permalink STRUCTURE without assuming a frontend domain. **This value is
+never persisted** — it is computed from projected state when the resource is read.
+
+**No `GET /hsp/v1/store` endpoint is required to solve this flag.** The store configuration
+projection is first an internal Commerce capability used by the resolver. If Phase 4 has an
+independent consumer requirement for store-level information (currency, permalink configuration,
+other approved settings), `/hsp/v1/store` may be evaluated as part of Phase 4 API design — but a
+broad store endpoint must not be created merely because the internal projection exists. This ruling
+deliberately chooses read-time `links.permalink` over forcing each frontend to reconstruct
+WooCommerce URLs from a `/store` payload.
+
+**(AH-8) Product Category permalinks follow the same model.** Hierarchy is resolved from current
+projected taxonomy relationships; **category paths are not stored**. Ambiguous hierarchical leaf
+slugs use the already-approved exact hierarchical path semantics (DECISION AD/AE/AF). A parent or
+category rename changes the computed permalink as soon as projected state converges. **No WordPress
+term id becomes part of the public addressing contract.**
+
+**(AH-9) The Phase 2 guards.** `test_no_commerce_projection_stores_a_derived_url` is **permanently
+valid in principle** — the projection must never contain derived entity URLs.
+`test_no_commerce_endpoint_publishes_a_permalink` is valid **for the Phase 2 API contract only**.
+When Phase 4 introduces the approved read-time contract, that endpoint guard is **replaced or
+amended, never simply deleted**; the replacement must prove that the permalink exists only as a
+delivery-time derived field, that no Commerce projection stores it, that no WordPress request occurs
+during resolution, that a store-config change alters the resolved path without rewriting Product
+rows, and that a category hierarchy change alters it without stored descendant URLs.
+
+**Roadmap.** Phase 4 gains an explicit item covering: the store-config aggregate/projection; verified
+settings capture and invalidation; initial bootstrap/reconciliation; the Product permalink resolver;
+the Product Category permalink resolver; `%product_cat%` expansion; the `links.permalink` delivery
+contract; no stored derived URLs; no delivery-time WordPress reads; and compatibility tests against
+the supported WooCommerce permalink configurations.
+
+---
+
+### DECISION AI — The Full-Batch Cycle Budget is a Controlled CI Performance Gate
+
+**Status: Accepted (architect ruling 2026-09-08). Resolves FLAG-PERFCYCLE-1.**
+
+`ProcessingCycleIntegrationTest::test_a_full_default_batch_drains_within_the_cycle_time_budget`
+straddled its threshold on the development workstation — six consecutive runs of an unchanged tree
+produced 8.14 s, 9.97 s, 10.18 s, 12.72 s, 14.52 s and 25.05 s against a 10.0 s line. Measurement
+established it as environmental rather than a regression: reverting the session's only Content-path
+change made it *slower*. **Option (a) is chosen — accept as environmental, and require a controlled
+CI performance gate.** Options (b) baseline subtraction and (c) raising the threshold are both
+**rejected**.
+
+**(AI-1) The performance guarantee is unchanged.** The assertion remains: the extrapolated default
+projection batch must drain in **less than half of `processing.cycle_time_budget_seconds`** — with
+the shipped values, a full default batch under **10 seconds** against a 20-second budget. That
+architectural threshold does not move because one workstation has unstable database round-trip
+latency. The test is valuable; the host is simply not a reliable place to enforce it.
+
+**(AI-2) Enforcement moves to a controlled performance environment.** This assertion is classified a
+**PERFORMANCE GATE**, not an ordinary machine-independent integration test. It executes in CI or on
+the designated stable performance runner, where database services are **colocated** with the runner,
+network and storage conditions are stable, and the environment is reproducible enough for a
+10-second gate to mean something. **Containerisation is not the problem and "containers are slow"
+must not be encoded as architecture** — if containers in CI are colocated, controlled, reproducible
+and low-jitter, containers are acceptable. The defect is the noisy host topology, not containers.
+
+**(AI-3) Local execution may skip, explicitly and visibly.** Default local development runs may skip
+this wall-clock gate behind an explicit environment guard — conceptually `HSP_PERFORMANCE_GATE=1`,
+naming to follow project convention. Requirements: the skip is explicit and visible; a skipped gate
+reports as **skipped, never as passed**; the CI performance job explicitly enables it; and release
+evidence must show the gate actually executed in the controlled environment. A developer's standard
+integration suite must not fail at random because host↔container latency changed that morning.
+
+**(AI-4) No self-calibration.** Option (b) is **not authorised in this phase**: no measured network
+baseline, subtraction formula, synthetic latency compensation or host calibration factor. A
+self-calibrating wall-clock test adds machinery and risks subtracting away a real regression. The
+gate measures actual wall-clock work in an environment suitable for measuring it. Keep it simple.
+
+**(AI-5) The threshold does not rise.** Not 10 s → 15 s, not 10 s → 20 s, not any larger number, to
+accommodate the local host. DECISION AG Part 5 item 10 remains in force. **If the controlled runner
+fails the existing budget consistently, that is a STOP-and-flag** and evidence of a genuine
+performance problem — investigate query efficiency, event processing cost, adapter work, source
+loading, PostgreSQL and MySQL access patterns, batch allocation and round-trip count **before**
+requesting an architectural budget change.
+
+**(AI-6) Mixed-domain performance remains a separate, still-required proof.** Two distinct questions:
+**(A)** can one full configured projection batch drain inside the protected cycle budget — enforced
+by the controlled CI gate; **(B)** does adding Commerce consume the SLA margin or starve Content —
+enforced by the Phase 2 mixed-domain scenarios. **Both remain required.** A passing two-event
+mixed-domain measurement does not permanently replace the full-batch gate, and a noisy local
+full-batch run does not invalidate the clean mixed-domain result. P2-S7 preserves both kinds of
+evidence.
+
+**No production behaviour changes because of this flag** — not
+`cycle_time_budget_seconds`, `projection_batch_size`, cron cadence, PHP timeout, PostgreSQL
+connection count, or the execution architecture.
 
 ---
 
