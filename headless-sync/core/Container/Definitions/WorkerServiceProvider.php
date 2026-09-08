@@ -260,6 +260,9 @@ final class WorkerServiceProvider extends ServiceProvider
             return new ProcessingCronRegistrar(
                 static fn (): WorkerInterface => $c->get(WorkerInterface::class),
                 $processing,
+                // Also lazy: the lifecycle runner reaches PostgreSQL, and this registrar is
+                // resolved on every request at plugins_loaded.
+                static fn (): mixed => $c->get(\HSP\Core\Module\ModuleLifecycleRunner::class)->run(),
             );
         });
     }

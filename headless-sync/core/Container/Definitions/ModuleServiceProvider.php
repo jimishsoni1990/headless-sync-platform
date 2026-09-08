@@ -9,6 +9,7 @@ use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Module\ModuleBootstrapState;
 use HSP\Core\Module\ModuleDiscovery;
 use HSP\Core\Module\ModuleLifecycleCoordinator;
+use HSP\Core\Module\ModuleLifecycleRunner;
 use HSP\Core\Module\ModuleLoader;
 use HSP\Core\Module\ModuleRegistrar;
 use HSP\Core\Module\ModuleRegistry;
@@ -72,6 +73,32 @@ final class ModuleServiceProvider extends ServiceProvider
             new ModuleVersionRecorder($c->get('migration.connection.pgsql'))
         );
 
+        // The piece that makes AG-12's automatic activation transition actually happen. The
+        // coordinator decides what state a module is IN; nothing invoked it, so a site where
+        // WooCommerce was activated after HSP never advanced past DISCOVERED. Every dependency
+        // is a lazy closure: resolving this binding on a normal request must not reach
+        // PostgreSQL, and must not fatal on a site that has none configured.
+        $container->singleton(ModuleLifecycleRunner::class, fn(Container $c) =>
+            new ModuleLifecycleRunner(
+                $c->get(ModuleLifecycleCoordinator::class),
+                $c->get(ModuleBootstrapState::class),
+                static fn (): array => $c->get('module.registry')->all(),
+                static function () use ($c): array {
+                    // The EXISTING shared engine — AG-12 forbids a second migration system.
+                    $result = $c->get(\HSP\Core\Onboarding\MigrationApplier::class)->apply();
+
+                    return ['ran' => $result->ran, 'error' => $result->error];
+                },
+                static function (array $aggregateTypes) use ($c): void {
+                    // The ratified re-emission path (DECISION T/U), scoped to this module's
+                    // aggregates. Never a direct WordPress->PostgreSQL copy.
+                    $c->get(\HSP\Core\Reconciliation\ReconciliationService::class)
+                        ->reconcile(\HSP\Core\Reconciliation\ReconciliationService::MODE_FULL, false, $aggregateTypes);
+                },
+                static function (string $message): void {
+                    error_log($message);
+                },
+            ));
         $container->singleton(ModuleLifecycleCoordinator::class, fn(Container $c) =>
             new ModuleLifecycleCoordinator(
                 $c->get(ModuleBootstrapState::class),

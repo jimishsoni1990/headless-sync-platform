@@ -58,10 +58,15 @@ final class ProcessingCronRegistrar
      *        from the container on demand. Invoked only inside runCycle().
      * @param array<string,mixed>         $config         The 'processing' config block
      *        (schedule + interval).
+     * @param \Closure(): void|null $lifecycleResolver Advances the AG-12 module lifecycle at
+     *        the start of each cycle. Lazy and optional for the same reason the engine is:
+     *        resolving the registrar happens on every request, and neither the lifecycle nor
+     *        the engine may open a connection there.
      */
     public function __construct(
         private readonly \Closure $engineResolver,
         array $config = [],
+        private readonly ?\Closure $lifecycleResolver = null,
     ) {
         $this->config = $config;
     }
@@ -104,6 +109,24 @@ final class ProcessingCronRegistrar
      */
     public function runCycle(): void
     {
+        // AG-12's automatic activation transition, run BEFORE the engine so a module that
+        // becomes ready here has its bootstrap re-emission drained by this same cycle.
+        //
+        // This is where the lifecycle belongs under ADR-054: WP-Cron is the only v1.x execution
+        // mechanism, and the cycle is where the platform already does bounded background work
+        // with a PostgreSQL connection in hand. Putting it on `plugins_loaded` instead would
+        // charge every page load a PostgreSQL round trip.
+        //
+        // Wrapped, because a lifecycle problem must never stop the cycle from processing the
+        // backlog it already has.
+        if ($this->lifecycleResolver !== null) {
+            try {
+                ($this->lifecycleResolver)();
+            } catch (\Throwable $e) {
+                error_log('[HSP] module lifecycle skipped this cycle: ' . $e->getMessage());
+            }
+        }
+
         // Materialise the engine only now, when the cron event actually fires — this is
         // the first point the outbox MySQL connection is legitimately needed.
         ($this->engineResolver)()->runCycle();

@@ -93,12 +93,20 @@ final class ReconciliationService
     /**
      * Run a reconciliation pass.
      *
-     * @param string $mode   One of MODE_DRIFT|MODE_INCREMENTAL|MODE_FULL.
-     * @param bool   $dryRun When true, detect and report but do NOT re-emit (status surface).
+     * @param string            $mode   One of MODE_DRIFT|MODE_INCREMENTAL|MODE_FULL.
+     * @param bool              $dryRun When true, detect and report but do NOT re-emit.
+     * @param list<string>|null $only   Restrict the pass to these aggregate types. NULL scans
+     *        everything, which is what the scheduled reconciliation passes do.
+     *
+     *        The scope exists for AG-12's module bootstrap: a module that has just become ready
+     *        owes a convergence pass over ITS OWN aggregates, and re-scanning a sibling module
+     *        that converged months ago is pure cost. It narrows the SAME path rather than adding
+     *        a second one — repair is still re-emission only (DECISION T/U), and an aggregate
+     *        outside the scope is simply not visited, never reported as uncovered.
      *
      * @throws \InvalidArgumentException on unknown mode.
      */
-    public function reconcile(string $mode, bool $dryRun = false): ReconciliationResult
+    public function reconcile(string $mode, bool $dryRun = false, ?array $only = null): ReconciliationResult
     {
         $useChecksum = match ($mode) {
             self::MODE_DRIFT                        => false,
@@ -113,6 +121,10 @@ final class ReconciliationService
         $uncovered  = [];
 
         foreach ($this->sources->aggregateTypes() as $type) {
+            if ($only !== null && ! in_array($type, $only, true)) {
+                continue;
+            }
+
             if (! $this->projections->has($type)) {
                 // A supported aggregate with no registered projection cannot be scanned.
                 // Record it so the pass cannot report success over a platform it only
