@@ -68,4 +68,31 @@ interface WooProductAccess
      * objects instead — a different shape entirely — so only the variation loader calls it.
      */
     public function get_attributes(): mixed;
+
+    /**
+     * The id of whatever entity actually owns this entity's stock (AG-14).
+     *
+     * Its own id, except on a variation whose stock is managed by its parent, where it is the
+     * parent's id. This is WooCommerce's own answer to the ownership question and the reason the
+     * inventory projection needs no ownership rule of its own.
+     */
+    public function get_stock_managed_by_id(): mixed;
+
+    /**
+     * The EFFECTIVE "does this track a quantity" flag: the per-product value gated by the
+     * store-level `woocommerce_manage_stock` option. Prefer this over get_manage_stock(), which
+     * is tri-state on a variation (`true` | `false` | the string `'parent'`).
+     */
+    public function managing_stock(): mixed;
+
+    /** NULL when no quantity is tracked, which is not the same as 0. */
+    public function get_stock_quantity(): mixed;
+
+    /** 'instock' | 'outofstock' | 'onbackorder'. Independent of quantity management. */
+    public function get_stock_status(): mixed;
+
+    /** 'no' | 'notify' | 'yes'. */
+    public function get_backorders(): mixed;
+
+    public function get_low_stock_amount(): mixed;
 }

@@ -53,6 +53,19 @@ final class ProductResource implements ResourceInterface
                 'featured_id' => (int) ($row['featured_media_id'] ?? 0),
                 'gallery_ids' => $this->intList($row['gallery_media_ids'] ?? '[]'),
             ],
+            // NULL when no inventory row has projected — UNKNOWN, deliberately distinguishable
+            // from out of stock (AG-8 / Part 4b). A consumer that chooses to treat null as false
+            // is making its own call; the contract does not make it for them.
+            'stock'              => [
+                'status'     => $this->nullableString($row['stock_status'] ?? null),
+                'managed'    => isset($row['manages_stock']) ? $this->bool($row['manages_stock']) : null,
+                // NULL for both "not tracked" and "not yet known", which are different facts —
+                // `managed` is what tells them apart.
+                'quantity'   => ($row['stock_quantity'] ?? null) !== null
+                    ? (int) $row['stock_quantity']
+                    : null,
+                'backorders' => $this->nullableString($row['backorders'] ?? null),
+            ],
             'published_at'       => $this->nullableString($row['published_at'] ?? null),
             'updated_at'         => $this->nullableString($row['updated_at'] ?? null),
             'meta'               => $this->jsonObject($row['meta_jsonb'] ?? '{}'),

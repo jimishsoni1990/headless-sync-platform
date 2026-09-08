@@ -24,9 +24,10 @@ use HSP\Modules\Commerce\CommerceTaxonomies;
  * `exclude-from-catalog` resolves to visibility 'search' or 'hidden' and must stay out of a
  * catalog listing. Filtering on status alone would publish products the store owner hid.
  *
- * NO INVENTORY JOIN YET — stock arrives in P2-S6, and when it does it is a LEFT JOIN, because
- * a product may legitimately project before its inventory row exists (AG-7/AG-14) and must
- * remain listed with unknown stock rather than vanish behind an INNER JOIN.
+ * STOCK IS JOINED, NOT STORED (AG-8), and the join is a LEFT one (AG-7/AG-14) — see
+ * INVENTORY_JOIN below. The `in_stock` filter is where that tolerance has a limit worth stating:
+ * a product with UNKNOWN inventory is not classified as in stock, because an explicit request
+ * for available products must not be answered with products nothing knows the availability of.
  */
 final class ProductQueryProvider implements QueryProviderInterface
 {
@@ -36,10 +37,27 @@ final class ProductQueryProvider implements QueryProviderInterface
     /** Visibility values that appear in a catalog listing (verified: WC read_visibility()). */
     private const CATALOG_VISIBLE = ['visible', 'catalog'];
 
-    private const COLUMNS = 'id, source_product_id, sku, slug, name, description, short_description,
-                    status, product_type, catalog_visibility, featured,
-                    price, regular_price, sale_price,
-                    featured_media_id, gallery_media_ids, published_at, updated_at, meta_jsonb';
+    private const COLUMNS = 'p.id, p.source_product_id, p.sku, p.slug, p.name, p.description,
+                    p.short_description, p.status, p.product_type, p.catalog_visibility,
+                    p.featured, p.price, p.regular_price, p.sale_price,
+                    p.featured_media_id, p.gallery_media_ids, p.published_at, p.updated_at,
+                    p.meta_jsonb,
+                    i.manages_stock, i.stock_quantity, i.stock_status, i.backorders';
+
+    /**
+     * Stock is JOINED at read time, never copied onto the product row (AG-8).
+     *
+     * A LEFT JOIN, and that single keyword is the whole of the Part 4b read rule. Inventory
+     * and product are independently synchronised aggregates that may arrive in either order
+     * (AG-7), so an INNER JOIN would silently drop every product whose inventory has not
+     * projected yet — a listing that looks correct and is quietly missing rows. With a LEFT
+     * JOIN the product stays readable and its stock columns come back NULL, which the
+     * resource publishes as UNKNOWN rather than as out of stock.
+     */
+    private const INVENTORY_JOIN = "LEFT JOIN commerce.inventory i
+                    ON i.owner_type = 'product'
+                   AND i.owner_id = p.source_product_id
+                   AND i.deleted_at IS NULL";
 
     public function __construct(private readonly DatabaseConnectionInterface $db)
     {
@@ -57,7 +75,7 @@ final class ProductQueryProvider implements QueryProviderInterface
 
         $limit  = min($filters->limit ?? self::DEFAULT_LIMIT, self::MAX_LIMIT);
         $params = [];
-        $where  = ['deleted_at IS NULL'];
+        $where  = ['p.deleted_at IS NULL'];
 
         if ($filters->catalogOnly) {
             $placeholders = [];
@@ -65,33 +83,33 @@ final class ProductQueryProvider implements QueryProviderInterface
                 $params[]       = $visibility;
                 $placeholders[] = '$' . count($params);
             }
-            $where[] = 'catalog_visibility IN (' . implode(', ', $placeholders) . ')';
+            $where[] = 'p.catalog_visibility IN (' . implode(', ', $placeholders) . ')';
         }
 
         if ($filters->productType !== null) {
             $params[] = $filters->productType;
-            $where[]  = 'product_type = $' . count($params);
+            $where[]  = 'p.product_type = $' . count($params);
         }
 
         if ($filters->sku !== null) {
             $params[] = $filters->sku;
-            $where[]  = 'sku = $' . count($params);
+            $where[]  = 'p.sku = $' . count($params);
         }
 
         if ($filters->featured !== null) {
             $params[] = $filters->featured ? 't' : 'f';
-            $where[]  = 'featured = $' . count($params) . '::boolean';
+            $where[]  = 'p.featured = $' . count($params) . '::boolean';
         }
 
         // Prices compare as NUMERIC, never as text: '9' > '10' lexically but not numerically.
         if ($filters->minPrice !== null) {
             $params[] = $filters->minPrice;
-            $where[]  = 'price >= $' . count($params) . '::numeric';
+            $where[]  = 'p.price >= $' . count($params) . '::numeric';
         }
 
         if ($filters->maxPrice !== null) {
             $params[] = $filters->maxPrice;
-            $where[]  = 'price <= $' . count($params) . '::numeric';
+            $where[]  = 'p.price <= $' . count($params) . '::numeric';
         }
 
         if ($filters->categorySlug !== null) {
@@ -107,13 +125,22 @@ final class ProductQueryProvider implements QueryProviderInterface
             $where[]  = $this->attributeFilter(count($params) - 1, count($params));
         }
 
+        // Availability. NEITHER direction accepts a NULL status: missing inventory means "not
+        // yet known", and a filter that treated it as out of stock would drop valid products
+        // from a listing the moment their inventory event lagged (Part 4b).
+        if ($filters->inStock !== null) {
+            $where[] = $filters->inStock
+                ? "i.stock_status = 'instock'"
+                : "i.stock_status IN ('outofstock', 'onbackorder')";
+        }
+
         $cursor = $filters->cursor !== null ? $this->decodeCursor($filters->cursor) : null;
         if ($cursor !== null) {
             $params[] = $cursor['s'];
             $params[] = $cursor['id'];
             $idx      = count($params);
             $where[]  = sprintf(
-                '(published_at < $%d::timestamptz OR (published_at = $%d::timestamptz AND id::text < $%d))',
+                '(p.published_at < $%d::timestamptz OR (p.published_at = $%d::timestamptz AND p.id::text < $%d))',
                 $idx - 1,
                 $idx - 1,
                 $idx,
@@ -125,8 +152,10 @@ final class ProductQueryProvider implements QueryProviderInterface
 
         $rows = $this->db->query(
             sprintf(
-                'SELECT %s FROM commerce.products WHERE %s ORDER BY published_at DESC, id DESC LIMIT $%d',
+                'SELECT %s FROM commerce.products p %s WHERE %s
+                 ORDER BY p.published_at DESC, p.id DESC LIMIT $%d',
                 self::COLUMNS,
+                self::INVENTORY_JOIN,
                 implode(' AND ', $where),
                 count($params),
             ),
@@ -159,8 +188,8 @@ final class ProductQueryProvider implements QueryProviderInterface
     {
         $rows = $this->db->query(
             'SELECT ' . self::COLUMNS . '
-             FROM commerce.products
-             WHERE slug = $1 AND deleted_at IS NULL
+             FROM commerce.products p ' . self::INVENTORY_JOIN . '
+             WHERE p.slug = $1 AND p.deleted_at IS NULL
              LIMIT 1',
             [$slug],
         );
@@ -185,7 +214,7 @@ final class ProductQueryProvider implements QueryProviderInterface
                 SELECT 1
                 FROM commerce.entity_taxonomies et
                 JOIN commerce.taxonomies t ON t.source_term_id = et.source_term_id
-                WHERE et.entity_id = commerce.products.id
+                WHERE et.entity_id = p.id
                   AND t.slug = $%d
                   AND t.taxonomy_type = %s
                   AND t.deleted_at IS NULL
@@ -213,7 +242,7 @@ final class ProductQueryProvider implements QueryProviderInterface
                 SELECT 1
                 FROM commerce.entity_taxonomies et
                 JOIN commerce.taxonomies t ON t.source_term_id = et.source_term_id
-                WHERE et.entity_id = commerce.products.id
+                WHERE et.entity_id = p.id
                   AND t.slug = $%d
                   AND t.taxonomy_type = $%d
                   AND t.deleted_at IS NULL

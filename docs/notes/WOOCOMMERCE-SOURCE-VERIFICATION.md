@@ -318,3 +318,78 @@ product rather than inventing a slug they do not have.
 Variation **stock** is deliberately out of scope for this session and belongs to P2-S6 with the
 rest of AG-14 — including how a variation signals that stock is managed at the parent instead.
 This session projects a variation's identity, pricing and selected attribute values only.
+
+---
+
+## 10. P2-S6 preflight — inventory ownership (the five AG-14 questions)
+
+Verified against WooCommerce 11.1.0 before the migration was written. AG-14 required a
+STOP-and-flag if the installed version's semantics could not fit an owner model. **They fit — and
+better than expected: WooCommerce already names the owner itself.**
+
+### 10.1 THE finding — `get_stock_managed_by_id()`
+
+`WC_Product::get_stock_managed_by_id()` (`abstracts/abstract-wc-product.php:2039`) returns the id
+of the entity that actually owns this entity's stock. The base returns its own id; the variation
+overrides it (`class-wc-product-variation.php:87`):
+
+```php
+public function get_stock_managed_by_id() {
+    return 'parent' === $this->get_manage_stock() ? $this->get_parent_id() : $this->get_id();
+}
+```
+
+So the AG-14 owner model is not something HSP imposes on the source — it is the source's own
+model, and the projection can follow it exactly. The rule that falls out:
+
+> **An entity is an inventory owner iff `get_stock_managed_by_id()` returns its own id.**
+
+That single rule answers questions 1-4 without a special case anywhere.
+
+### 10.2 The five questions
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Simple-product stock ownership | Owns its own. `get_stock_managed_by_id() === get_id()`. |
+| 2 | Variable-parent stock ownership | Same. A variable parent with `manage_stock = true` owns stock for the whole product. |
+| 3 | Variation-managed stock | `get_manage_stock() === true` → the variation owns its own stock. |
+| 4 | How a variation signals inherited stock | `get_manage_stock()` returns the literal STRING `'parent'` — not a bool — and `get_stock_managed_by_id()` then returns the parent id. |
+| 5 | Hooks | `woocommerce_product_set_stock` / `woocommerce_variation_set_stock` (quantity), `woocommerce_product_set_stock_status($id, $status, $product)` / `woocommerce_variation_set_stock_status(...)`. |
+
+### 10.3 FINDING — `get_manage_stock()` is tri-state on a variation
+
+`class-wc-product-variation.php:323-331` returns `true`, `false`, **or the string `'parent'`**.
+A `=== true` check and a truthy check disagree here, and `'parent'` is truthy — so treating the
+value as a boolean makes a parent-managed variation look self-managed and produces exactly the
+duplicated inventory fact AG-14 forbids.
+
+`get_stock_quantity()` and `get_backorders()` on a variation transparently return the PARENT's
+values when management is inherited (`:339-364`), so reading them without checking ownership
+first would store the parent's quantity on the variation as though the variation held it.
+
+### 10.4 FINDING — stock management has a STORE-LEVEL gate
+
+`WC_Product::managing_stock()` (`:1885-1890`) returns `false` for every product when the store
+option `woocommerce_manage_stock` is `no`, regardless of the per-product value. So "does this
+entity manage stock" is a two-part question, and the projection stores the EFFECTIVE answer.
+
+`stock_status` is independent of all of this: a product that manages no quantity still has
+`instock` / `outofstock` / `onbackorder`, which is what a catalogue filter actually needs.
+
+### 10.5 The hooks already fire on the OWNER
+
+`wc_update_product_stock()` (`includes/wc-stock-functions.php:30-80`) resolves
+`get_stock_managed_by_id()` first and fires its hooks against `$product_with_stock` — the owner,
+not the entity the caller passed. So a stock change on a parent-managed variation emits
+`woocommerce_product_set_stock` for the PARENT, and capture needs no ownership resolution of its
+own on that path.
+
+### 10.6 Consequence for the projection
+
+`commerce.inventory` carries `(owner_type, owner_id)` and holds **one row per owner** — never a
+row for a parent-managed variation. Reading a variation's stock resolves at read time: its own
+row if it has one, otherwise its parent's. That is the same resolution `get_stock_quantity()`
+performs in WooCommerce, done in SQL rather than stored twice (AG-8).
+
+A variation switching from self-managed to parent-managed stops being an owner, and the ordinary
+orphan sweep tombstones its now-stale row — no inventory-specific repair path.

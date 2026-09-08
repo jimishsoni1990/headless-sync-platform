@@ -481,39 +481,9 @@ final class AttributeIntegrationTest extends TestCase
 
     private function createSchema(): void
     {
-        pg_query($this->pgConn, 'CREATE SCHEMA IF NOT EXISTS system');
-        pg_query($this->pgConn, '
-            CREATE TABLE IF NOT EXISTS system.processed_events (
-                event_id     UUID        NOT NULL,
-                checksum     VARCHAR(64) NOT NULL,
-                processed_at TIMESTAMPTZ NOT NULL,
-                CONSTRAINT pk_system_processed_events PRIMARY KEY (event_id)
-            )
-        ');
-        pg_query($this->pgConn, '
-            CREATE TABLE IF NOT EXISTS system.aggregate_versions (
-                aggregate_type           VARCHAR(100) NOT NULL,
-                aggregate_id             VARCHAR(255) NOT NULL,
-                latest_processed_version BIGINT       NOT NULL,
-                latest_processed_at      TIMESTAMPTZ  NOT NULL,
-                CONSTRAINT pk_system_aggregate_versions PRIMARY KEY (aggregate_type, aggregate_id)
-            )
-        ');
-
-        $dir = \dirname(__DIR__, 3) . '/modules/Commerce/Migrations';
-
-        foreach ([
-            '0001_create_commerce_schema.sql',
-            '0003_create_commerce_taxonomies.sql',
-            '0004_create_commerce_entity_taxonomies.sql',
-            '0005_create_commerce_attributes.sql',
-        ] as $file) {
-            $sql = file_get_contents($dir . '/' . $file);
-            self::assertIsString($sql, "missing migration {$file}");
-            pg_query($this->pgConn, $sql);
-        }
+        \HSP\Tests\Support\CommerceSchema::applySystemTables($this->pgConn);
+        \HSP\Tests\Support\CommerceSchema::applyAll($this->pgConn);
     }
-
     private function connectPgsql(): mixed
     {
         $host = getenv('HSP_TEST_PGSQL_HOST')     ?: '127.0.0.1';

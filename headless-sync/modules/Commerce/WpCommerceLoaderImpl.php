@@ -471,6 +471,95 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
         return $out;
     }
 
+    public function loadInventory(int $entityId): ?array
+    {
+        $entity = $this->product($entityId);
+
+        if ($entity === null) {
+            return null;
+        }
+
+        $productType = (string) $entity->get_type();
+        $ownerType   = InventoryOwner::typeFor($productType);
+
+        // Out of Phase 2 scope owns no inventory this platform projects (AG-13).
+        if ($ownerType === null) {
+            return null;
+        }
+
+        // A variation of an out-of-scope parent is out of scope with it.
+        if ($ownerType === InventoryOwner::TYPE_VARIATION) {
+            $parentId = (int) $entity->get_parent_id();
+
+            if ($parentId <= 0 || ! ProductScope::isSupportedType((string) $this->productType($parentId))) {
+                return null;
+            }
+        }
+
+        // THE ownership question, answered by WooCommerce itself. A parent-managed variation
+        // reports its parent's id here and is therefore NOT an owner — no row, no duplicated
+        // stock fact (AG-14).
+        if (! InventoryOwner::owns($entityId, (int) $entity->get_stock_managed_by_id())) {
+            return null;
+        }
+
+        // managing_stock(), not get_manage_stock(): the former applies the store-level
+        // woocommerce_manage_stock gate, and on a store with stock management disabled the
+        // per-product flag is not the effective answer.
+        $manages = $entity->managing_stock();
+
+        return [
+            'owner_type'       => $ownerType,
+            'owner_id'         => $entityId,
+            // A tri-state value reaches this line, so it is compared, never cast: 'parent' is
+            // truthy and would otherwise read as "manages stock".
+            'manages_stock'    => $manages === true,
+            'stock_quantity'   => $manages === true ? $this->intOrNull($entity->get_stock_quantity()) : null,
+            'stock_status'     => (string) $entity->get_stock_status(),
+            'backorders'       => (string) $entity->get_backorders(),
+            'low_stock_amount' => $this->intOrNull($entity->get_low_stock_amount()),
+        ];
+    }
+
+    /** @return list<int> */
+    public function listInventoryOwnerIdsAfter(int $afterId, int $limit): array
+    {
+        global $wpdb;
+
+        if (! isset($wpdb)) {
+            return [];
+        }
+
+        // Products AND variations in one keyset page. They share the wp_posts id sequence, so a
+        // single `ID > n ORDER BY ID LIMIT k` scan over both post types pages the whole corpus
+        // deterministically — no interleaving of two independently-paged cursors.
+        $sql = $wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts}
+             WHERE post_type IN (%s, %s) AND ID > %d
+             ORDER BY ID ASC
+             LIMIT %d",
+            'product',
+            'product_variation',
+            $afterId,
+            $limit,
+        );
+
+        /** @var list<array<string,mixed>>|null $rows */
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+
+        return array_map(static fn (array $r): int => (int) $r['ID'], $rows ?? []);
+    }
+
+    /** WooCommerce returns '' or null for "not set", which must stay distinct from 0. */
+    private function intOrNull(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return is_numeric($value) ? (int) $value : null;
+    }
+
     /** WooCommerce returns '' for "no price set", which must stay distinct from 0. */
     private function priceString(mixed $value): ?string
     {

@@ -17,15 +17,19 @@ use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Events\EventRegistry;
 use HSP\Core\Operations\Services\RefreshCoordinator;
 use HSP\Modules\Commerce\Adapters\AttributeAdapter;
+use HSP\Modules\Commerce\Adapters\InventoryAdapter;
 use HSP\Modules\Commerce\Adapters\ProductAdapter;
 use HSP\Modules\Commerce\Adapters\TermAdapter;
 use HSP\Modules\Commerce\Adapters\VariationAdapter;
 use HSP\Modules\Commerce\Extractors\AttributeExtractor;
+use HSP\Modules\Commerce\Extractors\InventoryExtractor;
 use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
 use HSP\Modules\Commerce\Extractors\VariationExtractor;
 use HSP\Modules\Commerce\Handlers\AttributeTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\AttributeUpsertHandler;
+use HSP\Modules\Commerce\Handlers\InventoryTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\InventoryUpsertHandler;
 use HSP\Modules\Commerce\Handlers\ProductTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
 use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
@@ -34,6 +38,7 @@ use HSP\Modules\Commerce\Handlers\VariationTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\VariationUpsertHandler;
 use HSP\Modules\Commerce\Migrations\CreateCommerceAttributesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceEntityTaxonomiesMigration;
+use HSP\Modules\Commerce\Migrations\CreateCommerceInventoryMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceProductsMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceProductVariationsMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceTaxonomiesMigration;
@@ -54,10 +59,12 @@ use HSP\Modules\Commerce\Rest\CommerceRestRegistrarFactory;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriber;
 use HSP\Modules\Commerce\Subscribers\CommerceSubscriberRegistrar;
 use HSP\Modules\Commerce\Transformers\AttributeTransformer;
+use HSP\Modules\Commerce\Transformers\InventoryTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
 use HSP\Modules\Commerce\Transformers\VariationTransformer;
 use HSP\Modules\Commerce\Validation\AttributeValidator;
+use HSP\Modules\Commerce\Validation\InventoryValidator;
 use HSP\Modules\Commerce\Validation\ProductValidator;
 use HSP\Modules\Commerce\Validation\TermValidator;
 use HSP\Modules\Commerce\Validation\VariationValidator;
@@ -158,6 +165,24 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
         $container->singleton(AttributeTombstoneHandler::class, fn (Container $c) =>
             new AttributeTombstoneHandler($c->get(AttributeAdapter::class)));
 
+        $container->singleton(InventoryValidator::class, fn () => new InventoryValidator());
+        $container->singleton(InventoryExtractor::class, fn (Container $c) =>
+            new InventoryExtractor($c->get(InventoryValidator::class)));
+        $container->singleton(InventoryTransformer::class, fn () => new InventoryTransformer());
+        $container->singleton(InventoryAdapter::class, fn (Container $c) =>
+            new InventoryAdapter($c->get(DatabaseConnectionInterface::class)));
+
+        $container->singleton(InventoryUpsertHandler::class, fn (Container $c) =>
+            new InventoryUpsertHandler(
+                $c->get(WpCommerceLoader::class),
+                $c->get(InventoryExtractor::class),
+                $c->get(InventoryTransformer::class),
+                $c->get(InventoryAdapter::class),
+            ));
+
+        $container->singleton(InventoryTombstoneHandler::class, fn (Container $c) =>
+            new InventoryTombstoneHandler($c->get(InventoryAdapter::class)));
+
         $container->singleton(VariationValidator::class, fn () => new VariationValidator());
         $container->singleton(VariationExtractor::class, fn (Container $c) =>
             new VariationExtractor($c->get(VariationValidator::class)));
@@ -200,6 +225,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(AttributeTombstoneHandler::class),
                 $c->get(VariationUpsertHandler::class),
                 $c->get(VariationTombstoneHandler::class),
+                $c->get(InventoryUpsertHandler::class),
+                $c->get(InventoryTombstoneHandler::class),
             ));
 
         $container->singleton(CommerceSubscriberRegistrar::class, fn (Container $c) =>
@@ -269,6 +296,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(AttributeTransformer::class),
                 $c->get(VariationExtractor::class),
                 $c->get(VariationTransformer::class),
+                $c->get(InventoryExtractor::class),
+                $c->get(InventoryTransformer::class),
             ));
 
         // --- Operations ------------------------------------------------------
@@ -295,6 +324,7 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                         new CreateCommerceEntityTaxonomiesMigration($conn),
                         new CreateCommerceAttributesMigration($conn),
                         new CreateCommerceProductVariationsMigration($conn),
+                        new CreateCommerceInventoryMigration($conn),
                     ];
                 },
             ));
@@ -361,6 +391,15 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             'product_variation',
             'commerce.product_variations',
             'source_variation_id',
+        ));
+
+        // commerce.inventory holds one aggregate type, so no discriminator — but note the source
+        // identity column is `owner_id` rather than a `source_*_id`: a stock fact is addressed by
+        // whoever owns it, and that owner may be a product or a variation (AG-14).
+        $projections->register(new ProjectionDescriptor(
+            'inventory',
+            'commerce.inventory',
+            'owner_id',
         ));
 
         /** @var RefreshCoordinator $coordinator */

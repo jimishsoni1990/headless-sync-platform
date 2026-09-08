@@ -53,6 +53,12 @@ final class CommerceEventTypes
     public const VARIATION_UPDATED = 'commerce.product_variation.updated';
     public const VARIATION_DELETED = 'commerce.product_variation.deleted';
 
+    // Inventory (P2-S6). ONE aggregate covering both owner kinds, because a stock fact is one
+    // fact whoever holds it — a product or a variation (AG-14). The aggregate id is the OWNER's
+    // WordPress id, which is unique across both because they share the wp_posts sequence.
+    public const INVENTORY_UPDATED = 'commerce.inventory.updated';
+    public const INVENTORY_DELETED = 'commerce.inventory.deleted';
+
     /** @var list<string> */
     public const ALL = [
         self::PRODUCT_CREATED,
@@ -70,5 +76,7 @@ final class CommerceEventTypes
         self::VARIATION_CREATED,
         self::VARIATION_UPDATED,
         self::VARIATION_DELETED,
+        self::INVENTORY_UPDATED,
+        self::INVENTORY_DELETED,
     ];
 }

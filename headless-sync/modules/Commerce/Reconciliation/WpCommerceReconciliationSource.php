@@ -10,10 +10,12 @@ use HSP\Modules\Commerce\Extractors\ProductExtractor;
 use HSP\Modules\Commerce\CommerceTaxonomies;
 use HSP\Modules\Commerce\Extractors\AttributeExtractor;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
+use HSP\Modules\Commerce\Extractors\InventoryExtractor;
 use HSP\Modules\Commerce\Extractors\VariationExtractor;
 use HSP\Modules\Commerce\ProductScope;
 use HSP\Modules\Commerce\Transformers\AttributeTransformer;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
+use HSP\Modules\Commerce\Transformers\InventoryTransformer;
 use HSP\Modules\Commerce\Transformers\VariationTransformer;
 use HSP\Modules\Commerce\Transformers\ProductTransformer;
 use HSP\Modules\Commerce\WpCommerceLoader;
@@ -43,6 +45,7 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
         'attribute',
         'attribute_term',
         'product_variation',
+        'inventory',
     ];
 
     public function __construct(
@@ -55,6 +58,8 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
         private readonly AttributeTransformer $attributeTransformer,
         private readonly VariationExtractor $variationExtractor,
         private readonly VariationTransformer $variationTransformer,
+        private readonly InventoryExtractor $inventoryExtractor,
+        private readonly InventoryTransformer $inventoryTransformer,
     ) {
     }
 
@@ -104,6 +109,18 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             );
         }
 
+        if ($aggregateType === 'inventory') {
+            // CANDIDATES, not owners: products and variations together, unfiltered. Filtering to
+            // actual owners here would make the corpus skip a variation that has just STOPPED
+            // owning its stock — and skipping it is exactly what would leave its now-stale
+            // inventory row published forever, because the orphan sweep only examines ids the
+            // corpus produces.
+            return array_map(
+                static fn (int $id): string => (string) $id,
+                $this->loader->listInventoryOwnerIdsAfter($afterId, $limit),
+            );
+        }
+
         if ($aggregateType !== 'product') {
             return [];
         }
@@ -128,6 +145,15 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             $term = $this->loader->loadTerm((int) $aggregateId);
 
             return new SourceState($term !== null, $term !== null, null);
+        }
+
+        if ($aggregateType === 'inventory') {
+            // Not an owner reads as NOT PUBLIC rather than absent, so the orphan path tombstones
+            // a row that has stopped being this entity's fact to hold (AG-14). Reporting it
+            // absent would say something false about the entity, which still exists.
+            $owns = $this->loader->loadInventory((int) $aggregateId) !== null;
+
+            return new SourceState($owns, $owns, null);
         }
 
         if ($aggregateType === 'product_variation') {
@@ -203,6 +229,14 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
             return $raw === null
                 ? null
                 : $this->variationTransformer->transform($this->variationExtractor->extract($raw))->getChecksum();
+        }
+
+        if ($aggregateType === 'inventory') {
+            $raw = $this->loader->loadInventory((int) $aggregateId);
+
+            return $raw === null
+                ? null
+                : $this->inventoryTransformer->transform($this->inventoryExtractor->extract($raw))->getChecksum();
         }
 
         if ($aggregateType !== 'product') {

@@ -72,6 +72,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 self::query('attribute', 'string', 'Full attribute taxonomy name, e.g. pa_colour. '
                     . 'Applied only together with attribute_term.'),
                 self::query('attribute_term', 'string', 'Attribute term slug within that taxonomy.'),
+                self::query('in_stock', 'boolean', 'Availability. Products whose inventory has '
+                    . 'not projected yet match NEITHER value: unknown is not in stock, and it is '
+                    . 'not out of stock either.'),
             ],
             responseSchema: $this->productSchema()->asCursorPage(),
             requestSchema: null,
@@ -317,6 +320,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             'prices'             => 'object',
             // Attachment id references; content.media owns the projection (AG-10).
             'media'              => 'object',
+            // Joined from commerce.inventory at read time, never stored on the product (AG-8).
+            // Every field inside is nullable, and null means UNKNOWN rather than out of stock.
+            'stock'              => 'object',
             'published_at'       => 'string',
             'updated_at'         => 'string',
             'meta'               => 'object',

@@ -35,6 +35,7 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
         'attribute',
         'attribute_term',
         'product_variation',
+        'inventory',
     ];
 
     public function __construct(
@@ -57,6 +58,24 @@ final class CommerceReplayEmitter implements ReplayEmitterInterface
     ): EventInterface {
         if ($aggregateType === 'product_category' || $aggregateType === 'attribute_term') {
             return $this->emitTerm($aggregateType, $aggregateId, $correlationId, $causationId);
+        }
+
+        if ($aggregateType === 'inventory') {
+            // The loader answers the whole question: it returns null when the entity is gone,
+            // out of scope, OR no longer the owner of its stock. All three mean the projection
+            // must stop being published, so all three re-emit as DELETED (DECISION I).
+            $owns = $this->loader->loadInventory((int) $aggregateId) !== null;
+
+            return $this->events->provide(
+                $owns ? CommerceEventTypes::INVENTORY_UPDATED : CommerceEventTypes::INVENTORY_DELETED,
+                $aggregateId,
+                [
+                    'correlation_id'    => $correlationId,
+                    'causation_id'      => $causationId,
+                    'source_updated_at' => new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+                    'payload'           => ['owner_id' => (int) $aggregateId],
+                ],
+            );
         }
 
         if ($aggregateType === 'product_variation') {

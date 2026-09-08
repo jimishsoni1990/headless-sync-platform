@@ -152,7 +152,7 @@ final class ProductDeliveryTest extends TestCase
     {
         $this->provider->list(new ProductFilterSet());
 
-        self::assertStringContainsString('ORDER BY published_at DESC, id DESC', $this->lastSql());
+        self::assertStringContainsString('ORDER BY p.published_at DESC, p.id DESC', $this->lastSql());
     }
 
     public function testTheListingFetchesOneExtraRowToDetectAFurtherPage(): void

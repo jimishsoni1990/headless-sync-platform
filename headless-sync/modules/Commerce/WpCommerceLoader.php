@@ -110,4 +110,29 @@ interface WpCommerceLoader
 
     /** Does a variation with this id exist in WordPress right now? */
     public function variationExists(int $variationId): bool;
+
+    /**
+     * Read one stock owner's inventory state.
+     *
+     * Returns null when the entity does not exist, is out of Phase 2 scope, or — the case that
+     * matters — is NOT the owner of its own stock (AG-14). A variation whose `manage_stock` is
+     * `'parent'` reads as absent here, because the parent holds that fact and inventing a second
+     * copy for the variation is precisely what the ruling forbids.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function loadInventory(int $entityId): ?array;
+
+    /**
+     * Candidate stock-owner ids greater than $afterId, ascending — the reconciliation corpus.
+     *
+     * CANDIDATES, not owners: this pages products and variations together, and whether each is
+     * actually an owner is answered by loadInventory(). Filtering here instead would make the
+     * corpus skip a variation that has just stopped owning its stock — and skipping it is what
+     * would leave its now-stale inventory row visible forever, since the orphan sweep only
+     * examines ids the corpus produces.
+     *
+     * @return list<int>
+     */
+    public function listInventoryOwnerIdsAfter(int $afterId, int $limit): array;
 }

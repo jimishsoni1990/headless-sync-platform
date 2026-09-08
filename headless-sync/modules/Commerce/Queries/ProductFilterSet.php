@@ -39,6 +39,14 @@ final class ProductFilterSet implements QueryFilterInterface
      *                                   taxonomy, so `blue` on its own could match a pa_colour
      *                                   term and a pa_finish term at once.
      * @param string|null $attributeTermSlug Term slug inside that attribute taxonomy.
+     * @param bool|null   $inStock       Availability. NULL applies no filter, which is not the
+     *                                   same as false. TRUE requires a KNOWN in-stock status: a
+     *                                   product whose inventory has not projected yet is
+     *                                   excluded, because answering "show me what I can buy"
+     *                                   with products of unknown availability is wrong in the
+     *                                   direction that costs a customer an order. FALSE is the
+     *                                   mirror image and equally strict — unknown is not out of
+     *                                   stock either (Part 4b read rules).
      * @param string|null $cursor
      * @param int|null    $limit
      */
@@ -53,6 +61,7 @@ final class ProductFilterSet implements QueryFilterInterface
         public readonly ?string $categorySlug = null,
         public readonly ?string $attributeTaxonomy = null,
         public readonly ?string $attributeTermSlug = null,
+        public readonly ?bool $inStock = null,
         public readonly ?string $cursor = null,
         public readonly ?int $limit = null,
     ) {

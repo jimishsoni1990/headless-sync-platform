@@ -113,6 +113,80 @@ final class HookWiring
         // `product_variation` is a post type — so only the create/update pair is new here.
         add_action('woocommerce_new_product_variation', [$this, 'onVariationCreated'], 10, 1);
         add_action('woocommerce_update_product_variation', [$this, 'onVariationUpdated'], 10, 1);
+
+        // Inventory (P2-S6). WooCommerce resolves the stock OWNER before firing these — verified,
+        // wc_update_product_stock() calls get_stock_managed_by_id() and fires against the owner —
+        // so a stock change on a parent-managed variation arrives here as the PARENT's event and
+        // capture needs no ownership resolution of its own.
+        add_action('woocommerce_product_set_stock', [$this, 'onStockChanged'], 10, 1);
+        add_action('woocommerce_variation_set_stock', [$this, 'onStockChanged'], 10, 1);
+        add_action('woocommerce_product_set_stock_status', [$this, 'onStockStatusChanged'], 10, 1);
+        add_action('woocommerce_variation_set_stock_status', [$this, 'onStockStatusChanged'], 10, 1);
+    }
+
+    /** @param object|int $product The owner WooCommerce resolved, or its id. */
+    public function onStockChanged(mixed $product): void
+    {
+        $this->captureInventory($this->idOf($product));
+    }
+
+    /** The status hooks pass the ID first, unlike the quantity hooks which pass the object. */
+    public function onStockStatusChanged(mixed $productId): void
+    {
+        $this->captureInventory($this->idOf($productId));
+    }
+
+    /**
+     * Emit an inventory event for one stock owner.
+     *
+     * Inventory gets its own guard-key namespace, and that is load-bearing rather than tidy: a
+     * single product save fires the product hooks AND the stock hooks, and the two are separate
+     * aggregates that must each emit exactly once. Sharing the product's map would let whichever
+     * fired first suppress the other entirely.
+     *
+     * OWNERSHIP IS NOT DECIDED HERE. Capture emits for the id it is handed; the handler reloads
+     * current state and discovers whether that entity still owns its stock. Deciding at capture
+     * would mean a variation that has just stopped being an owner emits nothing — and emitting
+     * nothing is what would leave its stale inventory row published forever.
+     */
+    private function captureInventory(int $ownerId, bool $terminal = false): void
+    {
+        if ($ownerId <= 0) {
+            return;
+        }
+
+        $key = 'inv:' . $ownerId;
+
+        if ($terminal) {
+            if (isset($this->deletedTerms[$key])) {
+                return;
+            }
+
+            $this->deletedTerms[$key] = true;
+            $this->handledTerms[$key] = true;
+        } else {
+            if (isset($this->handledTerms[$key]) || isset($this->deletedTerms[$key])) {
+                return;
+            }
+
+            $this->handledTerms[$key] = true;
+        }
+
+        $this->captureEvent(
+            $terminal ? CommerceEventTypes::INVENTORY_DELETED : CommerceEventTypes::INVENTORY_UPDATED,
+            (string) $ownerId,
+            ['owner_id' => $ownerId],
+        );
+    }
+
+    /** WooCommerce passes an id to some stock hooks and a WC_Product to others. */
+    private function idOf(mixed $value): int
+    {
+        if (is_int($value) || is_string($value)) {
+            return (int) $value;
+        }
+
+        return is_object($value) && method_exists($value, 'get_id') ? (int) $value->get_id() : 0;
     }
 
     public function onVariationCreated(int $variationId): void
@@ -163,6 +237,11 @@ final class HookWiring
             'variation_id' => $variationId,
             'parent_id'    => $parentId,
         ]);
+
+        // As for products — and here it also covers the AG-14 transition that has no stock hook
+        // at all: toggling a variation between self-managed and parent-managed changes who owns
+        // the fact without changing any quantity.
+        $this->captureInventory($variationId);
     }
 
     private function captureVariationDelete(int $variationId): void
@@ -178,6 +257,7 @@ final class HookWiring
         $this->captureEvent(CommerceEventTypes::VARIATION_DELETED, (string) $variationId, [
             'variation_id' => $variationId,
         ]);
+        $this->captureInventory($variationId, terminal: true);
     }
 
     private function variationParentId(int $variationId): int
@@ -307,6 +387,12 @@ final class HookWiring
         $this->handled[$productId] = true;
 
         $this->capture($eventType, $productId);
+
+        // manage_stock, backorders and low_stock_amount change on an ORDINARY save without
+        // firing any stock hook, so inventory is refreshed alongside every product upsert. The
+        // duplicate this creates when a stock hook also fires is collapsed by the guard, and an
+        // unchanged inventory is write-suppressed downstream anyway (DECISION 3).
+        $this->captureInventory($productId);
     }
 
     private function captureDelete(int $productId): void
@@ -320,6 +406,7 @@ final class HookWiring
         $this->handled[$productId] = true;
 
         $this->capture(CommerceEventTypes::PRODUCT_DELETED, $productId);
+        $this->captureInventory($productId, terminal: true);
     }
 
     /**

@@ -27,6 +27,12 @@ use PHPUnit\Framework\TestCase;
  *  3. UNSUPPORTED TYPES ARE NEVER CAPTURED (AG-13). Filtering at the edge is what keeps them
  *     out of the retry/DLQ path entirely — the alternative, discovering the type at
  *     processing time and failing, is exactly what AG-13 forbids.
+ *
+ * Since P2-S6 every product and variation change ALSO emits an inventory event, because
+ * manage_stock, backorders and low_stock_amount change on an ordinary save without firing any
+ * stock hook. They are separate aggregates with separate guard namespaces, so the assertions
+ * below expect both — and that pairing is itself worth asserting: a shared guard would let
+ * whichever fired first silently suppress the other.
  */
 final class CommerceHookWiringTest extends TestCase
 {
@@ -64,7 +70,10 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onProductCreated(42);
 
         self::assertSame(
-            [[CommerceEventTypes::PRODUCT_CREATED, '42']],
+            [
+                [CommerceEventTypes::PRODUCT_CREATED, '42'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '42'],
+            ],
             $this->events->emitted,
         );
     }
@@ -76,7 +85,10 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onProductUpdated(42);
 
         self::assertSame(
-            [[CommerceEventTypes::PRODUCT_UPDATED, '42']],
+            [
+                [CommerceEventTypes::PRODUCT_UPDATED, '42'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '42'],
+            ],
             $this->events->emitted,
         );
     }
@@ -93,7 +105,15 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onProductUpdated(42);
         $this->hooks->onProductUpdated(42);
 
-        self::assertCount(1, $this->events->emitted);
+        // One product event and one inventory event — three hook firings, two aggregates, two
+        // rows. Each aggregate's guard closes independently of the other's.
+        self::assertSame(
+            [
+                [CommerceEventTypes::PRODUCT_CREATED, '42'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '42'],
+            ],
+            $this->events->emitted,
+        );
     }
 
     public function testTheGuardIsPerProductNotGlobal(): void
@@ -104,7 +124,16 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onProductUpdated(1);
         $this->hooks->onProductUpdated(2);
 
-        self::assertCount(2, $this->events->emitted, 'two products are two changes');
+        self::assertSame(
+            [
+                [CommerceEventTypes::PRODUCT_UPDATED, '1'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '1'],
+                [CommerceEventTypes::PRODUCT_UPDATED, '2'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '2'],
+            ],
+            $this->events->emitted,
+            'two products are two changes, each carrying its own inventory',
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -131,8 +160,13 @@ final class CommerceHookWiringTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * Verified against WooCommerce 11.1.0: there is no `woocommerce_delete_product` hook, so
-     * deletion is captured from WordPress's own post lifecycle.
+     * Deletion is captured from WordPress's own post lifecycle rather than from WooCommerce.
+     *
+     * The P2-S2 note behind this said no `woocommerce_delete_product` hook exists; the P2-S5
+     * preflight found that it does, composed at runtime as `'woocommerce_delete_' . $post_type`
+     * and therefore invisible to a grep. The wiring stays as it is for a better reason: the
+     * WordPress hooks fire for EVERY deletion path — a direct `wp_delete_post()`, a WP-CLI
+     * delete, another plugin removing the row — none of which reach a WooCommerce data store.
      */
     public function testDeletingAProductEmitsADeletedEventFromTheWordPressHook(): void
     {
@@ -141,8 +175,12 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onAfterDeletePost(42, $post);
 
         self::assertSame(
-            [[CommerceEventTypes::PRODUCT_DELETED, '42']],
+            [
+                [CommerceEventTypes::PRODUCT_DELETED, '42'],
+                [CommerceEventTypes::INVENTORY_DELETED, '42'],
+            ],
             $this->events->emitted,
+            'a deleted product takes its inventory row with it',
         );
     }
 
@@ -165,7 +203,13 @@ final class CommerceHookWiringTest extends TestCase
 
         $this->hooks->onAfterDeletePost(42, (object) ['post_type' => 'product']);
 
-        self::assertSame([[CommerceEventTypes::PRODUCT_DELETED, '42']], $this->events->emitted);
+        self::assertSame(
+            [
+                [CommerceEventTypes::PRODUCT_DELETED, '42'],
+                [CommerceEventTypes::INVENTORY_DELETED, '42'],
+            ],
+            $this->events->emitted,
+        );
     }
 
     /**
@@ -179,7 +223,15 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onAfterDeletePost(42, (object) ['post_type' => 'product']);
         $this->hooks->onProductUpdated(42);
 
-        self::assertSame([[CommerceEventTypes::PRODUCT_DELETED, '42']], $this->events->emitted);
+        // The deletion pair and nothing after it — terminal on BOTH aggregates, so the later
+        // update revives neither the product nor its inventory.
+        self::assertSame(
+            [
+                [CommerceEventTypes::PRODUCT_DELETED, '42'],
+                [CommerceEventTypes::INVENTORY_DELETED, '42'],
+            ],
+            $this->events->emitted,
+        );
     }
 
     public function testDeletionItselfIsNotEmittedTwice(): void
@@ -187,7 +239,85 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onAfterDeletePost(42, (object) ['post_type' => 'product']);
         $this->hooks->onAfterDeletePost(42, (object) ['post_type' => 'product']);
 
-        self::assertCount(1, $this->events->emitted);
+        self::assertSame(
+            [
+                [CommerceEventTypes::PRODUCT_DELETED, '42'],
+                [CommerceEventTypes::INVENTORY_DELETED, '42'],
+            ],
+            $this->events->emitted,
+            'one deletion, one pair of events, however many times the hook fires',
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Variations and inventory (P2-S5 / P2-S6)
+    // -------------------------------------------------------------------------
+
+    public function testDeletingAVariationEmitsItsOwnPairOfEvents(): void
+    {
+        $this->hooks->onAfterDeletePost(77, (object) ['post_type' => 'product_variation']);
+
+        self::assertSame(
+            [
+                [CommerceEventTypes::VARIATION_DELETED, '77'],
+                [CommerceEventTypes::INVENTORY_DELETED, '77'],
+            ],
+            $this->events->emitted,
+        );
+    }
+
+    /**
+     * A stock change emits inventory ONLY.
+     *
+     * The product itself has not changed, and emitting a product event too would burn an
+     * aggregate version and re-run a projection whose checksum has not moved — visible on a
+     * busy store as a permanent trickle of no-op work.
+     */
+    public function testAStockChangeEmitsInventoryAlone(): void
+    {
+        $this->hooks->onStockChanged(42);
+
+        self::assertSame(
+            [[CommerceEventTypes::INVENTORY_UPDATED, '42']],
+            $this->events->emitted,
+        );
+    }
+
+    /** The quantity hooks pass a WC_Product; the status hooks pass an id. Both must work. */
+    public function testAStockHookAcceptsEitherAnObjectOrAnId(): void
+    {
+        $this->hooks->onStockChanged(new class {
+            public function get_id(): int
+            {
+                return 42;
+            }
+        });
+        $this->hooks->onStockStatusChanged(43);
+
+        self::assertSame(
+            [
+                [CommerceEventTypes::INVENTORY_UPDATED, '42'],
+                [CommerceEventTypes::INVENTORY_UPDATED, '43'],
+            ],
+            $this->events->emitted,
+        );
+    }
+
+    /**
+     * Capture does NOT decide ownership — that is the handler's job, from current state.
+     *
+     * Deciding here would mean a variation that has just stopped owning its stock emits
+     * nothing, and emitting nothing is exactly what would leave its now-stale inventory row
+     * published forever (AG-14).
+     */
+    public function testCaptureEmitsInventoryWithoutAskingWhoOwnsIt(): void
+    {
+        $this->hooks->onStockChanged(77);
+
+        self::assertSame(
+            [[CommerceEventTypes::INVENTORY_UPDATED, '77']],
+            $this->events->emitted,
+        );
     }
 
     public function testAnInvalidProductIdIsIgnored(): void

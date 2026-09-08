@@ -6,6 +6,8 @@ namespace HSP\Modules\Commerce\Subscribers;
 
 use HSP\Core\Contracts\EventInterface;
 use HSP\Modules\Commerce\Events\CommerceEventTypes;
+use HSP\Modules\Commerce\Handlers\InventoryTombstoneHandler;
+use HSP\Modules\Commerce\Handlers\InventoryUpsertHandler;
 use HSP\Modules\Commerce\Handlers\ProductTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\ProductUpsertHandler;
 use HSP\Modules\Commerce\Handlers\AttributeTombstoneHandler;
@@ -37,6 +39,8 @@ final class CommerceSubscriber
         private readonly AttributeTombstoneHandler $attributeTombstone,
         private readonly VariationUpsertHandler $variationUpsert,
         private readonly VariationTombstoneHandler $variationTombstone,
+        private readonly InventoryUpsertHandler $inventoryUpsert,
+        private readonly InventoryTombstoneHandler $inventoryTombstone,
     ) {
     }
 
@@ -60,6 +64,8 @@ final class CommerceSubscriber
             CommerceEventTypes::VARIATION_CREATED,
             CommerceEventTypes::VARIATION_UPDATED => $this->variationUpsert->handle($event),
             CommerceEventTypes::VARIATION_DELETED => $this->variationTombstone->handle($event),
+            CommerceEventTypes::INVENTORY_UPDATED => $this->inventoryUpsert->handle($event),
+            CommerceEventTypes::INVENTORY_DELETED => $this->inventoryTombstone->handle($event),
             default => throw new \RuntimeException(
                 "No Commerce handler registered for event type '{$event->getEventType()}'."
             ),

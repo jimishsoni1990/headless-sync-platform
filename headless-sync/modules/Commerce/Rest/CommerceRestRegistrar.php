@@ -288,6 +288,7 @@ final class CommerceRestRegistrar
             categorySlug: $this->param($request, 'category'),
             attributeTaxonomy: $this->attributeTaxonomyParam($request),
             attributeTermSlug: $this->param($request, 'attribute_term'),
+            inStock:     $this->boolParam($request, 'in_stock'),
             cursor:      $this->param($request, 'cursor'),
             limit:       $this->intParam($request, 'limit'),
         );
@@ -324,6 +325,7 @@ final class CommerceRestRegistrar
             'category'  => ['type' => 'string',  'sanitize_callback' => 'sanitize_title'],
             'attribute'      => ['type' => 'string', 'sanitize_callback' => 'sanitize_key'],
             'attribute_term' => ['type' => 'string', 'sanitize_callback' => 'sanitize_title'],
+            'in_stock'       => ['type' => 'boolean'],
         ];
     }
 

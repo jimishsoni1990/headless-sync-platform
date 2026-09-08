@@ -162,6 +162,66 @@ class InMemoryCommerceLoader implements WpCommerceLoader
     }
 
     // -------------------------------------------------------------------------
+    // Inventory
+    // -------------------------------------------------------------------------
+
+    /**
+     * Stock state keyed by OWNER id. A test writes a row here only for an entity that actually
+     * owns its stock — which is the same discipline the real loader enforces by asking
+     * WooCommerce, and keeping it here means a test cannot accidentally assert on a duplicated
+     * inventory fact AG-14 forbids.
+     *
+     * @var array<int, array<string,mixed>>
+     */
+    public array $inventory = [];
+
+    /**
+     * Mirrors the real loader's SCOPE RULE: an entity that is gone, out of Phase 2 scope, or not
+     * the owner of its own stock reads as absent — and all three drive the tombstone path.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function loadInventory(int $entityId): ?array
+    {
+        $row = $this->inventory[$entityId] ?? null;
+
+        if ($row === null) {
+            return null;
+        }
+
+        // A variation's inventory follows its parent's scope, exactly as the variation itself does.
+        if (($row['owner_type'] ?? '') === \HSP\Modules\Commerce\InventoryOwner::TYPE_VARIATION) {
+            $variation  = $this->variations[$entityId] ?? [];
+            $parentType = $this->productType((int) ($variation['parent_id'] ?? 0));
+
+            if ($parentType === null
+                || ! \HSP\Modules\Commerce\ProductScope::isSupportedType($parentType)
+            ) {
+                return null;
+            }
+        }
+
+        return $row;
+    }
+
+    /**
+     * CANDIDATES — products and variations together, unfiltered — matching the real loader.
+     *
+     * @return list<int>
+     */
+    public function listInventoryOwnerIdsAfter(int $afterId, int $limit): array
+    {
+        return $this->idsAfter(
+            array_values(array_unique([
+                ...array_keys($this->products),
+                ...array_keys($this->variations),
+            ])),
+            $afterId,
+            $limit,
+        );
+    }
+
+    // -------------------------------------------------------------------------
 
     /**
      * @param list<int> $ids
