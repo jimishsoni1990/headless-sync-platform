@@ -184,6 +184,53 @@ query:
 
 ---
 
+## 8. Measured — Phase 2, two domains active (P2-S7)
+
+DECISION AG Part 5 item 10 makes one question a **STOP-and-flag**: once Commerce is added, does
+DECISION AB's ≈20.1 s worst case still leave margin? Measured rather than argued, by
+`TwoModuleSystemTest::test_mixed_domain_sync_latency_fits_the_sla` on live MySQL + PostgreSQL:
+
+| Measurement | Result |
+|---|---|
+| Pipeline, 2 events across 2 domains (relay → dispatch → route → project) | **0.103 s** |
+| Cron cadence (`processing.interval_seconds`, from the shipped config) | 20 s |
+| Batch size (**TOTAL**, shared by both domains) | 200 |
+| Typical total | ≈ 10.1 s |
+| Worst case | ≈ 20.1 s |
+| **Margin against the 30 s PRD SLA** | **9.9 s** |
+
+**Answer: no flag needed.** The second domain did not consume the headroom. That is the expected
+result rather than a lucky one, and the reason is architectural: `processing.projection_batch_size`
+is the TOTAL per-cycle budget shared by both domains (AG-4), never a per-domain allowance, so
+adding a module changes *which* events a cycle processes, not *how many*. The pipeline cost itself
+is dominated by two database round trips per event, which the domain does not change.
+
+Two assertions hold that in place, both in `TwoModuleSystemTest`:
+
+- `test_a_second_domain_does_not_enlarge_the_cycle` — with a backlog larger than one cycle split
+  across both domains, the cycle still projects at most `projection_batch_size` events.
+- `test_the_projection_batch_is_a_total_not_a_per_domain_budget` — a 10-event budget with two
+  active domains projects 10 events, not 10 per domain.
+
+### Known flakiness — FLAG-PERFCYCLE-1
+
+`ProcessingCycleIntegrationTest::test_a_full_default_batch_drains_within_the_cycle_time_budget`
+extrapolates a 100-event harness batch to the shipped 200 and asserts it sits inside half the
+cycle budget. On the development machine that assertion straddles its threshold: six consecutive
+runs of an unchanged tree produced 8.14 s, 9.97 s, 10.18 s, 12.72 s, 14.52 s and 25.05 s against a
+10.0 s line.
+
+Measured, not assumed: reverting the only Content-path change of the P2-S4…P2-S6 sessions made it
+**slower** (203 / 68 / 75 ms per event, against 52 / 47 / 51 ms with the change), so the spread is
+environmental — a Windows host talking to two containerised databases — and not a regression.
+
+**The threshold is left untouched.** Raising a budget to make a test pass is precisely the move
+Part 5 item 10 prohibits; the honest record is this flag. What the number is really sensitive to
+is round-trip latency to MySQL and PostgreSQL, so a CI environment with local databases is where
+it should be trusted.
+
+---
+
 ## Source index (open only if the digest is insufficient)
 
 | Topic | Where |

@@ -183,6 +183,7 @@ final class InventoryIntegrationTest extends TestCase
      */
     public function test_untracked_stock_is_null_not_zero(): void
     {
+        $this->givenProduct(42, 'made-to-order');
         $this->givenInventory(42, manages: false);
         $this->projectInventory(42);
 
@@ -195,6 +196,7 @@ final class InventoryIntegrationTest extends TestCase
 
     public function test_an_unchanged_inventory_is_write_suppressed(): void
     {
+        $this->givenProduct(42, 'widget');
         $this->givenInventory(42);
         $this->projectInventory(42);
 
@@ -208,6 +210,7 @@ final class InventoryIntegrationTest extends TestCase
 
     public function test_a_quantity_change_reaches_the_projection(): void
     {
+        $this->givenProduct(42, 'widget');
         $this->givenInventory(42, quantity: 5);
         $this->projectInventory(42);
 
@@ -309,6 +312,7 @@ final class InventoryIntegrationTest extends TestCase
     /** One row per owner, whatever the redelivery pattern (Rule 4). */
     public function test_one_row_per_owner(): void
     {
+        $this->givenProduct(42, 'widget');
         $this->givenInventory(42);
 
         foreach ([1, 2, 3] as $version) {
@@ -531,6 +535,7 @@ final class InventoryIntegrationTest extends TestCase
      */
     public function test_the_owner_key_is_unique(): void
     {
+        $this->givenProduct(42, 'widget');
         $this->givenInventory(42);
         $this->projectInventory(42);
 

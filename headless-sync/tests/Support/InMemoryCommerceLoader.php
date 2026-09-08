@@ -189,16 +189,17 @@ class InMemoryCommerceLoader implements WpCommerceLoader
             return null;
         }
 
-        // A variation's inventory follows its parent's scope, exactly as the variation itself does.
-        if (($row['owner_type'] ?? '') === \HSP\Modules\Commerce\InventoryOwner::TYPE_VARIATION) {
-            $variation  = $this->variations[$entityId] ?? [];
-            $parentType = $this->productType((int) ($variation['parent_id'] ?? 0));
+        // Scope follows the owner (AG-13), and which entity that is depends on the owner type.
+        // A variation's inventory follows its PARENT's type, exactly as the variation itself
+        // does; a product's follows its own.
+        $scopeOwnerId = ($row['owner_type'] ?? '') === \HSP\Modules\Commerce\InventoryOwner::TYPE_VARIATION
+            ? (int) ($this->variations[$entityId]['parent_id'] ?? 0)
+            : $entityId;
 
-            if ($parentType === null
-                || ! \HSP\Modules\Commerce\ProductScope::isSupportedType($parentType)
-            ) {
-                return null;
-            }
+        $type = $this->productType($scopeOwnerId);
+
+        if ($type === null || ! \HSP\Modules\Commerce\ProductScope::isSupportedType($type)) {
+            return null;
         }
 
         return $row;
