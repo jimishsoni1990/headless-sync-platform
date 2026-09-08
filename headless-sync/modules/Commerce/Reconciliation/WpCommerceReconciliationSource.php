@@ -69,21 +69,41 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
         return self::AGGREGATE_TYPES;
     }
 
-    /** @return list<string> */
+    /**
+     * The reconciliation corpus for one aggregate — IN-SCOPE entities only.
+     *
+     * The scope filter is AG-13 compliance and it is load-bearing. Before it, this returned every
+     * product regardless of type, so `BackfillProgress` counted `grouped` and `external` products
+     * as EXPECTED while the projection correctly excluded them. On the first-run test that left
+     * onboarding stuck at 96% — expected 126, projected 122 — and convergence could never be
+     * reached on any store containing a single unsupported product. AG-13 says it plainly:
+     * unsupported types "must not count as an expected Phase 2 projected Product".
+     *
+     * Filtering costs nothing in tombstone coverage, which is the reason it looked unsafe. An
+     * entity that LEAVES scope still gets tombstoned, because `ReconciliationService::findOrphans()`
+     * enumerates the PROJECTION table and asks `getSourceState()` about each row — that direction
+     * never consults this corpus. So a `variable` product retyped to `grouped` disappears from the
+     * corpus here and is caught from the PostgreSQL side instead, which is where it has to be
+     * caught anyway (it might have been retyped while HSP was not running).
+     *
+     * PAGING: filtering is done INSIDE the pager, not applied to its output. Returning a
+     * short-but-non-empty page is fine, but returning an EMPTY page while ids remain would stop
+     * `ReconciliationService`'s `do/while ($ids !== [])` loop early — so a store whose last page
+     * happened to be entirely `grouped` products would silently truncate the corpus. This loops
+     * until it has $limit in-scope ids or the underlying corpus is genuinely exhausted.
+     *
+     * @return list<string>
+     */
     public function listAggregateIds(string $aggregateType, int $afterId, int $limit): array
     {
         if ($aggregateType === 'product_category') {
-            return array_map(
-                static fn (int $id): string => (string) $id,
-                $this->loader->listTermIdsAfter(CommerceTaxonomies::PRODUCT_CAT, $afterId, $limit),
+            return $this->asStrings(
+                $this->loader->listTermIdsAfter(CommerceTaxonomies::PRODUCT_CAT, $afterId, $limit)
             );
         }
 
         if ($aggregateType === 'attribute') {
-            return array_map(
-                static fn (int $id): string => (string) $id,
-                $this->loader->listAttributeIdsAfter($afterId, $limit),
-            );
+            return $this->asStrings($this->loader->listAttributeIdsAfter($afterId, $limit));
         }
 
         if ($aggregateType === 'attribute_term') {
@@ -99,38 +119,92 @@ final class WpCommerceReconciliationSource implements WpReconciliationSourceInte
 
             sort($ids);
 
-            return array_map(static fn (int $id): string => (string) $id, array_slice($ids, 0, $limit));
+            return $this->asStrings(array_slice($ids, 0, $limit));
         }
 
         if ($aggregateType === 'product_variation') {
-            return array_map(
-                static fn (int $id): string => (string) $id,
-                $this->loader->listVariationIdsAfter($afterId, $limit),
-            );
+            return $this->asStrings($this->scopedPage(
+                fn (int $after, int $take): array => $this->loader->listVariationIdsAfter($after, $take),
+                fn (int $id): bool => $this->loader->loadVariation($id) !== null,
+                $afterId,
+                $limit,
+            ));
         }
 
         if ($aggregateType === 'inventory') {
-            // CANDIDATES, not owners: products and variations together, unfiltered. Filtering to
-            // actual owners here would make the corpus skip a variation that has just STOPPED
-            // owning its stock — and skipping it is exactly what would leave its now-stale
-            // inventory row published forever, because the orphan sweep only examines ids the
-            // corpus produces.
-            return array_map(
-                static fn (int $id): string => (string) $id,
-                $this->loader->listInventoryOwnerIdsAfter($afterId, $limit),
-            );
+            // Products and variations page together — they share the wp_posts id sequence — and
+            // an id survives only if it is genuinely an inventory OWNER (AG-14). A variation
+            // whose stock its parent manages is not one, and counting it would make convergence
+            // unreachable in exactly the way the product filter above fixes.
+            return $this->asStrings($this->scopedPage(
+                fn (int $after, int $take): array => $this->loader->listInventoryOwnerIdsAfter($after, $take),
+                fn (int $id): bool => $this->loader->loadInventory($id) !== null,
+                $afterId,
+                $limit,
+            ));
         }
 
         if ($aggregateType !== 'product') {
             return [];
         }
 
-        return array_map(
-            static fn (int $id): string => (string) $id,
-            $this->loader->listProductIdsAfter($afterId, $limit),
-        );
+        return $this->asStrings($this->scopedPage(
+            fn (int $after, int $take): array => $this->loader->listProductIdsAfter($after, $take),
+            fn (int $id): bool => ProductScope::isSupportedType((string) $this->loader->productType($id)),
+            $afterId,
+            $limit,
+        ));
     }
 
+    /**
+     * Page an underlying corpus, keeping only ids that pass $inScope, until $limit is filled or
+     * the corpus is exhausted.
+     *
+     * The inner loop is what makes filtering safe: without it a page consisting entirely of
+     * out-of-scope entities would return empty and be read as "corpus exhausted".
+     *
+     * @param \Closure(int, int): list<int> $page
+     * @param \Closure(int): bool           $inScope
+     * @return list<int>
+     */
+    private function scopedPage(\Closure $page, \Closure $inScope, int $afterId, int $limit): array
+    {
+        $kept   = [];
+        $cursor = $afterId;
+
+        // Bounded: each iteration strictly advances the cursor, and stops the moment the
+        // underlying corpus returns nothing.
+        while (count($kept) < $limit) {
+            $raw = $page($cursor, $limit);
+
+            if ($raw === []) {
+                break;
+            }
+
+            foreach ($raw as $id) {
+                $cursor = max($cursor, $id);
+
+                if ($inScope($id)) {
+                    $kept[] = $id;
+
+                    if (count($kept) >= $limit) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * @param list<int> $ids
+     * @return list<string>
+     */
+    private function asStrings(array $ids): array
+    {
+        return array_map(static fn (int $id): string => (string) $id, $ids);
+    }
     public function getSourceState(string $aggregateType, string $aggregateId): SourceState
     {
         if ($aggregateType === 'attribute') {
