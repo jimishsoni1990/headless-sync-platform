@@ -313,4 +313,18 @@ Before ending a session:
    shipped, any flags raised.
 7. Present the session summary for the approval to commit.
 8. Once approved, commit, merge to main (fast-forward preferred), and push origin/main. A session is not closed until its commits are on origin/main. Leave the working tree clean and reviewable. Do NOT begin the next session's work.
-9. robocopy "j:\HSP\headless-sync" TO "C:\Users\jimis\Local Sites\headless-sync-platform\app\public\wp-content\plugins\headless-sync"
+9. Deploy to the local site — source tree only, no dev dependencies (`vendor/` is 100% `require-dev`
+   and `node_modules/` is build-time only; neither belongs in a WordPress plugins directory):
+   ```
+   set DEST=C:\Users\jimis\Local Sites\headless-sync-platform\app\public\wp-content\plugins\headless-sync
+   robocopy "J:\HSP\headless-sync" "%DEST%" /MIR /XD vendor node_modules tests tools storage
+   robocopy "J:\HSP\headless-sync\vendor" "%DEST%\vendor" autoload.php
+   robocopy "J:\HSP\headless-sync\vendor\composer" "%DEST%\vendor\composer" /MIR
+   <php.exe> <composer.phar> dump-autoload --no-dev --optimize -d "%DEST%"
+   ```
+   Only the Composer autoloader ships from `vendor/`. The final `dump-autoload --no-dev` is
+   REQUIRED, not optional: the dev autoloader has a files-autoload entry for `myclabs/deep-copy`
+   and fatals the plugin once the dev packages are gone. It runs against `%DEST%`, so the source
+   tree keeps its dev autoloader for PHPUnit. `/MIR` prunes files deleted since the last deploy;
+   `/XD storage` preserves runtime logs on the site. See [[reference-tools]] for the PHP path —
+   `php` is not on PATH, so bare `composer` fails.
