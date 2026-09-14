@@ -22,6 +22,13 @@ use HSP\Core\Contracts\Operations\SchemaObject;
  * number would hand consumers a binary float; media are id references, because `content.media`
  * owns attachment state (AG-10); and there is no `permalink` field, because the WooCommerce
  * permalink base is configurable and a stored URL would go stale (FLAG-COMMPERMA-1).
+ *
+ * The `woo_*` identifiers are the one deliberate exception to HSP keeping source ids out of the
+ * published contract: WooCommerce is the transactional authority a storefront hands off to, and
+ * every native cart mechanism it offers is keyed on WordPress post ids. They are interoperability
+ * identifiers, not addressing — `/products/{slug}` is unchanged — and not a precedent for
+ * exposing source ids elsewhere. Ratified by DECISION AK, which authorises them for Commerce
+ * Product + Variation ONLY and is explicitly not a precedent for the rest of the platform.
  */
 final class CommerceEndpointProvider implements EndpointProviderInterface
 {
@@ -249,26 +256,54 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private function variationSchema(): SchemaObject
     {
         return SchemaObject::object([
-            'id'          => 'string',
-            'source_id'   => 'integer',
-            // The parent's source id, so a consumer holding a variation can get back to it.
-            'product_id'  => 'integer',
+            'id'               => 'string',
+            // LEGACY generic identity, retained for compatibility only (DECISION AK-9). These are
+            // NOT the Woo handoff contract: `source_id` names a different kind of entity on every
+            // other Commerce resource — a term id on /product-categories, an attribute-definition
+            // id on /product-attributes — so a consumer cannot read Woo semantics off the name.
+            // The explicit `woo_*` fields below are what a handoff uses.
+            'source_id'        => [
+                'type'        => 'integer',
+                'description' => 'Legacy generic source identifier, retained for compatibility. '
+                    . 'NOT the WooCommerce interoperability contract: use woo_variation_id for '
+                    . 'Woo variation interoperability.',
+            ],
+            'product_id'       => [
+                'type'        => 'integer',
+                'description' => "Legacy generic reference to this variation's parent, retained "
+                    . 'for compatibility. NOT the WooCommerce interoperability contract: use '
+                    . 'woo_product_id for the parent Woo product identity.',
+            ],
+            'woo_product_id'   => self::wooProductIdSchema(
+                'Authoritative WooCommerce product id of this variation\'s PARENT product — the '
+                . '`$product_id` argument of a native add-to-cart, never the variation itself.'
+            ),
+            'woo_variation_id' => [
+                'type'        => 'integer',
+                'minimum'     => 1,
+                'description' => 'Authoritative WooCommerce variation id for this variation, as '
+                    . 'accepted by native WooCommerce cart flows (the `$variation_id` argument, '
+                    . 'or the `variation_id` form field). Distinct from woo_product_id: a cart '
+                    . 'handoff for a variable product needs BOTH, and they are never '
+                    . 'interchangeable. Site-specific — authoritative for the connected source '
+                    . 'WooCommerce site only, not a globally unique identifier.',
+            ],
             // NULLABLE for the same reason as a product's: the column is `VARCHAR(255) NULL`.
-            'sku'         => [
+            'sku'              => [
                 'type'        => ['string', 'null'],
                 'description' => 'Stock keeping unit, or null when the store has not set one.',
             ],
-            'name'        => 'string',
-            'description' => 'string',
-            'status'      => 'string',
+            'name'             => 'string',
+            'description'      => 'string',
+            'status'           => 'string',
             // Exact decimal strings, never JSON numbers (Requirement C).
-            'prices'      => self::pricesSchema(),
+            'prices'           => self::pricesSchema(),
             // taxonomy => selected value. An EMPTY value means "any value of this attribute",
             // which is not the same as the attribute being absent.
-            'attributes'  => self::variationAttributesSchema(),
+            'attributes'       => self::variationAttributesSchema(),
             // Attachment id reference; content.media owns the projection (AG-10).
-            'media'       => self::variationMediaSchema(),
-            'menu_order'  => 'integer',
+            'media'            => self::variationMediaSchema(),
+            'menu_order'       => 'integer',
         ]);
     }
 
@@ -316,7 +351,22 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     {
         return SchemaObject::object([
             'id'                 => 'string',
-            'source_id'          => 'integer',
+            // LEGACY generic identity, retained for compatibility only (DECISION AK-9). NOT the
+            // Woo handoff contract: `source_id` means a term id on /product-categories and an
+            // attribute-definition id on /product-attributes, so the name carries no WooCommerce
+            // semantics a consumer could rely on. `woo_product_id` below is what a handoff uses.
+            'source_id'          => [
+                'type'        => 'integer',
+                'description' => 'Legacy generic source identifier, retained for compatibility. '
+                    . 'NOT the WooCommerce interoperability contract: use woo_product_id for Woo '
+                    . 'product interoperability.',
+            ],
+            'woo_product_id'     => self::wooProductIdSchema(
+                'Authoritative WooCommerce product id for this product, as accepted by native '
+                . 'WooCommerce cart flows. For a variable product this is the PARENT id — the '
+                . 'selected variation is identified by woo_variation_id on the variation '
+                . 'resource, which a simple product does not have.'
+            ),
             // NULLABLE: `commerce.products.sku` is `VARCHAR(255) NULL` because a WooCommerce SKU
             // is optional. A product without one publishes null, not an empty string.
             'sku'                => [
@@ -360,6 +410,36 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     // (ADR-055 (a)) — a nested field left as a bare `type: object` gives a generated consumer
     // type no way to read data the contract deliberately publishes.
     // -------------------------------------------------------------------------
+
+    /**
+     * The WooCommerce product id, shared by the product and variation contracts.
+     *
+     * WHY A WORDPRESS ID IS IN A PUBLIC CONTRACT AT ALL. HSP does not publish source ids so that
+     * consumers can address HSP resources — addressing stays `/products/{slug}` and nothing here
+     * changes it. This one is an INTEROPERABILITY identifier: WooCommerce remains the
+     * transactional authority for cart, pricing, stock, tax, coupons, shipping and checkout, and
+     * every native handoff it offers — `WC_Cart::add_to_cart()`, the `?add-to-cart=` form
+     * handler, the Store API — is keyed on WordPress post ids. Without this value published under
+     * a name that means it, a storefront browsing HSP has to GUESS that `source_id` happens to be
+     * a Woo id, and a guess is not a contract.
+     *
+     * `minimum: 1` is a real guarantee, not decoration: `source_product_id` is `BIGINT NOT NULL`
+     * with a UNIQUE constraint, and a product with no row has no response at all.
+     *
+     * Site-specific by nature. It identifies the entity on the CONNECTED WooCommerce store; it is
+     * not federated, not globally unique, and carries no meaning against another site.
+     *
+     * @return array<string,mixed>
+     */
+    private static function wooProductIdSchema(string $description): array
+    {
+        return [
+            'type'        => 'integer',
+            'minimum'     => 1,
+            'description' => $description . ' Site-specific: authoritative for the connected '
+                . 'source WooCommerce site only, not a globally unique identifier.',
+        ];
+    }
 
     /**
      * Money, shared by products and variations.

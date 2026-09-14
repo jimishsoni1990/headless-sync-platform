@@ -22,6 +22,14 @@ use HSP\Core\Delivery\JsonMap;
  * objects would need the Core capability contract AG-10 describes, and Phase 2 deliberately
  * does not build that early — the contract ships references and defers expansion.
  *
+ * WOO HANDOFF IDENTITY (DECISION AK). `woo_product_id` is the authoritative WooCommerce product
+ * id for the connected store — the value `WC_Cart::add_to_cart()`, the `?add-to-cart=` form
+ * handler and the Store API all accept. It is published as an INTEROPERABILITY identifier,
+ * because WooCommerce remains the transactional authority for cart, pricing, stock, tax and
+ * checkout; it is not a licence to expose internal ids generally, and it is NOT how HSP
+ * addresses a product — `GET /products/{slug}` is unchanged. Site-specific by nature:
+ * authoritative for the connected source store, never a globally unique identifier.
+ *
  * NO `permalink` FIELD. The WooCommerce permalink base is configurable
  * (`woocommerce_permalinks`), so any URL published here would be a guess that goes stale on a
  * settings change with no event to repair it — raised as FLAG-COMMPERMA-1.
@@ -37,6 +45,12 @@ final class ProductResource implements ResourceInterface
         return [
             'id'                 => (string) ($row['id'] ?? ''),
             'source_id'          => (int) ($row['source_product_id'] ?? 0),
+            // The SAME value as `source_id`, published under a name that says what it is.
+            // `source_id` is generic infrastructure vocabulary — it also appears on categories
+            // and attribute definitions, meaning a term id and a definition id there — so a
+            // consumer holding only the contract cannot tell that this particular one is the
+            // identifier WooCommerce's own cart accepts. This name can only mean that.
+            'woo_product_id'     => (int) ($row['source_product_id'] ?? 0),
             'sku'                => $this->nullableString($row['sku'] ?? null),
             'slug'               => (string) ($row['slug'] ?? ''),
             'name'               => (string) ($row['name'] ?? ''),
