@@ -650,9 +650,9 @@ final class HandlerSpineIntegrationTest extends TestCase
         ');
         pg_query($this->pgConn, '
             CREATE TABLE IF NOT EXISTS content.entity_taxonomies (
-                entity_id   UUID NOT NULL,
-                taxonomy_id UUID NOT NULL,
-                CONSTRAINT pk_content_entity_taxonomies PRIMARY KEY (entity_id, taxonomy_id)
+                entity_id      UUID   NOT NULL,
+                source_term_id BIGINT NOT NULL,
+CONSTRAINT pk_content_entity_taxonomies PRIMARY KEY (entity_id, source_term_id)
             )
         ');
     }

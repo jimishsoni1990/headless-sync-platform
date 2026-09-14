@@ -14,20 +14,21 @@ use PHPUnit\Framework\TestCase;
  * Unit tests for PostAdapter.
  *
  * Query queue layout per persist() call:
- *   slot 0 — fetchExistingRow (pre-txn)
+ *   slot 0 — fetchExistingRow (pre-txn; the row plus its link_count)
  *   slot 1 — lockAggregateVersion FOR UPDATE (inside txn)
- *   slot 2 — taxonomy UUID lookup (only when !$suppressProjection and categoryIds non-empty)
  *
- * Execute layout per persist() call (non-suppressed, 2 categories):
+ * There is no taxonomy-lookup slot: since migration 0009 links are keyed by the term's SOURCE
+ * id, so the adapter never resolves a projection UUID (Finding 004).
+ *
+ * Execute layout per persist() call (non-suppressed, any number of categories):
  *   #1 lockAggregateVersion sentinel INSERT  (contains 'aggregate_versions', no GREATEST)
  *   #2 upsertPost                            (contains 'content.posts')
  *   #3 DELETE FROM content.entity_taxonomies
- *   #4 INSERT INTO content.entity_taxonomies (catA)
- *   #5 INSERT INTO content.entity_taxonomies (catB)
- *   #6 insertProcessedEvent                  (contains 'processed_events')
- *   #7 upsertAggregateVersion GREATEST upsert (contains 'aggregate_versions', has GREATEST)
+ *   #4 INSERT INTO content.entity_taxonomies (ONE multi-row statement for every term)
+ *   #5 insertProcessedEvent                  (contains 'processed_events')
+ *   #6 upsertAggregateVersion GREATEST upsert (contains 'aggregate_versions', has GREATEST)
  *
- * When projection is suppressed, #2-#5 are absent; #1, #6, #7 still run.
+ * When projection is suppressed, #2-#4 are absent; #1, #5, #6 still run.
  */
 final class PostAdapterTest extends TestCase
 {
@@ -58,14 +59,11 @@ final class PostAdapterTest extends TestCase
 
     public function test_persist_executes_all_ops_inside_a_transaction(): void
     {
-        // slot 0: no prior row; slot 1: FOR UPDATE locked version 0; slot 2: taxonomy lookup
+        // slot 0: no prior row; slot 1: FOR UPDATE locked version 0. There is no third slot:
+        // links are keyed by source_term_id, so the adapter no longer looks a taxonomy UUID up.
         $this->db->queueQueryResults(
             [],
             [['latest_processed_version' => '0']],
-            [
-                ['id' => '01900000-0000-7000-8000-tax000000003'],
-                ['id' => '01900000-0000-7000-8000-tax000000007'],
-            ],
         );
 
         $this->adapter->persist($this->makePost(categoryIds: [3, 7]), $this->event);
@@ -77,7 +75,9 @@ final class PostAdapterTest extends TestCase
 
         self::assertSame(1, $this->db->countExecuteContaining('content.posts'),                    'projection upsert');
         self::assertSame(1, $this->db->countExecuteContaining('DELETE FROM content.entity_taxonomies'), 'join delete');
-        self::assertSame(2, $this->db->countExecuteContaining('INSERT INTO content.entity_taxonomies'), 'join inserts');
+        // ONE statement for both terms: a post in twenty categories must not cost twenty round
+        // trips inside the DECISION 3 transaction.
+        self::assertSame(1, $this->db->countExecuteContaining('INSERT INTO content.entity_taxonomies'), 'one multi-row join insert');
         self::assertSame(1, $this->db->countExecuteContaining('processed_events'),                 'processed_events insert');
         // aggregate_versions: sentinel INSERT + GREATEST upsert
         self::assertSame(2, $this->db->countExecuteContaining('aggregate_versions'),               'sentinel + GREATEST upsert');
@@ -88,7 +88,6 @@ final class PostAdapterTest extends TestCase
         $this->db->queueQueryResults(
             [],
             [['latest_processed_version' => '0']],
-            [['id' => '01900000-0000-7000-8000-tax000000001']],
         );
 
         $this->adapter->persist($this->makePost(categoryIds: [1]), $this->event);
@@ -128,17 +127,26 @@ final class PostAdapterTest extends TestCase
         self::assertSame(0, $this->db->countExecuteContaining('INSERT INTO content.entity_taxonomies'), 'no INSERT for empty set');
     }
 
-    public function test_persist_omits_categories_not_yet_in_content_taxonomies(): void
+    public function test_persist_links_a_category_that_has_not_projected_yet(): void
     {
+        // THE FINDING 004 REGRESSION, at unit level. This used to resolve each term to a
+        // content.taxonomies UUID and silently drop whatever was missing — so a post that
+        // projected before its categories linked to nothing, and because its own checksum never
+        // moved again, no replay or reconciliation could ever repair it. Links are now a pure
+        // function of the post's state: every term is written, in any arrival order.
         $this->db->queueQueryResults(
             [],
             [['latest_processed_version' => '0']],
-            [['id' => '01900000-0000-7000-8000-tax000000001']], // only 1 of 2 resolved
         );
 
         $this->adapter->persist($this->makePost(categoryIds: [1, 99]), $this->event);
 
-        self::assertSame(1, $this->db->countExecuteContaining('INSERT INTO content.entity_taxonomies'), 'only 1 insert for resolved category');
+        $insert = $this->db->firstExecuteContaining('INSERT INTO content.entity_taxonomies');
+
+        self::assertNotNull($insert);
+        self::assertStringContainsString('(entity_id, source_term_id)', $insert['sql']);
+        self::assertContains(1,  $insert['params'], 'the already-projected term is linked');
+        self::assertContains(99, $insert['params'], 'so is the term that has not projected yet');
     }
 
     // -------------------------------------------------------------------------
@@ -149,9 +157,17 @@ final class PostAdapterTest extends TestCase
     {
         $model = $this->makePost(categoryIds: [5]);
 
-        // slot 0: matching checksum; slot 1: FOR UPDATE locked version 0
+        // slot 0: matching checksum AND exactly the term set the model carries — suppression
+        // requires both (DECISION AJ / AJ-1), so a row whose relationship SET differs is not
+        // suppressed however its count compares (covered in CategoryArchiveIntegrationTest).
+        // slot 1: FOR UPDATE locked version 0.
         $this->db->queueQueryResults(
-            [['id' => '01900000-0000-7000-8000-aaaaaaaaaaaa', 'checksum' => $model->getChecksum(), 'deleted_at' => null]],
+            [[
+                'id'            => '01900000-0000-7000-8000-aaaaaaaaaaaa',
+                'checksum'      => $model->getChecksum(),
+                'deleted_at'    => null,
+                'link_term_ids' => '5',
+            ]],
             [['latest_processed_version' => '0']],
         );
 

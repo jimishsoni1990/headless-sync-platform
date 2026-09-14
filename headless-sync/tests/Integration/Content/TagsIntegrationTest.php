@@ -248,7 +248,7 @@ final class TagsIntegrationTest extends TestCase
         // with a hundred link rows a sequential scan IS the cheap plan, so the index only has to
         // earn its place once the join table is big. Seeded set-based — 10,000 inserts in a PHP
         // loop would dominate the suite runtime for no extra coverage.
-        $tagId = $this->seedTerm(2, 'php', 'PHP', 'post_tag');
+        $this->seedTerm(2, 'php', 'PHP', 'post_tag');
 
         $this->db->execute(
             "INSERT INTO content.taxonomies
@@ -272,8 +272,8 @@ final class TagsIntegrationTest extends TestCase
 
         // ~10,000 links across the filler tags, plus 100 posts carrying the tag under test.
         $this->db->execute(
-            "INSERT INTO content.entity_taxonomies (entity_id, taxonomy_id)
-             SELECT p.id, t.id
+            "INSERT INTO content.entity_taxonomies (entity_id, source_term_id)
+             SELECT p.id, t.source_term_id
              FROM content.posts p
              JOIN content.taxonomies t ON t.slug LIKE 'filler-%'
              WHERE (p.source_post_id + t.source_term_id) % 100 = 0
@@ -281,10 +281,10 @@ final class TagsIntegrationTest extends TestCase
         );
 
         $this->db->execute(
-            "INSERT INTO content.entity_taxonomies (entity_id, taxonomy_id)
-             SELECT p.id, \$1::uuid FROM content.posts p WHERE p.source_post_id % 10 = 0
+            "INSERT INTO content.entity_taxonomies (entity_id, source_term_id)
+             SELECT p.id, \$1 FROM content.posts p WHERE p.source_post_id % 10 = 0
              ON CONFLICT DO NOTHING",
-            [$tagId]
+            [2]
         );
 
         $this->db->execute('ANALYZE content.posts');
@@ -304,7 +304,7 @@ final class TagsIntegrationTest extends TestCase
              WHERE p.deleted_at IS NULL AND p.status = 'publish'
                AND EXISTS (
                    SELECT 1 FROM content.entity_taxonomies et
-                   JOIN content.taxonomies t ON t.id = et.taxonomy_id
+                   JOIN content.taxonomies t ON t.source_term_id = et.source_term_id
                    WHERE et.entity_id = p.id AND t.slug = 'php'
                      AND t.taxonomy_type = 'post_tag' AND t.deleted_at IS NULL
                )
@@ -312,8 +312,8 @@ final class TagsIntegrationTest extends TestCase
              LIMIT 21"
         );
 
-        // term → entities rides idx_content_entity_taxonomies_taxonomy_entity; the hop back to the
-        // term rides the taxonomies PK. Neither may degrade to a full scan.
+        // term → entities rides idx_content_entity_taxonomies_term_entity; the hop back to the
+        // term rides uq_content_taxonomies_source_term_id. Neither may degrade to a full scan.
         self::assertStringNotContainsString('Seq Scan on entity_taxonomies', $plan, "Plan:\n{$plan}");
         self::assertStringNotContainsString('Seq Scan on taxonomies', $plan, "Plan:\n{$plan}");
     }
@@ -356,10 +356,15 @@ final class TagsIntegrationTest extends TestCase
         return (string) $rows[0]['id'];
     }
 
+    /**
+     * Link by the term's projection UUID, as every call site already holds one — the row itself
+     * stores the term's SOURCE id (migration 0009), so the id is resolved here.
+     */
     private function linkTerm(string $entityId, string $taxonomyId): void
     {
         $this->db->execute(
-            'INSERT INTO content.entity_taxonomies (entity_id, taxonomy_id) VALUES ($1::uuid, $2::uuid)
+            'INSERT INTO content.entity_taxonomies (entity_id, source_term_id)
+             SELECT $1::uuid, t.source_term_id FROM content.taxonomies t WHERE t.id = $2::uuid
              ON CONFLICT DO NOTHING',
             [$entityId, $taxonomyId]
         );
@@ -383,6 +388,7 @@ final class TagsIntegrationTest extends TestCase
             // The shipped index set (DECISION AA) — the EXPLAIN assertions below must be made
             // against the indexes production actually has, not the pre-0008 pair.
             '0008_align_content_taxonomy_indexes.sql',
+            '0009_align_content_entity_taxonomies_to_source_term_id.sql',
         ] as $file) {
             $sql = file_get_contents(__DIR__ . '/../../../modules/Content/Migrations/' . $file);
             self::assertIsString($sql, "migration {$file} must be readable");

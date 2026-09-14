@@ -22,6 +22,10 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  *   content.posts → content.entity_taxonomies → content.taxonomies.slug
  * Never by WP term_id; never in the Resource layer. (Architect ruling, P1A-S5.)
  *
+ * The entity_taxonomies → taxonomies hop is on source_term_id since DECISION AJ (migration 0009).
+ * That is an INTERNAL projection join key: it is never bound from request input and never
+ * serialized (ADR-040) — consumers filter by slug.
+ *
  * Cursor encoding: base64url( json({ "s": "<published_at ISO-8601>", "id": "<uuid>" }) )
  *
  * Default listing: status = 'publish' AND deleted_at IS NULL (OPEN-10).
@@ -56,8 +60,8 @@ final class PostQueryProvider implements QueryProviderInterface
      * A post's tags, aggregated in SQL (P1B-S3).
      *
      * A correlated subquery rather than a second fetch: it keeps a listing at ONE round-trip
-     * whatever the page size (no N+1), and each row's lookup rides
-     * the entity_taxonomies PK / the taxonomies PK. Stitching the tags client
+     * whatever the page size (no N+1), and each row's lookup rides the entity_taxonomies PK /
+     * uq_content_taxonomies_source_term_id. Stitching the tags client
      * side would mean a second query and reassembly in PHP for no gain.
      *
      * Ordered by slug so the published array is deterministic — an unstable order would make
@@ -67,7 +71,7 @@ final class PostQueryProvider implements QueryProviderInterface
         "COALESCE((
                         SELECT json_agg(json_build_object('slug', t.slug, 'name', t.name) ORDER BY t.slug)
                         FROM content.entity_taxonomies et
-                        JOIN content.taxonomies t ON t.id = et.taxonomy_id
+                        JOIN content.taxonomies t ON t.source_term_id = et.source_term_id
                         WHERE et.entity_id = p.id
                           AND t.taxonomy_type = 'post_tag'
                           AND t.deleted_at IS NULL
@@ -199,6 +203,14 @@ final class PostQueryProvider implements QueryProviderInterface
      * content.taxonomies, and WordPress only guarantees slug uniqueness WITHIN a taxonomy — so a
      * tag named "news" and a category named "news" coexist, and a filter without the type
      * predicate would match both.
+     *
+     * The hop to the term goes through source_term_id, which is how the link row identifies it
+     * since migration 0009 — globally unique across WordPress taxonomies and carrying
+     * uq_content_taxonomies_source_term_id, so the join stays unique and index-backed.
+     *
+     * EXISTS rather than a JOIN onto the outer query, deliberately: a join would multiply rows
+     * when a post carries several matching terms, and the fix for that (DISTINCT) would break
+     * the cursor. EXISTS asks the question without changing the row count.
      */
     private function taxonomyFilter(string $taxonomyType, int $slugParamIndex): string
     {
@@ -206,7 +218,7 @@ final class PostQueryProvider implements QueryProviderInterface
             "EXISTS (
                     SELECT 1
                     FROM content.entity_taxonomies et
-                    JOIN content.taxonomies t ON t.id = et.taxonomy_id
+                    JOIN content.taxonomies t ON t.source_term_id = et.source_term_id
                     WHERE et.entity_id = p.id
                       AND t.slug = $%d
                       AND t.taxonomy_type = '%s'

@@ -63,6 +63,11 @@ final class ContentSchema
 
         // 0008 only reshapes indexes on the two tables above (DECISION AA), so it must follow them.
         self::apply($conn, '0008_align_content_taxonomy_indexes.sql');
+
+        // 0009 re-keys content.entity_taxonomies on source_term_id (DECISION AJ, Finding 004).
+        // Its ALTERs are guarded, so it also repairs a table a test stood up by hand in the old
+        // shape.
+        self::apply($conn, '0009_align_content_entity_taxonomies_to_source_term_id.sql');
     }
 
     /**

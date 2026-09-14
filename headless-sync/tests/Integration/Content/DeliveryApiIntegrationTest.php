@@ -260,10 +260,10 @@ final class DeliveryApiIntegrationTest extends TestCase
     public function test_post_list_category_slug_filter_via_projection_join(): void
     {
         // Seed category + two posts; only one linked.
-        $catUuid = $this->seedTaxonomy(termId: 100, slug: 'news', name: 'News');
+        $this->seedTaxonomy(termId: 100, slug: 'news', name: 'News');
         $post1Id = $this->seedPost(postId: 80, slug: 'news-post', status: 'publish');
         $post2Id = $this->seedPost(postId: 81, slug: 'other-post', status: 'publish');
-        $this->seedEntityTaxonomy($post1Id, $catUuid);
+        $this->seedEntityTaxonomy($post1Id, 100);
 
         $provider = new PostQueryProvider($this->db);
         $page     = $provider->list(new ContentFilterSet(categorySlug: 'news'));
@@ -564,9 +564,9 @@ final class DeliveryApiIntegrationTest extends TestCase
 
         pg_query($this->pgConn, '
             CREATE TABLE IF NOT EXISTS content.entity_taxonomies (
-                entity_id   UUID NOT NULL,
-                taxonomy_id UUID NOT NULL,
-                CONSTRAINT pk_test_entity_taxonomies PRIMARY KEY (entity_id, taxonomy_id)
+                entity_id      UUID   NOT NULL,
+                source_term_id BIGINT NOT NULL,
+                CONSTRAINT pk_test_entity_taxonomies PRIMARY KEY (entity_id, source_term_id)
             )
         ');
     }
@@ -640,12 +640,12 @@ final class DeliveryApiIntegrationTest extends TestCase
         return $id;
     }
 
-    private function seedEntityTaxonomy(string $entityUuid, string $taxonomyUuid): void
+    private function seedEntityTaxonomy(string $entityUuid, int $sourceTermId): void
     {
         pg_query(
             $this->pgConn,
-            "INSERT INTO content.entity_taxonomies (entity_id, taxonomy_id)
-             VALUES ('{$entityUuid}'::uuid, '{$taxonomyUuid}'::uuid)"
+            "INSERT INTO content.entity_taxonomies (entity_id, source_term_id)
+             VALUES ('{$entityUuid}'::uuid, {$sourceTermId})"
         );
     }
 }

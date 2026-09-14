@@ -206,8 +206,8 @@ final class AdapterAtomicityIntegrationTest extends TestCase
         $eventV2 = $this->makeEvent('content.post.updated', 'post', '50', 2);
 
         // Seed two categories in content.taxonomies.
-        $catA = $this->seedCategory(termId: 10, slug: 'cat-a');
-        $catB = $this->seedCategory(termId: 20, slug: 'cat-b');
+        $this->seedCategory(termId: 10, slug: 'cat-a');
+        $this->seedCategory(termId: 20, slug: 'cat-b');
 
         // v1: post belongs to {A, B}.
         $modelV1 = $this->makePost(50, 'post-50-v1', [10, 20]);
@@ -222,10 +222,10 @@ final class AdapterAtomicityIntegrationTest extends TestCase
         self::assertSame(1, $this->countRows('content.entity_taxonomies'), '1 join row after v2 project — B removed');
 
         // Confirm the surviving row points to catA.
-        $rows = $this->fetchJoinRows($catA);
+        $rows = $this->fetchJoinRows(10);
         self::assertCount(1, $rows, 'catA join row must remain');
 
-        $rowsB = $this->fetchJoinRows($catB);
+        $rowsB = $this->fetchJoinRows(20);
         self::assertCount(0, $rowsB, 'catB join row must be gone');
     }
 
@@ -248,8 +248,8 @@ final class AdapterAtomicityIntegrationTest extends TestCase
         $adapter = new PostAdapter($db);
         $eventV1 = $this->makeEvent('content.post.created', 'post', '60', 1);
 
-        $catA = $this->seedCategory(termId: 11, slug: 'cat-aa');
-        $catB = $this->seedCategory(termId: 21, slug: 'cat-bb');
+        $this->seedCategory(termId: 11, slug: 'cat-aa');
+        $this->seedCategory(termId: 21, slug: 'cat-bb');
 
         // Commit v1 with {A, B} successfully.
         $modelV1 = $this->makePost(60, 'post-60-v1', [11, 21]);
@@ -258,11 +258,11 @@ final class AdapterAtomicityIntegrationTest extends TestCase
         self::assertSame(2, $this->countRows('content.entity_taxonomies'), '2 join rows after v1 commit');
 
         // Now attempt v2 rewrite with saboteur: fail on 3rd execute
-        // (upsertPost=1, DELETE=2 succeeds, INSERT catA=3 → saboteur throws).
+        // (upsertPost=1, DELETE=2 succeeds, link INSERT=3 → saboteur throws).
         // Execute order inside !$suppressProjection block:
         //   1: upsertPost
         //   2: DELETE FROM content.entity_taxonomies
-        //   3: INSERT INTO content.entity_taxonomies (catA) ← saboteur fires here
+        //   3: INSERT INTO content.entity_taxonomies (one multi-row insert) ← saboteur fires here
         $saboteur = new SaboteurConnection($this->pgConn, failOnExecuteNumber: 3);
         $saboteurAdapter = new PostAdapter($saboteur);
 
@@ -545,15 +545,15 @@ final class AdapterAtomicityIntegrationTest extends TestCase
     }
 
     /**
-     * Fetch all entity_taxonomies rows whose taxonomy_id matches $taxonomyUuid.
+     * Fetch all entity_taxonomies rows linking to the given source term id.
      * @return list<array<string,mixed>>
      */
-    private function fetchJoinRows(string $taxonomyUuid): array
+    private function fetchJoinRows(int $sourceTermId): array
     {
         $result = pg_query_params(
             $this->pgConn,
-            'SELECT entity_id, taxonomy_id FROM content.entity_taxonomies WHERE taxonomy_id = $1::uuid',
-            [$taxonomyUuid]
+            'SELECT entity_id, source_term_id FROM content.entity_taxonomies WHERE source_term_id = $1',
+            [$sourceTermId]
         );
         if ($result === false) {
             return [];
@@ -766,14 +766,14 @@ final class AdapterAtomicityIntegrationTest extends TestCase
         ');
         pg_query($this->pgConn, '
             CREATE TABLE IF NOT EXISTS content.entity_taxonomies (
-                entity_id   UUID NOT NULL,
-                taxonomy_id UUID NOT NULL,
-                CONSTRAINT pk_content_entity_taxonomies PRIMARY KEY (entity_id, taxonomy_id)
+                entity_id      UUID   NOT NULL,
+                source_term_id BIGINT NOT NULL,
+CONSTRAINT pk_content_entity_taxonomies PRIMARY KEY (entity_id, source_term_id)
             )
         ');
         pg_query($this->pgConn, '
-            CREATE INDEX IF NOT EXISTS idx_entity_taxonomies_taxonomy_id
-                ON content.entity_taxonomies (taxonomy_id)
+            CREATE INDEX IF NOT EXISTS idx_content_entity_taxonomies_term_entity
+                ON content.entity_taxonomies (source_term_id, entity_id)
         ');
     }
 }

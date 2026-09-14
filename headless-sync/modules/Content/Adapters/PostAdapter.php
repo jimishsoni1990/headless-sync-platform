@@ -25,7 +25,11 @@ use HSP\Modules\Content\CanonicalModels\CanonicalPost;
  * Operations 3 and 4 are ALWAYS committed — a suppressed event is still recorded.
  *
  * Suppress rules (applied independently, evaluated INSIDE the transaction):
- *   - Checksum suppress (OPEN-11): stored checksum == canonical checksum → skip upsert.
+ *   - Checksum suppress (OPEN-11), widened by DECISION AJ (AJ-1): stored checksum == canonical
+ *     checksum AND the stored link set == the canonical term set, compared as SETS → skip upsert.
+ *     The checksum witnesses the content.posts row only, which Finding 004 proved is not the
+ *     whole projection for this aggregate; cardinality equality is explicitly NOT sufficient.
+ *     See persist().
  *   - Version guard: incoming aggregateVersion < locked latest_processed_version → skip upsert.
  *
  * Concurrency safety: version guard is atomic with the projection write via
@@ -34,10 +38,9 @@ use HSP\Modules\Content\CanonicalModels\CanonicalPost;
  *
  * Join-table rewrite strategy: full replace per entity to handle shrinking category sets.
  *   DELETE FROM content.entity_taxonomies WHERE entity_id = $postUuid
- *   then INSERT one row per category that exists in content.taxonomies.
- *   Taxonomy UUIDs are resolved by source_term_id lookup. Categories not yet in
- *   content.taxonomies are silently omitted (they will be linked when the category syncs).
- *   Both delete and inserts run in the same DECISION 3 transaction.
+ *   then INSERT one row per term the post carries, keyed by the term's SOURCE id — never its
+ *   projection UUID, so the link does not depend on the term having projected first
+ *   (DECISION AJ, migration 0009). Both delete and inserts run in the same DECISION 3 transaction.
  *
  * DECISION E (v1.6): depends on DatabaseConnectionInterface.
  * ADR-012: constructor injection only.
@@ -68,6 +71,11 @@ final class PostAdapter implements AdapterInterface
         $checksum    = $model->getChecksum();
         $existingRow = $this->fetchExistingRow($model->postId);
 
+        // The canonical term set, normalised for comparison AND for the rewrite: deduplicated and
+        // sorted ascending, so it lines up with the stored set fetched in the same order.
+        $termIds = array_values(array_unique([...$model->categoryIds, ...$model->tagIds]));
+        sort($termIds);
+
         $id  = $existingRow['id'] ?? $this->uuidv7();
         $now = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s+00');
 
@@ -84,17 +92,35 @@ final class PostAdapter implements AdapterInterface
             // invisible forever; worse, reconciliation then detects the drift on every pass and
             // repairs it by re-emission (DECISION T/U), which is suppressed in turn. That is a
             // permanent repair loop that never converges and never logs an error.
+            //
+            // Neither is a projection whose LINK ROWS do not match the state being persisted
+            // (DECISION AJ / AJ-1).
+            //
+            // The checksum witnesses the content.posts row alone, but this aggregate's projection
+            // is the row PLUS its content.entity_taxonomies links, and the two can disagree —
+            // exactly the state Finding 004 shipped in: relationships silently dropped, a checksum
+            // that still matched, and therefore a post suppressed on every replay and
+            // reconciliation pass (both compare that same checksum) with its categories never
+            // appearing and nothing logged.
+            //
+            // The comparison is EXACT SET EQUALITY, deliberately not cardinality: [10, 20] and
+            // [10, 30] have the same count and are not the same projection, and this whole finding
+            // exists because an assumed invariant turned out to be false in production. Both sides
+            // are deduplicated and ascending — the stored side by the query's ORDER BY and the
+            // table's PK, the canonical side by sort() above — so === compares them as sets,
+            // insensitive to source ordering. One bounded, PK-backed read; never a per-term lookup.
             $suppressProjection = (
                 $existingRow !== null
                 && $existingRow['checksum'] === $checksum
                 && $existingRow['deleted_at'] === null
+                && $this->storedTermIds($existingRow) === $termIds
             ) || ($event->getAggregateVersion() < $lockedVersion);
 
             if (! $suppressProjection) {
                 $this->upsertPost($model, $id, $checksum, $now);
                 // BOTH taxonomies: the rewrite is a full replace per entity, so passing only
                 // categories here would delete the post's tag links on every post update.
-                $this->rewriteEntityTaxonomies($id, [...$model->categoryIds, ...$model->tagIds]);
+                $this->rewriteEntityTaxonomies($id, $termIds);
             }
             $this->insertProcessedEvent($event, $checksum, $now);
             $this->upsertAggregateVersion($event, $now);
@@ -150,14 +176,52 @@ final class PostAdapter implements AdapterInterface
         throw new \LogicException('bulkPersist() is not implemented in Phase 1A.');
     }
 
-    /** @return array<string,mixed>|null */
+    /**
+     * The stored projection for this aggregate: the content.posts row AND the term set it links.
+     *
+     * Both halves are read in ONE round-trip because both are inputs to the suppress decision
+     * (see persist()). The correlated subquery is bounded to this aggregate and rides
+     * pk_content_entity_taxonomies, whose leading column is entity_id — never a per-term lookup.
+     *
+     * The term ids come back as one ordered, comma-joined string rather than a PostgreSQL array
+     * literal, which would otherwise have to be parsed; `ORDER BY` makes the comparison in
+     * storedTermIds() a plain sorted-list equality.
+     *
+     * @return array<string,mixed>|null
+     */
     private function fetchExistingRow(int $postId): ?array
     {
         $rows = $this->db->query(
-            'SELECT id, checksum, deleted_at FROM content.posts WHERE source_post_id = $1',
+            "SELECT p.id, p.checksum, p.deleted_at,
+                    (SELECT string_agg(et.source_term_id::text, ',' ORDER BY et.source_term_id)
+                       FROM content.entity_taxonomies et
+                      WHERE et.entity_id = p.id) AS link_term_ids
+             FROM content.posts p
+             WHERE p.source_post_id = \$1",
             [$postId]
         );
         return $rows[0] ?? null;
+    }
+
+    /**
+     * The term ids currently linked to a stored projection row, ascending.
+     *
+     * NULL means the aggregate has no link rows at all (string_agg over an empty set), which is a
+     * legitimate state — a post in no taxonomy — and must compare equal to an empty canonical set,
+     * not be confused with one.
+     *
+     * @param  array<string,mixed> $existingRow
+     * @return list<int>
+     */
+    private function storedTermIds(array $existingRow): array
+    {
+        $joined = $existingRow['link_term_ids'] ?? null;
+
+        if ($joined === null || $joined === '') {
+            return [];
+        }
+
+        return array_map(intval(...), explode(',', (string) $joined));
     }
 
     /** @see PageAdapter::lockAggregateVersion() for full rationale */
@@ -236,12 +300,27 @@ final class PostAdapter implements AdapterInterface
      * Full replace of entity_taxonomies for this post entity.
      *
      * Deletes all existing join rows for $postId, then inserts one row per TERM — category or
-     * tag — that is already present in content.taxonomies. Terms not yet synced are omitted; they
-     * link when that term syncs.
+     * tag — the post carries.
      *
      * The delete is unconditional and covers every taxonomy, so the caller MUST pass the post's
      * full term set. Passing categories alone silently unlinked every tag on each post update
      * (the P1B-S3 join bug).
+     *
+     * LINKS ARE STORED BY THE TERM'S SOURCE ID, not its projection UUID — DECISION AJ (v1.42),
+     * which amends the frozen FLAG-P1AS4-1 shape, and migration 0009.
+     *
+     * This used to resolve source_term_id → content.taxonomies.id here and silently omit whatever
+     * had not projected yet, on the promise that the link would appear "when the category syncs".
+     * Nothing implements that: this adapter is the only writer of the table. A post that projected
+     * before its categories therefore linked to nothing, permanently — its own state had not
+     * changed, so the checksum did not move, DECISION 3 suppressed the rewrite, and reconciliation
+     * compared those same checksums and saw no gap (Finding 004: a populated category served an
+     * empty archive). Keyed by source id the row is a pure function of the post's own state and is
+     * correct in any arrival order.
+     *
+     * Commerce reached the same shape first under AG-7, which is supporting precedent — NOT
+     * retroactive authority over Content. Content's UUID relationship identity stayed frozen until
+     * DECISION AJ amended it here.
      *
      * Both delete and inserts execute inside the caller's open transaction (DECISION 3).
      *
@@ -257,27 +336,26 @@ final class PostAdapter implements AdapterInterface
 
         $termIds = array_values(array_unique($termIds));
 
-        if (empty($termIds)) {
+        if ($termIds === []) {
             return;
         }
 
-        // Resolve source_term_ids to content.taxonomies UUIDs.
-        // Build $1,$2,... placeholder list.
-        $placeholders = implode(',', array_map(fn($i) => '$' . ($i + 1), array_keys($termIds)));
-        // Already a list: array_unique + array_values above reindexed it.
-        $taxonomyRows = $this->db->query(
-            "SELECT id FROM content.taxonomies WHERE source_term_id IN ({$placeholders})",
-            $termIds
-        );
+        // One multi-row INSERT rather than a statement per term: a post in twenty categories
+        // should not cost twenty round trips inside the transaction.
+        $rows   = [];
+        $params = [$postUuid];
 
-        foreach ($taxonomyRows as $taxRow) {
-            $this->db->execute(
-                'INSERT INTO content.entity_taxonomies (entity_id, taxonomy_id)
-                 VALUES ($1::uuid, $2::uuid)
-                 ON CONFLICT (entity_id, taxonomy_id) DO NOTHING',
-                [$postUuid, $taxRow['id']]
-            );
+        foreach ($termIds as $termId) {
+            $params[] = $termId;
+            $rows[]   = '($1::uuid, $' . count($params) . ')';
         }
+
+        $this->db->execute(
+            'INSERT INTO content.entity_taxonomies (entity_id, source_term_id)
+             VALUES ' . implode(', ', $rows) . '
+             ON CONFLICT DO NOTHING',
+            $params
+        );
     }
 
     private function insertProcessedEvent(EventInterface $event, string $checksum, string $now): void

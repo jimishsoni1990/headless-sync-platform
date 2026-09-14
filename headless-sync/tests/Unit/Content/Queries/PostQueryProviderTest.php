@@ -72,15 +72,27 @@ final class PostQueryProviderTest extends TestCase
         self::assertContains('news', $params);
     }
 
-    public function test_category_filter_never_uses_term_id(): void
+    public function test_the_category_filter_selects_on_the_slug_and_never_on_a_wordpress_term_id(): void
     {
+        // The public filter key is the SLUG — a consumer never supplies, and this query never
+        // predicates on, a WordPress term id. source_term_id does appear, but only as the JOIN
+        // key BETWEEN two projection tables (migration 0009): it is never compared to request
+        // input, and no WordPress table is touched (ADR-040).
         $this->db->queueResults([]);
 
         $this->provider->list(new ContentFilterSet(categorySlug: 'news'));
 
         $sql = $this->db->sqlAt(0);
-        self::assertStringNotContainsString('term_id', $sql);
-        self::assertStringNotContainsString('wp_', $sql);
+
+        self::assertStringContainsString('t.slug = $', $sql, 'the slug is the bound filter key');
+        self::assertStringNotContainsString('wp_', $sql, 'no WordPress table on the read path');
+        self::assertStringContainsString(
+            't.source_term_id = et.source_term_id',
+            $sql,
+            'the term hop is a projection-to-projection join, not a filter on a term id'
+        );
+        self::assertStringNotContainsString('term_id = $', $sql, 'no term id is ever bound as a parameter');
+        self::assertSame(['publish', 'news', 21], $this->db->paramsAt(0));
     }
 
     public function test_null_category_filter_omits_the_filter_predicate(): void

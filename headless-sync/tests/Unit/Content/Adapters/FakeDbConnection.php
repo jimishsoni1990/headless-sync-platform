@@ -112,4 +112,16 @@ final class FakeDbConnection implements DatabaseConnectionInterface
             fn($e) => $e['method'] === 'execute' && str_contains($e['sql'], $keyword)
         ));
     }
+
+    /** @return array{method:string,sql:string,params:array<int,mixed>}|null */
+    public function firstExecuteContaining(string $keyword): ?array
+    {
+        foreach ($this->log as $entry) {
+            if ($entry['method'] === 'execute' && str_contains($entry['sql'], $keyword)) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
 }
