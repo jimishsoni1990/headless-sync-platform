@@ -55,8 +55,8 @@ final class VariationResource implements ResourceInterface
     public function toCollection(array $rows, ?string $nextCursor): array
     {
         return [
-            'data' => array_map(fn (array $row): array => $this->toArray($row), $rows),
-            'meta' => ['next_cursor' => $nextCursor],
+            'data'        => array_values(array_map(fn (array $row): array => $this->toArray($row), $rows)),
+            'next_cursor' => $nextCursor,
         ];
     }
 

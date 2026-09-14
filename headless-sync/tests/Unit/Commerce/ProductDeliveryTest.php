@@ -245,6 +245,10 @@ final class ProductDeliveryTest extends TestCase
         $out = (new ProductResource())->toCollection([], 'next-token');
 
         self::assertSame([], $out['data']);
-        self::assertSame('next-token', $out['meta']['next_cursor']);
+        // The shared cursor envelope: `next_cursor` at the TOP level, per ResourceInterface and
+        // SchemaObject::asCursorPage(). This previously asserted `meta.next_cursor`, which pinned
+        // a Commerce-only envelope the contract never defined.
+        self::assertSame('next-token', $out['next_cursor']);
+        self::assertArrayNotHasKey('meta', $out);
     }
 }

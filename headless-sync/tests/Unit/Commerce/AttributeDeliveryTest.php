@@ -231,7 +231,11 @@ final class AttributeDeliveryTest extends TestCase
         $collection = (new AttributeResource())->toCollection([['slug' => 'pa_size']], 'next-cursor');
 
         self::assertCount(1, $collection['data']);
-        self::assertSame('next-cursor', $collection['meta']['next_cursor']);
+        // The shared cursor envelope: `next_cursor` at the TOP level, per ResourceInterface and
+        // SchemaObject::asCursorPage(). This previously asserted `meta.next_cursor`, which pinned
+        // a Commerce-only envelope the contract never defined.
+        self::assertSame('next-cursor', $collection['next_cursor']);
+        self::assertArrayNotHasKey('meta', $collection);
     }
 }
 
