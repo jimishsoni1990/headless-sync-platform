@@ -57,34 +57,58 @@ final class PostQueryProvider implements QueryProviderInterface
                AND fm.deleted_at IS NULL';
 
     /**
-     * A post's tags, aggregated in SQL (P1B-S3).
+     * One taxonomy's terms for a post, aggregated in SQL (P1B-S3 for tags; Finding 003 for
+     * categories — the same shape, differing only in the discriminator).
      *
      * A correlated subquery rather than a second fetch: it keeps a listing at ONE round-trip
      * whatever the page size (no N+1), and each row's lookup rides the entity_taxonomies PK /
-     * uq_content_taxonomies_source_term_id. Stitching the tags client
+     * uq_content_taxonomies_source_term_id. Stitching the terms client
      * side would mean a second query and reassembly in PHP for no gain.
      *
+     * A SCALAR subquery in the select list, deliberately: it answers once per post row and
+     * cannot multiply the parent rows the way a join would, so a post in three categories still
+     * appears exactly once and the cursor keeps its guarantees untouched.
+     *
+     * The hop to the term goes through source_term_id (DECISION AJ, migration 0009), so a
+     * relationship written before its term projected resolves to nothing today and starts
+     * resolving the moment that term lands — with no rewrite of the post. The read path inherits
+     * AJ's order-independence rather than recreating the ordering dependency AJ removed.
+     *
      * Ordered by slug so the published array is deterministic — an unstable order would make
-     * consumer diffs and response caching noisy for no reason.
+     * consumer diffs and response caching noisy for no reason. WordPress assignment order is not
+     * preserved in the projection, so an explicit API ordering is the honest rule rather than
+     * pretending storage order means something.
      */
-    private const TAGS_SUBQUERY =
+    private const TAXONOMY_REFS_TEMPLATE =
         "COALESCE((
                         SELECT json_agg(json_build_object('slug', t.slug, 'name', t.name) ORDER BY t.slug)
                         FROM content.entity_taxonomies et
                         JOIN content.taxonomies t ON t.source_term_id = et.source_term_id
                         WHERE et.entity_id = p.id
-                          AND t.taxonomy_type = 'post_tag'
+                          AND t.taxonomy_type = '%s'
                           AND t.deleted_at IS NULL
-                    ), '[]') AS tags_json";
+                    ), '[]') AS %s";
 
-    /** Entity columns, the resolved featured-image columns (`fm_`-prefixed), and the tags array. */
-    private const COLUMNS =
-        'p.id, p.slug, p.title, p.content, p.excerpt, p.status, p.author,
+    /**
+     * Entity columns, the resolved featured-image columns (`fm_`-prefixed), and the two taxonomy
+     * arrays.
+     *
+     * A method rather than a const because the two aggregates differ only in the discriminator
+     * and a const expression cannot sprintf. Both list() and findBySlug() read it, which is what
+     * keeps /posts and /posts/{slug} on ONE published contract instead of two that can drift.
+     */
+    private static function columns(): string
+    {
+        return 'p.id, p.slug, p.title, p.content, p.excerpt, p.status, p.author,
                     p.published_at, p.updated_at, p.meta_jsonb, p.featured_media_id,
                     fm.slug AS fm_slug, fm.url AS fm_url, fm.alt_text AS fm_alt_text,
                     fm.mime_type AS fm_mime_type, fm.width AS fm_width, fm.height AS fm_height,
                     fm.sizes_jsonb AS fm_sizes_jsonb,
-                    ' . self::TAGS_SUBQUERY;
+                    '
+            . sprintf(self::TAXONOMY_REFS_TEMPLATE, 'post_tag', 'tags_json') . ',
+                    '
+            . sprintf(self::TAXONOMY_REFS_TEMPLATE, 'category', 'categories_json');
+    }
 
     public function __construct(
         private readonly DatabaseConnectionInterface $db,
@@ -157,7 +181,7 @@ final class PostQueryProvider implements QueryProviderInterface
              WHERE %s
              ORDER BY p.published_at DESC, p.id DESC
              LIMIT $%d',
-            self::COLUMNS,
+            self::columns(),
             self::FEATURED_MEDIA_JOIN,
             $whereClause,
             count($params)
@@ -188,7 +212,7 @@ final class PostQueryProvider implements QueryProviderInterface
              %s
              WHERE p.slug = \$1 AND p.deleted_at IS NULL AND p.status = 'publish'
              LIMIT 1",
-                self::COLUMNS,
+                self::columns(),
                 self::FEATURED_MEDIA_JOIN,
             ),
             [$slug]

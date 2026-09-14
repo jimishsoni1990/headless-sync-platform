@@ -289,7 +289,19 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             // (ADR-013): no image set, never projected, or soft-deleted all read as null.
             'featured_media' => self::featuredMediaSchema(),
             // The post's tags (P1B-S3): always an array — empty when untagged, never null.
-            'tags'         => self::tagListSchema(),
+            'tags'         => self::taxonomyRefListSchema(
+                "The post's tags, ordered by slug. Empty when untagged; never null."
+            ),
+            // The post's categories (Finding 003): the SAME reference shape as tags, and a LIST —
+            // a WordPress post may belong to several categories and the platform has no
+            // primary-category concept to collapse them with. Choosing one to display is a
+            // presentation rule that belongs to the consumer.
+            'categories'   => self::taxonomyRefListSchema(
+                "Every category the post currently belongs to, ordered by slug. Empty when the "
+                . 'post has no categories; never null. All assigned categories are published — '
+                . 'there is no primary-category designation; selecting one to display is a '
+                . 'consumer-side presentation choice.'
+            ),
         ]);
     }
 
@@ -405,16 +417,22 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     }
 
     /**
-     * The post's tags (P1B-S3), as PostQueryProvider aggregates them: `{slug, name}` pairs
-     * ordered by slug. Always an array — empty when untagged, never null.
+     * A taxonomy reference list, as PostQueryProvider aggregates it: `{slug, name}` pairs ordered
+     * by slug. Always an array — empty when the post carries no such term, never null.
+     *
+     * ONE shape for tags (P1B-S3) and categories (Finding 003), because they are the same kind of
+     * public reference: the slug addresses the term (it is what `?tag=` / `?category=` accept and
+     * what a consumer routes on), the name labels it. No identifier of any kind is published —
+     * the projection UUID, `source_term_id` and the WordPress term id all stay internal (ADR-040,
+     * DECISION AJ AJ-2), and a consumer needs none of them to render a label and a slug route.
      *
      * @return array<string,mixed>
      */
-    private static function tagListSchema(): array
+    private static function taxonomyRefListSchema(string $description): array
     {
         return [
             'type'        => 'array',
-            'description' => "The post's tags, ordered by slug. Empty when untagged; never null.",
+            'description' => $description,
             'items'       => [
                 'type'       => 'object',
                 'properties' => [

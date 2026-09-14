@@ -15,7 +15,8 @@ use HSP\Core\Delivery\JsonMap;
  * meta_jsonb internals not exposed). ADR-038 — transport-agnostic; no WP_REST_* types.
  *
  * Contract fields exposed:
- *   slug, title, content, excerpt, status, author, published_at, updated_at, meta
+ *   slug, title, content, excerpt, status, author, published_at, updated_at, meta,
+ *   featured_media, tags, categories
  *
  * meta_jsonb is decoded from the JSON string the DB driver returns; exposed as 'meta'.
  * Timestamps are returned as ISO-8601 strings (UTC).
@@ -35,22 +36,30 @@ final class PostResource implements ResourceInterface
             'updated_at'  => $this->normaliseTimestamp($row['updated_at'] ?? null),
             'meta'        => JsonMap::decode($row['meta_jsonb'] ?? null),
             'featured_media' => $this->featuredMedia($row),
-            'tags'        => $this->tags($row),
+            'tags'        => $this->taxonomyRefs($row, 'tags_json'),
+            'categories'  => $this->taxonomyRefs($row, 'categories_json'),
         ];
     }
 
     /**
-     * The post's tags, decoded from the aggregate the query provider built (P1B-S3).
+     * One of the post's taxonomy reference lists, decoded from the aggregate the query provider
+     * built (tags: P1B-S3; categories: Finding 003).
      *
-     * Always an array — never null — so consumers can iterate without a null check; an untagged
-     * post is an empty list, which is the honest answer.
+     * `{slug, name}` pairs and nothing else: slug is the public addressing identity the consumer
+     * routes on and the same value `?category=` / `?tag=` accepts, name is the label. Internal
+     * identity (the projection UUID, source_term_id, WP term ids) stays internal — ADR-040 /
+     * DECISION AJ (AJ-2).
+     *
+     * Always an array — never null — so consumers can iterate without a null check; a post with
+     * no terms in that taxonomy is an empty list, which is the honest answer. Both taxonomies are
+     * scoped by taxonomy_type in SQL, so a category and a tag sharing a slug never cross over.
      *
      * @param array<string,mixed> $row
      * @return list<array<string,mixed>>
      */
-    private function tags(array $row): array
+    private function taxonomyRefs(array $row, string $column): array
     {
-        $json = $row['tags_json'] ?? null;
+        $json = $row[$column] ?? null;
 
         if (! is_string($json) || $json === '') {
             return [];
