@@ -243,6 +243,22 @@ UI (including onboarding) is React. See `docs/ARCHITECTURE_DECISIONS.md` DECISIO
   never coerced, never DLQ'd for being unsupported, excluded from expected counts, and **tombstoned via
   DECISION I/T/U when a supported product leaves scope** (AG-13). See
   `docs/ARCHITECTURE_DECISIONS.md` DECISION AG.
+- **Woo handoff identifiers (DECISION AK):** Commerce Product and Product Variation resources
+  publish **`woo_product_id`** (on a variation, the **PARENT** product id) and **`woo_variation_id`**
+  as explicit public **interoperability** identifiers — the authoritative WooCommerce post ids for
+  the **connected source site**, used to hand an **already-selected** catalogue entity to the native
+  Woo runtime. They are **never merged**, never interchangeable, **site-specific** (not globally
+  unique, no cross-site federation) and **not HSP addressing** — `/products/{slug}` is unchanged and
+  an id-addressed product route is prohibited. **Public aliases only: no new column, no migration,
+  no duplicate persistence, no delivery-time WordPress read.** A simple product carries **no**
+  variation field (not null, not `0`). `source_id` / `product_id` stay for compatibility and are
+  documented as generic/legacy identifiers pointing at the explicit fields, **never** as the
+  preferred handoff contract (FLAG-COMMSOURCEID-1). The transactional boundary does **not** move:
+  cart, session, validation, coupons, tax, shipping, checkout, payment and orders remain
+  WooCommerce-owned — **no `/hsp/v1/cart`, `/checkout` or `/add-to-cart`, no Store API proxy, no Woo
+  credentials in responses**. **Commerce Product + Variation ONLY — not a precedent for exposing
+  source ids elsewhere** (DECISION F internal-column exclusion and ADR-040 stand platform-wide).
+  See `docs/ARCHITECTURE_DECISIONS.md` DECISION AK.
 
 ---
 

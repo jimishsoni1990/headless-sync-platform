@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.41  
+Version: 1.43  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.43 | 2026-09-14 | **DECISION AK — WooCommerce handoff identifiers are public interoperability identity, not HSP addressing (architect ruling 2026-09-14; resolves Finding 009).** HSP already published the WooCommerce product and variation post ids as `source_id` / `product_id`, but had **never defined what they meant** — no `description` reached the generated OpenAPI, and `source_id` denotes a **term** id on `/product-categories` and an attribute-**definition** id on `/product-attributes`, so a consumer holding only the contract could not conclude that this particular one was the id WooCommerce's cart accepts and had to **guess**. **Exposure is not authorisation:** publishing a value is a data decision, promising it is authoritative against a downstream runtime is an interoperability decision, and only the first had been taken — which is why this is recorded as an amendment rather than treated as already-settled. **Ruling:** HSP **may** expose source Woo product/variation ids as explicit public **interoperability identifiers**, solely to hand an **already-selected** catalogue entity to the connected source WooCommerce runtime. **(AK-1)** `woo_product_id` = authoritative Woo **product** post id; `woo_variation_id` = authoritative Woo **variation** post id; on a variation, `woo_product_id` is the **PARENT** — never merged, never interchangeable, because `WC_Cart::add_to_cart($product_id, $qty, $variation_id, $variation)` takes them in different argument positions (verified against the installed WooCommerce 11.1.0, alongside the `?add-to-cart=`+`variation_id` form handler and the Store API). **(AK-2)** They are **not** globally unique, **not** HSP addressing identities, **not** projection row ids and **not** cross-site federation ids — **site-specific**, authoritative only for the connected store; no `global_product_id`/`universal_product_id` semantics. **(AK-3)** HSP addressing stays **slug-based** — `/products/{slug}` unchanged, `/products/{woo_product_id}` **prohibited**; DECISION AD ruling 8 and AH-8 are **upheld, not excepted**, because they govern *addressing* while this governs *handoff*. **(AK-4)** the native Woo transactional boundary does not move: cart, cart session, cart/pricing/stock validation, coupons, taxes, shipping, fees, checkout, checkout customization, payment gateways, order submission and customer/account flows stay WooCommerce/WordPress; HSP stays catalogue/discovery/read; **no transactional state enters HSP** and DECISION AG Part 6 is reaffirmed in full. **(AK-5)** explicitly **not** authorised: `/hsp/v1/cart`, `/hsp/v1/checkout`, `/hsp/v1/add-to-cart`, HSP cart or session persistence, Store API or Woo REST proxying, Woo credentials/secrets/nonces/tokens in Delivery responses, cart tokens in catalogue resources, any `checkout_url`/`cart_url`/`add_to_cart_url`/`woo_url`/`permalink` field, and Order/Customer/Payment/Shipping projections. **(AK-6)** identifiers come from **already projected** data — `projection → Query Provider → Resource`; **no delivery-time WordPress/Woo lookup** (ADR-040). **(AK-7)** **no new column, no migration, no duplicate identity persistence** — they are public aliases over `source_product_id` / `source_variation_id` / `source_parent_id`, and a duplicate column must never be added merely to match a public field name. **(AK-8)** resource-specific: a simple product carries **no** variation field — not null, emphatically not `woo_variation_id: 0`. **(AK-9)** **additive only** — `source_id` and `product_id` are retained (removal follows Doc 9 §26, not this decision), the resulting duplicate integer is **accepted for compatibility**, and the legacy fields must be documented as generic/legacy identifiers pointing at the explicit ones, **never** as the preferred Woo handoff contract; tracked separately as **FLAG-COMMSOURCEID-1**, which this decision does **not** resolve. **(AK-10)** scope is **WooCommerce Commerce Product + Product Variation resources ONLY and is not a precedent** — DECISION F's internal-column exclusion and ADR-040 stand unchanged platform-wide, Content still publishes no source identity, and a future module needs its own ruling justified by its own downstream authority. No migration, persistence, module-boundary, routing, pagination, PG-handle (L Ruling 0), `pg_*` wrapper (E), capture-model or AG-13 product-type change. **Finding 010 is NOT addressed** — variation-selection semantics remain open. **Also corrected here, not silently:** the document header read `Version: 1.41` while the latest log row was already **1.42** (DECISION AJ); the header is set to **1.43** to match this row, the same stale-header correction the ONB-S2 entry recorded previously. |
 | 1.42 | 2026-09-14 | **DECISION AJ — Content taxonomy relationships key on the source term identity (architect ruling 2026-09-14; resolves Finding 004).** **A narrow amendment to a frozen shape, required by a defect proven in production.** FLAG-P1AS4-1 (v1.8) froze `content.entity_taxonomies` as `(entity_id UUID, taxonomy_id UUID)` and DECISION AA (v1.33) upheld it verbatim, both assuming the term's projection row would exist when a post's relationship was written. **It does not:** under at-least-once, non-FIFO delivery a post routinely projects before its terms, and on the affected installation every post projected before every category — so `PostAdapter` resolved each term to a `content.taxonomies.id`, found nothing, and silently wrote **no relationship at all**, platform-wide, with no error logged. Write suppression then made it permanent: category ids sit inside the post's canonical checksum, so replay recomputed the same checksum and DECISION 3 correctly suppressed the rewrite, while reconciliation compared those same checksums and saw no drift. Delivery served `post_count: 6` beside an empty `?category=` archive. **Ruling:** the relationship row references the term by its **stable source identity** — `(entity_id UUID, source_term_id BIGINT)` composite PK, reverse index `(source_term_id, entity_id)` replacing `(taxonomy_id, entity_id)` — making a relationship a pure function of the owning post's own state, correct in any arrival order and independent of `content.taxonomies.id` having materialised. **(AJ-1)** the suppress decision gains an **exact relationship-set comparison** (order-insensitive, duplicate-safe, bounded to one aggregate, PK-backed, never per-term): the canonical checksum witnesses the `content.posts` row only, and **cardinality equality is explicitly insufficient** — `[10,20]` and `[10,30]` share a count and are not the same projection; this is what lets an already-damaged installation heal through ordinary replay with **no second repair path**. **(AJ-2)** everything else is deliberately unchanged — still a **pure relationship table** (composite PK only; no timestamps, checksum, metadata or surrogate id), no separate category/tag tables, categories and tags still share `content.taxonomies`, `taxonomy_type` still owned there and still **mandatory** on every read of the shared projection (slug alone is never sufficient), no FKs, `source_term_id` is an **internal projection identity and never a public API identifier** (consumers still filter by slug), WordPress still source of truth, no WordPress read on the consumer path. **(AJ-3)** migration `0009_align_content_entity_taxonomies_to_source_term_id` translates existing rows in place, **preserving every link whose term resolves**, removes untranslatable dangling rows rather than manufacturing a source identity, replaces the reverse index, and leaves **one** authoritative relationship identity — no dual-key transition, no extra table, no obsolete index. **(AJ-4)** no response-shape, public-identifier, filter-contract, OpenAPI, module-boundary or persistence-subsystem change; `post_count` semantics untouched (investigated, correct); `commerce.entity_taxonomies` untouched (already source-keyed). **AG-7 is supporting precedent, NOT retroactive authority** — it governed Commerce, and Commerce's own migration recorded that Content "deliberately differs"; Content's UUID identity remained frozen until this entry. Amends FLAG-P1AS4-1 and DECISION AA's "Explicitly unchanged" clause and index-shape paragraph; Doc 3 §10 banner-amended; IMPLEMENTATION_PLAN.md P1A-S4 schema line updated; Implications table updated. |
 | 1.41 | 2026-09-08 | **DECISION AI — the full-batch cycle budget becomes a controlled CI performance gate (architect ruling 2026-09-08; resolves FLAG-PERFCYCLE-1).** Option (a) chosen; (b) baseline subtraction and (c) raising the threshold both rejected. **(AI-1)** the guarantee is unchanged — an extrapolated default projection batch must drain in **under half of `processing.cycle_time_budget_seconds`** (under 10 s against the shipped 20 s), and that threshold does not move because one workstation has unstable database round-trip latency. **(AI-2)** the assertion is reclassified a **PERFORMANCE GATE** rather than a machine-independent integration test, executing where database services are **colocated**, stable and reproducible; **"containers are slow" must not be encoded as architecture** — colocated CI containers are acceptable, the defect is the noisy host topology. **(AI-3)** local runs may skip behind an **explicit, visible** environment guard (`HSP_PERFORMANCE_GATE=1`); a skipped gate reports **skipped, never passed**, CI enables it explicitly, and release evidence must show it actually ran. **(AI-4)** **no self-calibration** — no measured baseline, subtraction formula or host calibration factor, because that machinery risks subtracting away a real regression. **(AI-5)** the threshold does not rise; a consistent failure on the controlled runner is a **STOP-and-flag** and investigation of query efficiency, adapter work, source loading, access patterns, batch allocation and round-trip count **before** any budget change (DECISION AG Part 5 item 10 remains in force). **(AI-6)** the mixed-domain proof stays **separately required** — the full-batch gate and the Commerce-does-not-starve-Content scenarios answer different questions and neither replaces the other. **No production behaviour changes**: not the cycle budget, batch size, cadence, PHP timeout, connection count or execution architecture. |
 | 1.40 | 2026-09-08 | **DECISION AH — permalink reconstruction: Case B authorised, implementation scheduled for Phase 4 (architect ruling 2026-09-08; resolves FLAG-COMMPERMA-1).** Requirement A classified the outcome Case B at the P2-S2/P2-S3 preflights; this ruling settles it. **The flag is RESOLVED — record it as *architecture decided, implementation scheduled*, never as an open gap.** Phase 2 remains correct as shipped (no stored product or category permalink, no derived URL/path/URI column, no permalink in the endpoint contract) and does **not** reopen. **(AH-1)** a Commerce-owned store-level configuration projection (`commerce.store_config`) is authorised **in Phase 4** — ONE store-level source, never duplicated onto products/variations/taxonomies and never a per-entity derived permalink, so changing `product_base` updates the configuration projection **only** rather than rewriting every Product row. **(AH-2)** **Commerce owns it, not Core** — no generic `core.settings`/`system.wordpress_settings` projection pre-emptively; a Core contract only once **two** real modules demonstrate a shared capability. **(AH-3)** minimum configuration is `product_base`, `category_base`, `attribute_base` with **token semantics intact** (`%product_cat%` is part of the template, not a separate value, and must not be flattened) — and those three must **NOT** be assumed complete: the Phase 4 preflight verifies the full required state, including any WordPress-level permalink mode, trailing-slash or site-relative semantics the supported version consults; **only verified settings may be projected, never an arbitrary option dump.** **(AH-4)** invalidation flows through the **normal pipeline** (capture → `commerce.store_config.changed` → outbox → relay → dispatch → handler), preferring a **narrow option-specific hook**, with generic `updated_option` acceptable only when tightly guarded to the exact option; bootstrap and reconciliation must include current configuration so an existing store converges without an admin edit; no direct WP→PG repair path. **(AH-5)** permalinks resolve at **READ time** from projected state — no stored `permalink`/`path`/`uri`/`url` columns, no rewrite fan-out, no WordPress query during delivery. **(AH-6)** **HSP owns the resolution algorithm** — `%product_cat%` selection is **verified against supported WooCommerce behaviour**, never an arbitrary first-row/lowest-id/alphabetical choice, and HSP promises supported core behaviour rather than third-party permalink-filter parity. **(AH-7)** the delivery contract is a read-time `links.permalink` carrying a **RELATIVE public path** (the WordPress host and the frontend host may differ), never persisted; **no `/hsp/v1/store` endpoint is required** to solve this flag, though Phase 4 may evaluate one on independent merit. **(AH-8)** Product Category permalinks follow the same model — hierarchy resolved from projected relationships, **no stored category paths**, ambiguous leaf slugs use the DECISION AD/AE/AF path semantics, and **no WordPress term id enters the public addressing contract.** **(AH-9)** `test_no_commerce_projection_stores_a_derived_url` is **permanently valid in principle**; the endpoint guard is Phase-2-scoped and must be **replaced or amended, never deleted**, when Phase 4 introduces the approved contract. Adds an explicit Phase 4 roadmap item (store-config aggregate, verified capture/invalidation, bootstrap, both resolvers, `%product_cat%` expansion, `links.permalink`, no stored URLs, no delivery-time WP reads, compatibility tests). |
@@ -2389,6 +2390,120 @@ Content's UUID relationship identity stayed frozen, the real implementation expo
 defect, and the architecture is amended here, explicitly.
 
 
+### DECISION AK — WooCommerce Handoff Identifiers are Public Interoperability Identity, Not HSP Addressing
+
+| Field | Value |
+|---|---|
+| **Status** | **Accepted — architect ruling 2026-09-14. Resolves Finding 009.** |
+| **Authority** | Architect approval 2026-09-14; DECISION AG Part 6 (Phase 2 scope boundary); DECISION F (delivery contracts, internal-column exclusion); DECISION AD ruling 8 / DECISION AH-8 (WordPress ids are not the public addressing contract); ADR-040 (consumer boundary, no WordPress read on the delivery path); ADR-055 (registry-generated OpenAPI); Rules 2/5/6 |
+| **Scope** | The Commerce module's Product and Product Variation delivery contracts. Nothing else. |
+
+**Problem.** HSP published the WooCommerce product and variation post ids as `source_id` and
+`product_id`, but **never defined what they meant**. The generated OpenAPI carried no `description`
+on any of them, and `source_id` is a name the Commerce module reuses across aggregates where it
+denotes something else entirely — a **term** id on `/product-categories`, an attribute-**definition**
+id on `/product-attributes`. A consumer holding only the contract therefore could not conclude that
+this particular `source_id` was the identifier WooCommerce's own cart accepts. The only route open
+to a storefront wanting a native handoff was to **guess**, and a guess is not a contract.
+
+**The fact that the integers were already exposed did NOT make their Woo semantics ratified.**
+Exposure is not authorisation, and this entry exists because the distinction is real: publishing a
+value is a data decision, while promising that the value is authoritative against a downstream
+runtime is an interoperability decision. Only the first had been taken.
+
+**Decision.** HSP **may** expose source WooCommerce product and variation ids as explicit public
+**interoperability identifiers**, for the sole purpose of handing an **already-selected** catalogue
+entity to the connected source WooCommerce runtime.
+
+- **(AK-1) The fields and their meaning.** `woo_product_id` is the authoritative WooCommerce
+  **product** post id for the connected source site. `woo_variation_id` is the authoritative
+  WooCommerce **variation** post id. On a variation resource, `woo_product_id` is the **PARENT**
+  product id and `woo_variation_id` is the variation's own — **the two are never merged and never
+  interchangeable**, because `WC_Cart::add_to_cart($product_id, $qty, $variation_id, $variation)`
+  takes them in different argument positions and a transposition silently adds the wrong thing to a
+  cart. Verified against the installed WooCommerce 11.1.0: `class-wc-cart.php:1149`, the
+  `?add-to-cart=` + `variation_id` form handler (`class-wc-form-handler.php:922,1051`) and the Store
+  API (`StoreApi/Routes/V1/CartAddItem.php:47`) all consume WordPress post ids.
+
+- **(AK-2) What they are NOT.** They are **not** globally unique identifiers, **not** HSP resource
+  addressing identities, **not** projection row identifiers, and **not** cross-site federation
+  identifiers. They are **site-specific**: authoritative for the connected source WooCommerce site
+  and meaningless against any other. No `global_product_id` / `universal_product_id` semantics are
+  created, now or later.
+
+- **(AK-3) HSP addressing is untouched.** HSP resource addressing remains **slug-based** —
+  `GET /hsp/v1/products/{slug}` is unchanged, and `GET /hsp/v1/products/{woo_product_id}` or any
+  equivalent id-addressed route is **prohibited**. This upholds DECISION AD ruling 8 and AH-8
+  ("no WordPress term id enters the public addressing contract") rather than carving an exception
+  into them: those rulings govern **addressing**, and this one governs **handoff**. The two
+  identities are deliberately separate and must stay separate in the contract.
+
+- **(AK-4) The native Woo transactional boundary does not move.** WooCommerce / WordPress remains
+  solely responsible for **cart, cart session, cart validation, pricing validation, stock
+  validation, coupons, taxes, shipping, fees, checkout, checkout customization, payment gateways,
+  order submission and customer/account flows**. HSP remains **catalogue / discovery / read** for
+  this seam. The fields enable exactly one thing — *HSP-selected catalogue entity → native Woo
+  runtime identity* — and **no transactional state moves into HSP**. DECISION AG Part 6 is
+  reaffirmed in full, including "the WooCommerce cart remains WordPress-owned runtime functionality
+  and must not be projected into PostgreSQL".
+
+- **(AK-5) Explicitly NOT authorised by this decision.** No `/hsp/v1/cart`, `/hsp/v1/checkout` or
+  `/hsp/v1/add-to-cart` endpoint; no HSP cart persistence; no HSP session persistence; no Store API
+  proxy; no WordPress/Woo REST proxy; no Woo API credentials, consumer keys, secrets, nonces or
+  privileged tokens in Delivery responses; no cart tokens in catalogue resources; no
+  `checkout_url`, `cart_url`, `add_to_cart_url`, `woo_url`, `wordpress_url` or `permalink` field;
+  and no Order, Customer, Payment or Shipping projection. **No new transactional subsystem is part
+  of this decision.**
+
+- **(AK-6) No delivery-time WordPress lookup.** The identifiers come from **already projected**
+  Commerce data. The path stays `PostgreSQL projection → Query Provider → Resource`; resolving a
+  handoff id by querying WordPress or WooCommerce at request time is prohibited (ADR-040, Rule 6).
+
+- **(AK-7) No persistence change.** `woo_product_id` and `woo_variation_id` are **public contract
+  aliases over identity the normal Commerce pipeline already carries** —
+  `commerce.products.source_product_id`, `commerce.product_variations.source_variation_id` and
+  `commerce.product_variations.source_parent_id`. **No new column, no migration, no duplicate
+  identity persistence**, and a duplicate database column must never be added merely to match a
+  public field name.
+
+- **(AK-8) Resource-specific, never a meaningless null.** A simple product's resource carries
+  **no** variation field at all — not `woo_variation_id: null` and emphatically not
+  `woo_variation_id: 0`. Variable **parent** products expose their own (parent) product id through
+  `woo_product_id`, exactly as simple products do.
+
+- **(AK-9) Compatibility — additive only.** `source_id` (product, variation) and `product_id`
+  (variation) are **retained**; removing an established public field is potentially breaking and
+  follows the Doc 9 §26 compatibility/deprecation process, not this decision. A response may
+  therefore carry `source_id` and `woo_product_id` with the same integer, and **that duplication is
+  accepted for compatibility**. The legacy fields must be documented as **generic source/legacy
+  identifiers that point consumers at the explicit fields** — they must **NOT** be documented as
+  the preferred Woo handoff contract, because removing exactly that ambiguity is the point of this
+  decision. Tracked separately as **FLAG-COMMSOURCEID-1**, which this decision does not resolve.
+
+- **(AK-10) Scope is WooCommerce Commerce resources ONLY, and this is not a precedent.** Only the
+  Commerce Product and Product Variation contracts may carry an explicit Woo interoperability
+  identifier. **This must not be generalised into arbitrary source-id exposure across the
+  platform**: DECISION F's internal-column exclusion and ADR-040 stand unchanged everywhere else,
+  Content resources continue to publish no source identity, and a future module wanting a
+  comparable handoff identifier needs its own ruling, justified by its own downstream authority —
+  not this one by analogy.
+
+**Contract surface (ADR-055).** The fields are declared in `CommerceEndpointProvider`'s product and
+variation schemas as `integer` with `minimum: 1` — a real guarantee, since the underlying columns
+are `BIGINT NOT NULL` with UNIQUE constraints and an unprojected entity has no response at all —
+carrying descriptions that state the WooCommerce meaning, the parent/variation distinction and the
+site-specific scope. `openapi.json` stays registry-generated; no hand-authored edit.
+
+**Unchanged by this decision:** no migration, no new persistence, no module-boundary change, no
+routing or pagination change, no PG handle (DECISION L Ruling 0), no `pg_*` wrapper (DECISION E),
+no capture-model or checksum change, and no change to Phase 2's product-type scope (AG-13).
+
+**Finding 010 is NOT addressed here.** This decision answers *"once the consumer knows the intended
+product/variation, which Woo identifiers are authoritative?"*. It does **not** answer *"how does a
+consumer deterministically map selected attributes to exactly one variation?"* — variation-selection
+semantics remain open and are a separate task.
+
+
 ## Implications Carried into Schema
 
 > **This table is ADDITIVE: it lists only deltas from Doc 3. Base table DDL remains governed by Doc 3 §4/§20–24. Migrations must compose Doc 3 base + these deltas; freeze checks verify both.**
@@ -2499,3 +2614,4 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `system.module_versions` (finally written) | The table is created (`0009_create_system_module_versions`) and **read** by `OperationsQueryReader`, but **nothing has ever written it**. A writer is added: **idempotent**, and firing **only after** a module's migration batch successfully reaches its **declared module schema version** (`module.json` already declares `schema_version`). Historical rows are **never deleted on rollback**. Plugin version, code version and schema version are not interchangeable. **`system.schema_versions` remains the AUTHORITATIVE migration-state record** — onboarding migration readiness continues to read active migration state, and Operations must not infer migration health from the latest `module_versions` row. | DECISION AG (AG-6) |
 | Module lifecycle state (WordPress option — **no PostgreSQL table**) | Core distinguishes **DISCOVERED / AVAILABLE / READY(ACTIVE)**, with data bootstrap (`pending`/`complete`) tracked **separately**. A module is **never runtime-ready merely because `isAvailable()` returns true** — required module migrations must have applied first; on migration failure the module stays not-active, every other module keeps operating, and no endpoint or projection consumer runs against missing schema. Bootstrap state lives in a **module-keyed WordPress option** (`hsp_module_bootstrap_state`, or one option per module if that is what delivers lost-update safety) — updating one module's state must **never** erase a sibling's. This is **lifecycle state: no PostgreSQL table is authorised**, and `system.module_versions` must **not** be used for it. A newly ready module with no completed bootstrap schedules a **module-scoped `ReconciliationService` re-emission** — no direct WP→PG copy, no second repair path, no in-request drain, no reset of global onboarding, Content staying online — so **WooCommerce installed after HSP converges the existing catalog with no reactivation, no manual migrate and no manual reconcile**. On a fresh install where global onboarding already covers all active modules, convergence marks them complete with **no duplicate backfill**. | DECISION AG (AG-12); ADR-054 Principle 8 |
 | Commerce product-type scope + lifecycle coverage | Phase 2 projects **`simple` and `variable` only**. An unsupported type (`grouped`, `external`, custom) is **normal out-of-scope source, not a processing failure**: no repeated retry, no DLQ merely for being unsupported, no blocked reconciliation or bootstrap convergence, and **excluded from backfill/reconciliation expected counts**. Types are never coerced into `simple` and never partially projected. **All four transitions are mandatory coverage**, and `simple`/`variable` → unsupported must **tombstone** the previously public projection through the existing DECISION I / T / U path rather than leaving it visible forever. More broadly, **every** Phase 2 aggregate proves `create → update → delete/leave-supported-scope → tombstone → replay → reconciliation`, with relationship projections converging through the **same** re-emission mechanism — **no aggregate-specific or relationship-specific repair path**. | DECISION AG (AG-13, Part 5) |
+| Commerce Product + Product Variation delivery contract (Woo handoff identity) | Product resources publish **`woo_product_id`**; variation resources publish **`woo_product_id` (the PARENT) + `woo_variation_id`** — explicit public **interoperability** identifiers for handing an already-selected catalogue entity to the connected source WooCommerce runtime, **never merged and never interchangeable** (`WC_Cart::add_to_cart()` takes them in different argument positions). **Site-specific**, not globally unique, **not HSP addressing** — `/products/{slug}` is unchanged and an id-addressed product route is prohibited. **Public aliases only: no new column, no migration, no duplicate identity persistence** (the values are `commerce.products.source_product_id`, `commerce.product_variations.source_variation_id` and `source_parent_id`, already carried by the normal pipeline) and no delivery-time WordPress read. A simple product carries **no** variation field — not null, not `0`. `source_id` / `product_id` are **retained for compatibility** and documented as generic/legacy identifiers pointing at the explicit fields, **never** as the preferred handoff contract (FLAG-COMMSOURCEID-1 tracks that separately). The native Woo transactional boundary is unchanged — no HSP cart, session, checkout, Store API proxy, credential exposure or Order/Customer/Payment/Shipping projection. **Commerce Product + Variation resources ONLY; not a precedent for source-id exposure elsewhere** — DECISION F's internal-column exclusion and ADR-040 stand platform-wide. | DECISION AK (v1.43); Finding 009; DECISION AG Part 6; DECISION AD ruling 8 / AH-8; DECISION F; ADR-040; ADR-055 |
