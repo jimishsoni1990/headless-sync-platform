@@ -2,7 +2,7 @@
 
 **Precedence: when this document conflicts with the PRD or Docs 1–11, THIS document wins. These resolutions are Accepted and frozen. Do not re-open or re-derive them.**
 
-Version: 1.43  
+Version: 1.44  
 Status: Accepted  
 Owner: Architecture  
 
@@ -12,6 +12,7 @@ Owner: Architecture
 
 | Version | Date | Items changed |
 |---|---|---|
+| 1.44 | 2026-09-14 | **DECISION AL — the variation-selection capability is PUBLISHED, not inferred (architect ruling 2026-09-14; resolves Finding 010 and FLAG-COMMVARLOCAL-1).** A **narrow amendment required by a defect proven on the live store**, and it does **not** broaden AG-9. AG-9 keeps local/custom WooCommerce attributes out of Phase 2, so `VariationExtractor` drops them from a variation's published selection — harmless for a DISPLAY-only attribute, and **not** harmless for a variation-DEFINING one, because the omitted dimension does not leave a visible gap: it collapses distinct variations into the same published pattern. The reference store's hoodie (95) varies by `pa_color` **and the local `Logo`**; variations **118** (Blue/Yes) and **113** (Blue/No) both publish `{"pa_color":"blue"}`, and against WooCommerce 11.1.0's own `find_matching_product_variation()` a contract-compliant consumer got **3 of 6 selections wrong** — once the wrong variation, **twice confidently resolving a combination the store does not sell**. Prose about scope was insufficient: a consumer could not tell WHICH products were affected. **Ruling:** **(AL-1)** the Product resource publishes **`variation_selection_supported`** (boolean) — true = HSP's public data is complete enough to apply the documented algorithm safely; false = the consumer **MUST NOT** resolve a variation from HSP data alone. **(AL-2)** it is **not** a "product supported" flag — a false product keeps listing, addressing, media, prices, descriptive data and its `woo_product_id` handoff; **exactly one capability is withheld**, and false is never an error, a 500, an omission or a tombstone. **(AL-3)** the source rule classifies every attribute with `get_variation() === true`, and **source type is authoritative**: `is_taxonomy()` (`0 < get_id()`) first, the `pa_*` name only as corroboration — a local attribute may be *named* like a taxonomy and its values are raw option strings, not term slugs; attributes with `get_variation() === false` are irrelevant, and the classification must **never** be inferred from the variation payloads, since omitted dimensions leave those rows looking complete. **(AL-4)** a variable product with **no** variation-defining attributes is **false** — verified: Woo's resolver returns 0 unconditionally there while every variation would publish an empty pattern matching everything — and this is distinct from a product with no active variations, which stays **true**. **(AL-5)** persistence is **one nullable boolean** on `commerce.products` (migration `0008_add_commerce_products_variation_selection`), carried from source because extraction destroys the fact; **no DEFAULT** (true would bless the very products this exists for; false would erase *classified* vs *never classified*), **no index**, and **no table, matrix, option graph, capability subsystem or second projection**. **(AL-6)** **unknown publishes as FALSE** — a consumer is never told selection is safe on a value nobody established, and never made to infer migration state. **(AL-7)** the field is **present only on variable products** — not true, not false, not null otherwise, exactly as AK-8 ruled for `woo_variation_id` — and is therefore **optional**, never `required`. **(AL-8)** the capability is **inside the product checksum** (mandatory: ticking "Used for variations" on a local attribute moves no other projected value, so an unchecksummed flag would be write-suppressed and consumers would keep being told a product is selectable), so existing rows converge as `checksum_drift` through **DECISION T/U re-emission** — **no backfill UPDATE, no repair worker, no second repair path** — and both transitions must converge with no stale state. **(AL-9)** the consumer rule becomes **two-stage** in the published OpenAPI: check the capability, then (only if true) apply the verified algorithm — publish-only candidates, `menu_order` then `woo_variation_id`, `""` as wildcard, first match wins, no match means not sold; the reference matcher **must refuse** when false even where the supported subset looks unique. **(AL-10)** **no local/custom attribute data is exposed** — no name, option string or meta key; the flag IS the disclosure boundary, and `product.attributes` / variation `attributes` stay published because the flag gates INTERPRETATION rather than withdrawing useful data. **(AL-11)** explicitly not authorised: local-attribute projection or `pa_*` normalisation of one, a parallel attribute model, any server-side variation-resolution endpoint, a precomputed selector matrix or combination index, and any cart/checkout/session capability — AK-4/AK-5 stand, and `true` means only that **HSP can identify the intended variation**, never that add-to-cart will succeed. **(AL-12)** **P2-S5 is upheld** — "a variation's identity is its attribute selection" remains correct inside the supported model; this states whether HSP holds a complete public representation of that identity, and AG-9's scope is unchanged. No change to AG-13, the AK handoff identifiers, addressing, routing, pagination, cursors, module boundaries, the four-handle topology (L Ruling 0), the `pg_*` prohibition (E), the capture model, or `commerce.product_variations`, which gains no column. |
 | 1.43 | 2026-09-14 | **DECISION AK — WooCommerce handoff identifiers are public interoperability identity, not HSP addressing (architect ruling 2026-09-14; resolves Finding 009).** HSP already published the WooCommerce product and variation post ids as `source_id` / `product_id`, but had **never defined what they meant** — no `description` reached the generated OpenAPI, and `source_id` denotes a **term** id on `/product-categories` and an attribute-**definition** id on `/product-attributes`, so a consumer holding only the contract could not conclude that this particular one was the id WooCommerce's cart accepts and had to **guess**. **Exposure is not authorisation:** publishing a value is a data decision, promising it is authoritative against a downstream runtime is an interoperability decision, and only the first had been taken — which is why this is recorded as an amendment rather than treated as already-settled. **Ruling:** HSP **may** expose source Woo product/variation ids as explicit public **interoperability identifiers**, solely to hand an **already-selected** catalogue entity to the connected source WooCommerce runtime. **(AK-1)** `woo_product_id` = authoritative Woo **product** post id; `woo_variation_id` = authoritative Woo **variation** post id; on a variation, `woo_product_id` is the **PARENT** — never merged, never interchangeable, because `WC_Cart::add_to_cart($product_id, $qty, $variation_id, $variation)` takes them in different argument positions (verified against the installed WooCommerce 11.1.0, alongside the `?add-to-cart=`+`variation_id` form handler and the Store API). **(AK-2)** They are **not** globally unique, **not** HSP addressing identities, **not** projection row ids and **not** cross-site federation ids — **site-specific**, authoritative only for the connected store; no `global_product_id`/`universal_product_id` semantics. **(AK-3)** HSP addressing stays **slug-based** — `/products/{slug}` unchanged, `/products/{woo_product_id}` **prohibited**; DECISION AD ruling 8 and AH-8 are **upheld, not excepted**, because they govern *addressing* while this governs *handoff*. **(AK-4)** the native Woo transactional boundary does not move: cart, cart session, cart/pricing/stock validation, coupons, taxes, shipping, fees, checkout, checkout customization, payment gateways, order submission and customer/account flows stay WooCommerce/WordPress; HSP stays catalogue/discovery/read; **no transactional state enters HSP** and DECISION AG Part 6 is reaffirmed in full. **(AK-5)** explicitly **not** authorised: `/hsp/v1/cart`, `/hsp/v1/checkout`, `/hsp/v1/add-to-cart`, HSP cart or session persistence, Store API or Woo REST proxying, Woo credentials/secrets/nonces/tokens in Delivery responses, cart tokens in catalogue resources, any `checkout_url`/`cart_url`/`add_to_cart_url`/`woo_url`/`permalink` field, and Order/Customer/Payment/Shipping projections. **(AK-6)** identifiers come from **already projected** data — `projection → Query Provider → Resource`; **no delivery-time WordPress/Woo lookup** (ADR-040). **(AK-7)** **no new column, no migration, no duplicate identity persistence** — they are public aliases over `source_product_id` / `source_variation_id` / `source_parent_id`, and a duplicate column must never be added merely to match a public field name. **(AK-8)** resource-specific: a simple product carries **no** variation field — not null, emphatically not `woo_variation_id: 0`. **(AK-9)** **additive only** — `source_id` and `product_id` are retained (removal follows Doc 9 §26, not this decision), the resulting duplicate integer is **accepted for compatibility**, and the legacy fields must be documented as generic/legacy identifiers pointing at the explicit ones, **never** as the preferred Woo handoff contract; tracked separately as **FLAG-COMMSOURCEID-1**, which this decision does **not** resolve. **(AK-10)** scope is **WooCommerce Commerce Product + Product Variation resources ONLY and is not a precedent** — DECISION F's internal-column exclusion and ADR-040 stand unchanged platform-wide, Content still publishes no source identity, and a future module needs its own ruling justified by its own downstream authority. No migration, persistence, module-boundary, routing, pagination, PG-handle (L Ruling 0), `pg_*` wrapper (E), capture-model or AG-13 product-type change. **Finding 010 is NOT addressed** — variation-selection semantics remain open. **Also corrected here, not silently:** the document header read `Version: 1.41` while the latest log row was already **1.42** (DECISION AJ); the header is set to **1.43** to match this row, the same stale-header correction the ONB-S2 entry recorded previously. |
 | 1.42 | 2026-09-14 | **DECISION AJ — Content taxonomy relationships key on the source term identity (architect ruling 2026-09-14; resolves Finding 004).** **A narrow amendment to a frozen shape, required by a defect proven in production.** FLAG-P1AS4-1 (v1.8) froze `content.entity_taxonomies` as `(entity_id UUID, taxonomy_id UUID)` and DECISION AA (v1.33) upheld it verbatim, both assuming the term's projection row would exist when a post's relationship was written. **It does not:** under at-least-once, non-FIFO delivery a post routinely projects before its terms, and on the affected installation every post projected before every category — so `PostAdapter` resolved each term to a `content.taxonomies.id`, found nothing, and silently wrote **no relationship at all**, platform-wide, with no error logged. Write suppression then made it permanent: category ids sit inside the post's canonical checksum, so replay recomputed the same checksum and DECISION 3 correctly suppressed the rewrite, while reconciliation compared those same checksums and saw no drift. Delivery served `post_count: 6` beside an empty `?category=` archive. **Ruling:** the relationship row references the term by its **stable source identity** — `(entity_id UUID, source_term_id BIGINT)` composite PK, reverse index `(source_term_id, entity_id)` replacing `(taxonomy_id, entity_id)` — making a relationship a pure function of the owning post's own state, correct in any arrival order and independent of `content.taxonomies.id` having materialised. **(AJ-1)** the suppress decision gains an **exact relationship-set comparison** (order-insensitive, duplicate-safe, bounded to one aggregate, PK-backed, never per-term): the canonical checksum witnesses the `content.posts` row only, and **cardinality equality is explicitly insufficient** — `[10,20]` and `[10,30]` share a count and are not the same projection; this is what lets an already-damaged installation heal through ordinary replay with **no second repair path**. **(AJ-2)** everything else is deliberately unchanged — still a **pure relationship table** (composite PK only; no timestamps, checksum, metadata or surrogate id), no separate category/tag tables, categories and tags still share `content.taxonomies`, `taxonomy_type` still owned there and still **mandatory** on every read of the shared projection (slug alone is never sufficient), no FKs, `source_term_id` is an **internal projection identity and never a public API identifier** (consumers still filter by slug), WordPress still source of truth, no WordPress read on the consumer path. **(AJ-3)** migration `0009_align_content_entity_taxonomies_to_source_term_id` translates existing rows in place, **preserving every link whose term resolves**, removes untranslatable dangling rows rather than manufacturing a source identity, replaces the reverse index, and leaves **one** authoritative relationship identity — no dual-key transition, no extra table, no obsolete index. **(AJ-4)** no response-shape, public-identifier, filter-contract, OpenAPI, module-boundary or persistence-subsystem change; `post_count` semantics untouched (investigated, correct); `commerce.entity_taxonomies` untouched (already source-keyed). **AG-7 is supporting precedent, NOT retroactive authority** — it governed Commerce, and Commerce's own migration recorded that Content "deliberately differs"; Content's UUID identity remained frozen until this entry. Amends FLAG-P1AS4-1 and DECISION AA's "Explicitly unchanged" clause and index-shape paragraph; Doc 3 §10 banner-amended; IMPLEMENTATION_PLAN.md P1A-S4 schema line updated; Implications table updated. |
 | 1.41 | 2026-09-08 | **DECISION AI — the full-batch cycle budget becomes a controlled CI performance gate (architect ruling 2026-09-08; resolves FLAG-PERFCYCLE-1).** Option (a) chosen; (b) baseline subtraction and (c) raising the threshold both rejected. **(AI-1)** the guarantee is unchanged — an extrapolated default projection batch must drain in **under half of `processing.cycle_time_budget_seconds`** (under 10 s against the shipped 20 s), and that threshold does not move because one workstation has unstable database round-trip latency. **(AI-2)** the assertion is reclassified a **PERFORMANCE GATE** rather than a machine-independent integration test, executing where database services are **colocated**, stable and reproducible; **"containers are slow" must not be encoded as architecture** — colocated CI containers are acceptable, the defect is the noisy host topology. **(AI-3)** local runs may skip behind an **explicit, visible** environment guard (`HSP_PERFORMANCE_GATE=1`); a skipped gate reports **skipped, never passed**, CI enables it explicitly, and release evidence must show it actually ran. **(AI-4)** **no self-calibration** — no measured baseline, subtraction formula or host calibration factor, because that machinery risks subtracting away a real regression. **(AI-5)** the threshold does not rise; a consistent failure on the controlled runner is a **STOP-and-flag** and investigation of query efficiency, adapter work, source loading, access patterns, batch allocation and round-trip count **before** any budget change (DECISION AG Part 5 item 10 remains in force). **(AI-6)** the mixed-domain proof stays **separately required** — the full-batch gate and the Commerce-does-not-starve-Content scenarios answer different questions and neither replaces the other. **No production behaviour changes**: not the cycle budget, batch size, cadence, PHP timeout, connection count or execution architecture. |
@@ -2501,8 +2502,145 @@ no capture-model or checksum change, and no change to Phase 2's product-type sco
 **Finding 010 is NOT addressed here.** This decision answers *"once the consumer knows the intended
 product/variation, which Woo identifiers are authoritative?"*. It does **not** answer *"how does a
 consumer deterministically map selected attributes to exactly one variation?"* — variation-selection
-semantics remain open and are a separate task.
+semantics remain open and are a separate task. **[Answered by DECISION AL (v1.44).]**
 
+---
+
+### DECISION AL — Variation-Selection Capability is Published, Not Inferred (resolves FLAG-COMMVARLOCAL-1)
+
+| Field | Value |
+|---|---|
+| **Status** | **Accepted — architect ruling 2026-09-14. Resolves Finding 010 and FLAG-COMMVARLOCAL-1.** |
+| **Authority** | Architect approval 2026-09-14; DECISION AG **AG-9** (local/custom attributes out of Phase 2 — **unchanged by this decision**), AG-13 (product-type scope), Part 4b (tolerant reads, unknown ≠ a false negative); **P2-S5** (a variation's identity is its attribute selection — **upheld, not weakened**); DECISION 3 (write-suppress by checksum); DECISION I/T/U (re-emission is the only repair path); DECISION AK (handoff identity); DECISION F (delivery contracts); ADR-040 (no WordPress read on the delivery path); ADR-055 (registry-generated OpenAPI); Rules 1/2/5/6 |
+| **Scope** | The Commerce module's Product delivery contract and `commerce.products`. Nothing else. |
+
+**Problem, proven on the live reference store.** AG-9 keeps local/custom WooCommerce attributes
+out of Phase 2, and `VariationExtractor` therefore drops them from a variation's published
+selection. For a **display-only** attribute that costs nothing. For a **variation-defining** one
+it is not an omission a consumer can see — it silently collapses distinct variations into the same
+published selection pattern:
+
+> Hoodie (`woo_product_id` 95) varies by `pa_color` (global) **and `Logo`** — a local attribute
+> with `is_taxonomy() === false`, `get_id() === 0`, `get_variation() === true`. Variations **118**
+> (Blue/Yes) and **113** (Blue/No) both publish `{"pa_color":"blue"}`, byte-identical. Measured
+> against WooCommerce 11.1.0's own `find_matching_product_variation()` across all six concrete
+> source selections, a contract-compliant consumer got **3 of 6 wrong**: once resolving 118 where
+> the store resolves 113, and **twice confidently resolving a combination the store does not
+> sell** (`green`/`Yes` → 112, `red`/`Yes` → 111, where WooCommerce returns 0).
+
+**The published data was not merely incomplete — it produced confident wrong answers, with nothing
+in the contract to warn against it.** Documenting the scope limit in prose was insufficient,
+because a consumer still could not tell *which* products were affected.
+
+**Decision.** Local/custom variation attributes **remain unsupported**. What changes is that HSP
+must **publish whether a variable product is fully representable** within the supported model,
+rather than leaving a consumer to infer it from data that cannot express the difference.
+
+- **(AL-1) The capability field.** The Product resource publishes
+  **`variation_selection_supported`** (boolean). **TRUE** means HSP's public Product + Variation
+  data contains the complete variation-defining state needed to apply the documented selection
+  algorithm safely. **FALSE** means the product uses variation-defining source state outside the
+  supported selector model, and a consumer **MUST NOT** deterministically resolve a variation from
+  HSP data alone.
+
+- **(AL-2) It is NOT a "product supported" flag.** A `false` product remains a fully supported
+  catalogue entity — listing, slug addressing, media, prices, descriptive data, `woo_product_id`
+  handoff identity and every other existing read behaviour are unaffected. **Exactly one
+  capability is withheld: deterministic variation selection.** It is never an error, never a 500,
+  never an omission from a listing, never a tombstone.
+
+- **(AL-3) The source rule, and source type is authoritative.** For a variable product, take every
+  attribute WooCommerce marks `get_variation() === true`. Each is **supported** only when
+  `WC_Product_Attribute::is_taxonomy()` is true **and** the taxonomy is one the Commerce module
+  owns (`pa_*`). All supported → `true`; otherwise `false`. `is_taxonomy()` (i.e. `0 < get_id()`)
+  is the primary test and the `pa_` name check is corroboration — **never the reverse**, because a
+  local attribute may be *named* anything, including something that looks global, and its values
+  are raw option strings rather than term slugs. **Attributes with `get_variation() === false` are
+  irrelevant**: a display-only attribute, local or global, must not withhold the capability.
+  **The classification must NOT be inferred from the variation payloads** — the hoodie proves
+  omitted dimensions leave variation rows looking complete.
+
+- **(AL-4) A variable product with NO variation-defining attributes is `false`.** Verified against
+  WooCommerce 11.1.0: with an empty meta-key list `find_matching_product_variation()` matches no
+  rows and returns 0, so the store resolves **nothing** — while every variation would publish an
+  empty pattern that matches **everything**. Nothing is omitted in that state, but the algorithm
+  is not safe, and the capability promises safety. **This is distinct from a product that merely
+  has no active variations**, which stays `true`: the model is complete and the correct answer to
+  every selection is simply "no match".
+
+- **(AL-5) Persistence — one boolean, nullable, no default.** `commerce.products` gains
+  **`variation_selection_supported BOOLEAN NULL`** (migration
+  `0008_add_commerce_products_variation_selection`). The fact **cannot** be reconstructed after
+  projection — the unsupported attributes are discarded at extraction — so it is carried from
+  source through Source Model → Canonical → projection like any other source-derived fact.
+  **NULL means unknown or not applicable** and is the permanent value for a non-variable product.
+  **No `DEFAULT true`** (it would declare the very products this decision exists for to be safe)
+  and **no `DEFAULT false`** (it would erase the difference between *classified unsupported* and
+  *never classified*). **No index** — nothing filters on it. **No new table, no selector matrix,
+  no option graph, no capability subsystem, no separate compatibility projection.**
+
+- **(AL-6) Unknown publishes as FALSE — consumer safety wins.** A variable product whose stored
+  capability is NULL publishes `variation_selection_supported: false`. A consumer must never be
+  told selection is safe on the strength of a value nobody has established, and **must never be
+  made to infer migration state**: "not selectable from HSP" is true while it is unknown, and
+  becomes accurate on convergence. The tri-state lives in storage and in operations, never in the
+  contract.
+
+- **(AL-7) Present only on variable products.** A product whose `type` is not `variable` carries
+  **no** `variation_selection_supported` field — not `true`, not `false`, not `null`. `true` would
+  read as "selection works here" and `false` as a defect; neither is true of a product with no
+  variations. This follows AK-8's precedent exactly. The field is therefore **optional** in the
+  schema and must not be declared `required`.
+
+- **(AL-8) Convergence is the ordinary pipeline, with no repair path.** The capability is part of
+  `CanonicalProduct`'s checksum — mandatory, because ticking "Used for variations" on a local
+  attribute changes **no other projected value**, so an unchecksummed capability would be
+  write-suppressed and consumers would keep being told a product is selectable after it stopped
+  being so. Because the digest moves, existing rows read as `checksum_drift` and repair through
+  **DECISION T/U re-emission**, the same route replay and an ordinary product edit take. **No
+  backfill UPDATE, no bespoke repair worker, no second repair path.** Both transitions must
+  converge: supported → unsupported and unsupported → supported, leaving no stale capability.
+
+- **(AL-9) The consumer rule becomes two-stage**, and is published in the OpenAPI descriptions:
+  **stage 1** read `variation_selection_supported`; if false, STOP and do not resolve from HSP
+  data. **Stage 2** (only when true) apply the verified algorithm — publish-only candidates,
+  ordered by `menu_order` then `woo_variation_id`, per-candidate matching where `""` is a
+  wildcard, first match wins, no match means not sold. The reference matcher proving the contract
+  **must refuse** when the capability is false, even where the supported subset appears to yield a
+  unique variation.
+
+- **(AL-10) No local/custom attribute data is exposed.** For a `false` product HSP publishes
+  **no** local attribute name, option string, source meta key or internal array. The flag **is**
+  the disclosure boundary. `product.attributes` and a variation's `attributes` stay published and
+  remain accurate as far as they go — the flag gates **interpretation**, and useful global
+  attribute data is not withdrawn because a product also has unsupported dimensions.
+
+- **(AL-11) Explicitly NOT authorised.** No local/custom attribute projection, table, resource or
+  option serialisation; **no `pa_*` normalisation of a local attribute**; no parallel attribute
+  model; no server-side variation-resolution endpoint (`resolve-variation`, `match-variation`,
+  variation-lookup-by-selection); no precomputed selector matrix, option graph or combination
+  index; no cart, checkout or session capability. DECISION AK-4/AK-5 stand in full — WooCommerce
+  remains the transactional authority, and `variation_selection_supported: true` says only that
+  **HSP can identify the intended variation**, never that an add-to-cart will succeed: stock,
+  price, purchasability and cart rules remain Woo-validated.
+
+- **(AL-12) P2-S5 is upheld.** "A variation's identity is its attribute selection" remains correct
+  **inside** the supported model. This decision does not replace that rule; it states whether HSP
+  holds a **complete public representation** of that identity for a particular product. AG-9's
+  scope is unchanged, and supporting local/custom attributes would be a separate future decision.
+
+**Contract surface (ADR-055).** `variation_selection_supported` is declared in
+`CommerceEndpointProvider`'s product schema as `boolean` with a description stating both values'
+meaning, the must-not-resolve rule, the variable-only presence, and that it governs selection
+only. The variations endpoint carries the two-stage algorithm. `openapi.json` stays
+registry-generated; no hand-authored edit.
+
+**Unchanged by this decision:** AG-9 scope, AG-13 product-type scope, the Woo handoff identifiers
+(AK), addressing, routing, pagination, cursor semantics, module boundaries, the four-handle PG
+topology (DECISION L Ruling 0), the `pg_*` prohibition (DECISION E), the capture model, and the
+variation projection itself — `commerce.product_variations` gains no column.
+
+---
 
 ## Implications Carried into Schema
 
@@ -2614,4 +2752,5 @@ The following tables and columns are affected by the rulings above. Migration fr
 | `system.module_versions` (finally written) | The table is created (`0009_create_system_module_versions`) and **read** by `OperationsQueryReader`, but **nothing has ever written it**. A writer is added: **idempotent**, and firing **only after** a module's migration batch successfully reaches its **declared module schema version** (`module.json` already declares `schema_version`). Historical rows are **never deleted on rollback**. Plugin version, code version and schema version are not interchangeable. **`system.schema_versions` remains the AUTHORITATIVE migration-state record** — onboarding migration readiness continues to read active migration state, and Operations must not infer migration health from the latest `module_versions` row. | DECISION AG (AG-6) |
 | Module lifecycle state (WordPress option — **no PostgreSQL table**) | Core distinguishes **DISCOVERED / AVAILABLE / READY(ACTIVE)**, with data bootstrap (`pending`/`complete`) tracked **separately**. A module is **never runtime-ready merely because `isAvailable()` returns true** — required module migrations must have applied first; on migration failure the module stays not-active, every other module keeps operating, and no endpoint or projection consumer runs against missing schema. Bootstrap state lives in a **module-keyed WordPress option** (`hsp_module_bootstrap_state`, or one option per module if that is what delivers lost-update safety) — updating one module's state must **never** erase a sibling's. This is **lifecycle state: no PostgreSQL table is authorised**, and `system.module_versions` must **not** be used for it. A newly ready module with no completed bootstrap schedules a **module-scoped `ReconciliationService` re-emission** — no direct WP→PG copy, no second repair path, no in-request drain, no reset of global onboarding, Content staying online — so **WooCommerce installed after HSP converges the existing catalog with no reactivation, no manual migrate and no manual reconcile**. On a fresh install where global onboarding already covers all active modules, convergence marks them complete with **no duplicate backfill**. | DECISION AG (AG-12); ADR-054 Principle 8 |
 | Commerce product-type scope + lifecycle coverage | Phase 2 projects **`simple` and `variable` only**. An unsupported type (`grouped`, `external`, custom) is **normal out-of-scope source, not a processing failure**: no repeated retry, no DLQ merely for being unsupported, no blocked reconciliation or bootstrap convergence, and **excluded from backfill/reconciliation expected counts**. Types are never coerced into `simple` and never partially projected. **All four transitions are mandatory coverage**, and `simple`/`variable` → unsupported must **tombstone** the previously public projection through the existing DECISION I / T / U path rather than leaving it visible forever. More broadly, **every** Phase 2 aggregate proves `create → update → delete/leave-supported-scope → tombstone → replay → reconciliation`, with relationship projections converging through the **same** re-emission mechanism — **no aggregate-specific or relationship-specific repair path**. | DECISION AG (AG-13, Part 5) |
+| `commerce.products` (variation-selection capability) | **New column `variation_selection_supported BOOLEAN NULL`** (migration `0008_add_commerce_products_variation_selection`) carrying whether every attribute a VARIABLE product varies by is a supported global `pa_*` taxonomy. **Source-derived and not reconstructable afterwards** — AG-9 discards local/custom attributes at extraction, and the loss is invisible downstream because it makes two distinct variations publish the same selection pattern. Classified at capture from WooCommerce's own flags: every attribute with `get_variation() === true` must satisfy `is_taxonomy()` (authoritative — the `pa_` name is corroboration only) and be a taxonomy the module owns; a variable product with **no** variation-defining attributes is **false** (Woo's own resolver returns 0 there). **NULL = unknown or not applicable**, which is the permanent value for a non-variable product; **no DEFAULT** (true would bless the affected products, false would erase *classified* vs *never classified*) and **no index** (nothing filters on it). Part of `CanonicalProduct`'s checksum — mandatory, since the transition moves no other projected value and would otherwise be write-suppressed — so existing rows converge as `checksum_drift` through **DECISION T/U re-emission**, with no backfill UPDATE and no repair worker. Delivery publishes `variation_selection_supported` **on variable products only** and resolves NULL conservatively to `false`. `commerce.product_variations` gains **no** column; **no** local-attribute projection, selector matrix, option graph or capability table exists. | DECISION AL (v1.44); Finding 010; FLAG-COMMVARLOCAL-1; DECISION AG AG-9/AG-13; DECISION 3; DECISION T/U; P2-S5; ADR-055 |
 | Commerce Product + Product Variation delivery contract (Woo handoff identity) | Product resources publish **`woo_product_id`**; variation resources publish **`woo_product_id` (the PARENT) + `woo_variation_id`** — explicit public **interoperability** identifiers for handing an already-selected catalogue entity to the connected source WooCommerce runtime, **never merged and never interchangeable** (`WC_Cart::add_to_cart()` takes them in different argument positions). **Site-specific**, not globally unique, **not HSP addressing** — `/products/{slug}` is unchanged and an id-addressed product route is prohibited. **Public aliases only: no new column, no migration, no duplicate identity persistence** (the values are `commerce.products.source_product_id`, `commerce.product_variations.source_variation_id` and `source_parent_id`, already carried by the normal pipeline) and no delivery-time WordPress read. A simple product carries **no** variation field — not null, not `0`. `source_id` / `product_id` are **retained for compatibility** and documented as generic/legacy identifiers pointing at the explicit fields, **never** as the preferred handoff contract (FLAG-COMMSOURCEID-1 tracks that separately). The native Woo transactional boundary is unchanged — no HSP cart, session, checkout, Store API proxy, credential exposure or Order/Customer/Payment/Shipping projection. **Commerce Product + Variation resources ONLY; not a precedent for source-id exposure elsewhere** — DECISION F's internal-column exclusion and ADR-040 stand platform-wide. | DECISION AK (v1.43); Finding 009; DECISION AG Part 6; DECISION AD ruling 8 / AH-8; DECISION F; ADR-040; ADR-055 |

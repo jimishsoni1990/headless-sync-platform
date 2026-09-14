@@ -259,6 +259,30 @@ UI (including onboarding) is React. See `docs/ARCHITECTURE_DECISIONS.md` DECISIO
   credentials in responses**. **Commerce Product + Variation ONLY — not a precedent for exposing
   source ids elsewhere** (DECISION F internal-column exclusion and ADR-040 stand platform-wide).
   See `docs/ARCHITECTURE_DECISIONS.md` DECISION AK.
+- **Variation-selection capability (DECISION AL):** **local/custom WooCommerce attributes remain
+  OUT of scope — AG-9 is unchanged and must not be broadened.** But a variable product that varies
+  by one publishes a selection missing that dimension, which made two variations indistinguishable
+  and resolved the WRONG one, so the Product resource publishes **`variation_selection_supported`**
+  (boolean): **true** = HSP's public Product + Variation data is complete enough to resolve a
+  selection safely; **false** = a consumer **MUST NOT** resolve a variation from HSP data alone.
+  It is **not** a "product supported" flag — a `false` product keeps listing, addressing, media,
+  prices and its `woo_product_id` handoff; **one** capability is withheld, and false is never an
+  error, a 500, an omission or a tombstone. Classified **at capture** from WooCommerce's own flags
+  — every attribute with `get_variation() === true` must satisfy **`is_taxonomy()` (authoritative;
+  the `pa_` name is corroboration only)** — **never inferred from the variation payloads**, and a
+  variable product with **no** variation-defining attributes is **false**. Persistence is exactly
+  **one nullable boolean** on `commerce.products` (migration `0008`), **no DEFAULT**, no index, and
+  **no selector matrix, option graph, capability table or second projection**. NULL means unknown
+  or not applicable; delivery publishes the field **on variable products only** and resolves
+  unknown **conservatively to `false`**. It is inside the product checksum, so existing rows
+  converge through **DECISION T/U re-emission** — no backfill UPDATE, no repair worker. The public
+  rule is **two-stage**: check the capability, then (only if true) apply the verified WooCommerce
+  algorithm — publish-only candidates, `menu_order` then `woo_variation_id`, `""` is a wildcard,
+  first match wins, no match means not sold. **No local-attribute data is ever exposed, no
+  server-side variation-resolution endpoint exists, and `true` never means add-to-cart will
+  succeed** — Woo still validates stock, price and purchasability. **P2-S5 stands**: a variation's
+  identity is its attribute selection; this only says whether HSP holds a complete public
+  representation of it. See `docs/ARCHITECTURE_DECISIONS.md` DECISION AL.
 
 ---
 
