@@ -58,7 +58,51 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
             'meta'               => $this->publicMeta($productId),
             'category_ids'       => $this->termIds($productId, CommerceTaxonomies::PRODUCT_CAT),
             'attribute_term_ids' => $this->attributeTermIds($productId),
+            // DECISION AL. Decided HERE because it is only decidable here: the classification
+            // reads WooCommerce's own per-attribute flags, and the unsupported entries are gone
+            // by the time anything downstream could look. NULL for a non-variable product.
+            'variation_selection_supported' => VariationSelectionScope::isSupported(
+                (string) $product->get_type(),
+                $this->attributeFlags($product),
+            ),
         ];
+    }
+
+    /**
+     * Each assigned attribute's WooCommerce flags, normalised away from `WC_Product_Attribute`.
+     *
+     * The flags rather than the object, so the classification itself is a pure function that can
+     * be tested without booting WordPress — and so the rule lives in one readable place rather
+     * than inside a loader that only runs against a live store.
+     *
+     * @return list<array{variation:bool,taxonomy:bool,name:string}>
+     */
+    private function attributeFlags(object $product): array
+    {
+        if (! method_exists($product, 'get_attributes')) {
+            return [];
+        }
+
+        $out = [];
+
+        foreach ((array) $product->get_attributes() as $attribute) {
+            if (
+                ! is_object($attribute)
+                || ! method_exists($attribute, 'get_variation')
+                || ! method_exists($attribute, 'is_taxonomy')
+                || ! method_exists($attribute, 'get_name')
+            ) {
+                continue;
+            }
+
+            $out[] = [
+                'variation' => (bool) $attribute->get_variation(),
+                'taxonomy'  => (bool) $attribute->is_taxonomy(),
+                'name'      => (string) $attribute->get_name(),
+            ];
+        }
+
+        return $out;
     }
 
     public function productType(int $productId): ?string

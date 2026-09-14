@@ -190,12 +190,14 @@ final class ProductAdapter implements AdapterInterface
                  status, product_type, catalog_visibility, featured,
                  price, regular_price, sale_price,
                  featured_media_id, gallery_media_ids,
-                 published_at, updated_at, deleted_at, checksum, meta_jsonb, created_at, synced_at)
+                 published_at, updated_at, deleted_at, checksum, meta_jsonb, created_at, synced_at,
+                 variation_selection_supported)
              VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,
                      $8,$9,$10,$11,
                      $12::numeric,$13::numeric,$14::numeric,
                      $15,$16::jsonb,
-                     $17::timestamptz,$18::timestamptz,NULL,$19,$20::jsonb,$21::timestamptz,$22::timestamptz)
+                     $17::timestamptz,$18::timestamptz,NULL,$19,$20::jsonb,$21::timestamptz,$22::timestamptz,
+                     $23::boolean)
              ON CONFLICT (source_product_id) DO UPDATE SET
                 sku                = EXCLUDED.sku,
                 slug               = EXCLUDED.slug,
@@ -216,7 +218,8 @@ final class ProductAdapter implements AdapterInterface
                 deleted_at         = NULL,
                 checksum           = EXCLUDED.checksum,
                 meta_jsonb         = EXCLUDED.meta_jsonb,
-                synced_at          = EXCLUDED.synced_at',
+                synced_at          = EXCLUDED.synced_at,
+                variation_selection_supported = EXCLUDED.variation_selection_supported',
             [
                 $id,
                 $model->sourceProductId,
@@ -240,6 +243,12 @@ final class ProductAdapter implements AdapterInterface
                 $metaJson,
                 $now,
                 $now,
+                // NULL stays NULL: 'does not apply' is a third state the column keeps (DECISION AL).
+                match ($model->variationSelectionSupported) {
+                    true    => 't',
+                    false   => 'f',
+                    default => null,
+                },
             ],
         );
     }

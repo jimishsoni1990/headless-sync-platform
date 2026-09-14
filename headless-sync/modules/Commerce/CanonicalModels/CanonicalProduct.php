@@ -42,6 +42,11 @@ final class CanonicalProduct implements CanonicalModelInterface
      * @param array<string,mixed> $meta
      * @param list<int>           $categoryIds       product_cat term ids (soft references)
      * @param list<int>           $attributeTermIds  pa_* term ids (soft references)
+     * @param bool|null           $variationSelectionSupported
+     *                                               DECISION AL — whether this product's
+     *                                               variation-defining state is fully
+     *                                               representable in the supported `pa_*` model.
+     *                                               NULL = does not apply (non-variable).
      */
     public function __construct(
         public readonly int $sourceProductId,
@@ -64,6 +69,7 @@ final class CanonicalProduct implements CanonicalModelInterface
         public readonly array $meta,
         public readonly array $categoryIds,
         public readonly array $attributeTermIds,
+        public readonly ?bool $variationSelectionSupported = null,
     ) {
     }
 
@@ -114,6 +120,21 @@ final class CanonicalProduct implements CanonicalModelInterface
             // Same reasoning for attribute terms: they are stored in the same link table, so
             // a product moving from pa_colour:red to pa_colour:blue must move the checksum.
             implode(',', $this->attributeTermIds),
+            // DECISION AL. In the digest because it is a PROJECTED column, and because the
+            // transition it guards is invisible otherwise: ticking "Used for variations" on a
+            // local attribute changes no other projected value — not the price, not the terms,
+            // not the name — so without this the capability would flip at source and the write
+            // would be suppressed, leaving consumers told the product is safely selectable when
+            // it no longer is. That is the failure this decision exists to remove, so it must
+            // not be reintroduced through the checksum.
+            //
+            // THREE states, three distinct strings: '1', '0' and '' for null. Folding null into
+            // '0' would make a simple product and an unsupported variable product hash alike.
+            match ($this->variationSelectionSupported) {
+                true    => '1',
+                false   => '0',
+                default => '',
+            },
         ];
 
         return hash('sha256', implode('|', $parts));

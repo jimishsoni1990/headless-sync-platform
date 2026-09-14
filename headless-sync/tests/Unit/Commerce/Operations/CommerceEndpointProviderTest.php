@@ -115,7 +115,269 @@ final class CommerceEndpointProviderTest extends TestCase
         self::assertSame('object', $attributes['type']);
         self::assertArrayNotHasKey('properties', $attributes, 'Attribute taxonomies are dynamic.');
         self::assertSame(['type' => 'string'], $attributes['additionalProperties']);
-        self::assertStringContainsString('EMPTY value', $attributes['description']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Finding 010 — the variation-selection contract, read off the DOCUMENT
+    //
+    // An open map whose description says nothing is the defect these guard against: the PHP
+    // type `object` is true and useless, and a generated client built from it has to be told
+    // the semantics by a human who read the module. Each test below asserts a fact a consumer
+    // must be able to learn from the contract ALONE.
+    // -------------------------------------------------------------------------
+
+    /**
+     * KEY semantics: a taxonomy name, and specifically the same one `/product-attributes`
+     * publishes — not a label, not WooCommerce's `attribute_`-prefixed meta key, not an id.
+     */
+    public function test_variation_attribute_keys_are_documented_as_attribute_taxonomy_names(): void
+    {
+        $description = $this->itemProperties('/products/{slug}/variations')['attributes']['description'];
+
+        self::assertStringContainsString('KEY', $description);
+        self::assertStringContainsString('taxonomy name', $description);
+        self::assertStringContainsString('pa_', $description);
+    }
+
+    /** VALUE semantics: a term SLUG, scoped by its taxonomy — never a name and never an id. */
+    public function test_variation_attribute_values_are_documented_as_term_slugs(): void
+    {
+        $description = $this->itemProperties('/products/{slug}/variations')['attributes']['description'];
+
+        self::assertStringContainsString('TERM SLUG', $description);
+        self::assertStringContainsString('never an id', $description);
+        self::assertStringContainsString(
+            'key is part of the value',
+            $description,
+            'A slug is unique only within its taxonomy; the contract must say so.',
+        );
+    }
+
+    /**
+     * WILDCARD semantics. The runtime really does emit `""` for "any value of this attribute",
+     * so a contract that described the value merely as `string` would be accurate about the
+     * type and silent about the only part a matcher depends on.
+     */
+    public function test_the_wildcard_value_is_documented_as_an_explicit_state(): void
+    {
+        $description = $this->itemProperties('/products/{slug}/variations')['attributes']['description'];
+
+        self::assertStringContainsString('EMPTY STRING', $description);
+        self::assertStringContainsString('WILDCARD', $description);
+        self::assertStringContainsString('ANY value', $description);
+        self::assertStringContainsString(
+            'NOT the same as the attribute being absent',
+            $description,
+            'A wildcard and a missing dimension are different facts.',
+        );
+    }
+
+    /**
+     * The scope limit is published AND made detectable. Saying "only global attributes are
+     * projected" is necessary but not sufficient: a consumer still could not tell whether THIS
+     * product was affected. The description must point at the capability flag that answers it.
+     */
+    public function test_the_global_attribute_scope_limit_points_at_the_capability_flag(): void
+    {
+        $attributes = $this->itemProperties('/products/{slug}/variations')['attributes']['description'];
+
+        self::assertStringContainsString('variation_selection_supported', $attributes);
+        self::assertStringContainsString('must NOT be used to identify a variation', $attributes);
+
+        $endpoint = $this->byRoute()['/products/{slug}/variations']->description;
+
+        self::assertStringContainsString('SCOPE LIMIT', $endpoint);
+        self::assertStringContainsString('local/custom', $endpoint);
+    }
+
+    // -------------------------------------------------------------------------
+    // DECISION AL — the capability contract
+    // -------------------------------------------------------------------------
+
+    /**
+     * The flag itself. `boolean`, never nullable: delivery resolves an unknown capability to
+     * false, so a consumer never receives a third value to reason about.
+     */
+    public function test_the_variation_selection_capability_is_a_documented_boolean(): void
+    {
+        foreach (['/products/{slug}', '/products'] as $route) {
+            $capability = $this->itemProperties($route)['variation_selection_supported'];
+
+            self::assertSame('boolean', $capability['type'], $route);
+            self::assertStringContainsString('TRUE:', $capability['description']);
+            self::assertStringContainsString('FALSE:', $capability['description']);
+            self::assertStringContainsString('MUST NOT resolve a variation', $capability['description']);
+        }
+    }
+
+    /**
+     * It says what it is NOT. A flag called "supported" invites being read as "this product
+     * works", which would strip a perfectly good catalogue product of everything else.
+     */
+    public function test_the_capability_is_documented_as_selection_only_not_product_support(): void
+    {
+        $description = $this->itemProperties('/products/{slug}')['variation_selection_supported']['description'];
+
+        self::assertStringContainsString('variation selection ONLY', $description);
+        self::assertStringContainsString('remains fully supported for catalog', $description);
+    }
+
+    /** Optional, because the runtime omits it on a simple product — so it must not be required. */
+    public function test_the_capability_is_not_declared_required(): void
+    {
+        foreach ([$this->byRoute()['/products/{slug}'], $this->byRoute()['/products']] as $descriptor) {
+            self::assertNotNull($descriptor->responseSchema);
+            $schema = $descriptor->responseSchema->schema;
+            $item   = $descriptor->paginated ? $schema['properties']['data']['items'] : $schema;
+
+            self::assertNotContains(
+                'variation_selection_supported',
+                $item['required'] ?? [],
+                'Absent on simple products, so it cannot be required.',
+            );
+        }
+
+        // And the runtime really does omit it, which is what makes that the correct declaration.
+        $simple = (new ProductResource())->toArray([
+            'id'                => 'b2f1c0de-0000-7000-8000-000000000045',
+            'source_product_id' => 45,
+            'slug'              => 'beanie',
+            'product_type'      => 'simple',
+        ]);
+
+        self::assertArrayNotHasKey('variation_selection_supported', $simple);
+    }
+
+    /** The consumer rule is TWO stages, and the first one is the gate. */
+    public function test_the_variations_endpoint_publishes_the_capability_gate_as_stage_one(): void
+    {
+        $description = $this->byRoute()['/products/{slug}/variations']->description;
+
+        foreach ([
+            'STAGE 1',
+            'variation_selection_supported',
+            'If it is FALSE, STOP',
+            'do not resolve a variation from HSP data',
+            'STAGE 2',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $description, "Gate fragment: {$fragment}");
+        }
+    }
+
+    /**
+     * `status` and `menu_order` are load-bearing for selection — the candidate filter and the
+     * tiebreak order — and both used to be bare types with no description at all.
+     */
+    public function test_the_fields_selection_depends_on_explain_their_role(): void
+    {
+        $properties = $this->itemProperties('/products/{slug}/variations');
+
+        self::assertStringContainsString('publish', $properties['status']['description']);
+        self::assertStringContainsString(
+            'ONLY variations with status "publish"',
+            $properties['status']['description'],
+        );
+
+        self::assertStringContainsString('tiebreak', $properties['menu_order']['description']);
+        self::assertStringContainsString(
+            'menu_order ascending, then woo_variation_id ascending',
+            $properties['menu_order']['description'],
+        );
+    }
+
+    /** The matching rule itself, on the endpoint that serves the candidates. */
+    public function test_the_variations_endpoint_publishes_the_complete_matching_rule(): void
+    {
+        $description = $this->byRoute()['/products/{slug}/variations']->description;
+
+        foreach ([
+            'status` is "publish"',                 // (1) candidate scope
+            'menu_order` ascending',                // (2) ordering
+            'empty value is a wildcard',            // (3) matching
+            'FIRST matching candidate',             // (4) resolution
+            'NO MATCH',                             // (5) no fallback
+            'do not fall back',
+            'AMBIGUITY IS POSSIBLE',
+            'woo_variation_id',
+        ] as $fragment) {
+            self::assertStringContainsString($fragment, $description, "Rule fragment: {$fragment}");
+        }
+    }
+
+    /**
+     * The product half: product-specific options with labels, described as options rather than
+     * as dimensions — the distinction a display-only attribute would otherwise break.
+     */
+    public function test_product_attributes_publish_labelled_product_specific_options(): void
+    {
+        $attributes = $this->itemProperties('/products/{slug}')['attributes'];
+
+        self::assertSame('object', $attributes['type']);
+        self::assertArrayNotHasKey('properties', $attributes, 'Attribute taxonomies are dynamic.');
+
+        $terms = $attributes['additionalProperties'];
+        self::assertSame('array', $terms['type']);
+        self::assertSame(['slug', 'name'], array_keys($terms['items']['properties']));
+        self::assertSame(['slug', 'name'], $terms['items']['required']);
+        self::assertSame('string', $terms['items']['properties']['slug']['type']);
+        self::assertSame('string', $terms['items']['properties']['name']['type']);
+
+        self::assertStringContainsString('product-specific', $attributes['description']);
+        self::assertStringContainsString(
+            'does NOT say which attributes the product varies BY',
+            $attributes['description'],
+        );
+    }
+
+    /** No identifier of any kind is published in a product option — slug and label only. */
+    public function test_product_attribute_options_expose_no_identifier(): void
+    {
+        $terms = $this->itemProperties('/products/{slug}')['attributes']['additionalProperties'];
+
+        foreach (['id', 'source_id', 'term_id', 'source_term_id'] as $forbidden) {
+            self::assertArrayNotHasKey(
+                $forbidden,
+                $terms['items']['properties'],
+                "Selection must never require an internal identifier ({$forbidden}).",
+            );
+        }
+    }
+
+    /**
+     * The generated-client proof: everything above, re-read from the GENERATED document rather
+     * than from the descriptor objects, because that document is all a client generator sees.
+     */
+    public function test_a_generated_client_can_read_the_selection_semantics_from_the_document(): void
+    {
+        $document = (new OpenApiGenerator())->generate((new CommerceEndpointProvider())->endpoints());
+
+        $variations = $document['paths']['/hsp/v1/products/{slug}/variations']['get'];
+        $item       = $variations['responses']['200']['content']['application/json']['schema']
+            ['properties']['data']['items']['properties'];
+
+        // Key, value and wildcard semantics survive generation.
+        self::assertStringContainsString('TERM SLUG', $item['attributes']['description']);
+        self::assertStringContainsString('WILDCARD', $item['attributes']['description']);
+        self::assertSame(['type' => 'string'], $item['attributes']['additionalProperties']);
+
+        // Both stages of the rule reached the operation description.
+        self::assertStringContainsString('STAGE 1', $variations['description']);
+        self::assertStringContainsString('FIRST matching candidate', $variations['description']);
+
+        // The gate is readable off the product schema, as a plain boolean a client can branch on.
+        self::assertSame(
+            'boolean',
+            $document['paths']['/hsp/v1/products/{slug}']['get']['responses']['200']['content']
+                ['application/json']['schema']['properties']['variation_selection_supported']['type'],
+        );
+
+        // The product half reached the document with its item shape intact.
+        $product = $document['paths']['/hsp/v1/products/{slug}']['get']['responses']['200']
+            ['content']['application/json']['schema']['properties'];
+        self::assertSame(
+            ['slug', 'name'],
+            array_keys($product['attributes']['additionalProperties']['items']['properties']),
+        );
     }
 
     /** `meta` is deliberately opaque and must not be frozen into a closed property list. */

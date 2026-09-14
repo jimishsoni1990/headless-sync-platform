@@ -36,6 +36,7 @@ use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
 use HSP\Modules\Commerce\Handlers\VariationTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\VariationUpsertHandler;
+use HSP\Modules\Commerce\Migrations\AddProductVariationSelectionMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceAttributesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceEntityTaxonomiesMigration;
 use HSP\Modules\Commerce\Migrations\CreateCommerceInventoryMigration;
@@ -325,6 +326,7 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                         new CreateCommerceAttributesMigration($conn),
                         new CreateCommerceProductVariationsMigration($conn),
                         new CreateCommerceInventoryMigration($conn),
+                        new AddProductVariationSelectionMigration($conn),
                     ];
                 },
             ));

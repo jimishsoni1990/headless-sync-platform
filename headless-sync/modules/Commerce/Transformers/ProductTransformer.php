@@ -48,6 +48,7 @@ final class ProductTransformer implements TransformerInterface
             meta:              $source->meta,
             categoryIds:       $source->categoryIds,
             attributeTermIds:  $source->attributeTermIds,
+            variationSelectionSupported: $source->variationSelectionSupported,
         );
     }
 

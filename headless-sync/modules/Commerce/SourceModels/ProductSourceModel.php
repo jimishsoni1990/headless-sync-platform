@@ -50,6 +50,14 @@ final class ProductSourceModel
      *                                               merging them here would make a category
      *                                               change indistinguishable from an attribute
      *                                               change to anything reading the source model.
+     * @param bool|null           $variationSelectionSupported
+     *                                               DECISION AL — whether every attribute this
+     *                                               product varies BY is representable in the
+     *                                               supported global `pa_*` model. NULL when the
+     *                                               question does not apply (non-variable type).
+     *                                               Carried from source because it cannot be
+     *                                               recovered afterwards: the unsupported
+     *                                               attributes never reach the projection.
      */
     public function __construct(
         public readonly int $productId,
@@ -72,6 +80,7 @@ final class ProductSourceModel
         public readonly array $meta,
         public readonly array $categoryIds,
         public readonly array $attributeTermIds,
+        public readonly ?bool $variationSelectionSupported = null,
     ) {
     }
 }

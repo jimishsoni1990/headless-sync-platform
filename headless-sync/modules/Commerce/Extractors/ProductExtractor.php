@@ -46,6 +46,13 @@ final class ProductExtractor
             meta:              is_array($raw['meta'] ?? null) ? $raw['meta'] : [],
             categoryIds:       $this->intList($raw['category_ids'] ?? []),
             attributeTermIds:  $this->intList($raw['attribute_term_ids'] ?? []),
+            // Tri-state, so it is NOT cast to bool: null means "does not apply" (a non-variable
+            // product) and is a different fact from false. Casting would turn every simple
+            // product into an explicit "selection unsupported", which is misleading rather than
+            // merely imprecise.
+            variationSelectionSupported: isset($raw['variation_selection_supported'])
+                ? (bool) $raw['variation_selection_supported']
+                : null,
         );
 
         $this->validator->validate($product);

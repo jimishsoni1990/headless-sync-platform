@@ -10,6 +10,122 @@
 
 **Current phase:** **Phase 2 — WooCommerce Catalog: COMPLETE (P2-S0 … P2-S7 all shipped).** WooCommerce is the second independent HSP domain module, and the success test was never "products synchronize" — it was that this happened **without special-casing Commerce in Core**. It did: a repo-wide assertion proves there is no reference to `HSP\Modules\Commerce` anywhere under `core/`, and none to `HSP\Modules\Content` anywhere under `modules/Commerce/`. Six Commerce aggregates ship — product, product category, attribute definition, `pa_*` attribute term, product variation, inventory — each with capture, projection, delivery, replay, reconciliation and a proven create → update → delete → tombstone → replay lifecycle. The two-module system test runs both domains through one real bounded cycle on live MySQL + PostgreSQL. **Measured: mixed-domain worst-case sync latency is ≈20.1 s against the 30 s SLA — 9.9 s of margin, so Commerce did NOT consume the headroom** and DECISION AG Part 5's STOP-and-flag was not triggered. **Both flags raised in Phase 2 are now RESOLVED by architect ruling (2026-09-08): DECISION AH** closes FLAG-COMMPERMA-1 as Case B authorised with implementation scheduled into Phase 4 — architecture decided, not an open gap — and **DECISION AI** closes FLAG-PERFCYCLE-1 as Option (a), keeping the threshold unchanged and moving enforcement to a controlled CI performance gate (`HSP_PERFORMANCE_GATE=1`). **No open flags.** FLAG-LIFECYCLE-1 was raised and resolved the same day: live-site testing found AG-12's automatic activation transition built but never invoked, and AG-12 had already pre-authorised the correction, so `ModuleLifecycleRunner` now drives it from the bounded WP-Cron cycle — **proven live: a torn-down Commerce module converged its full catalog in ONE cycle with no reactivation, no manual migrate and no manual reconcile.**
 
+**Last updated:** 2026-09-14 (Finding 010 / **DECISION AL** — **every public variable product is now
+either safely selectable from HSP data or explicitly machine-readable as unsupported. There is no
+silent third state.** The first pass of this work shipped the selection contract and then *stopped*
+at a live defect, flagging it: the hoodie (95) varies by `Logo`, a **local/custom** attribute AG-9
+keeps out of Phase 2, so variations 118 and 113 published byte-identical `{"pa_color":"blue"}` and a
+contract-only consumer got **3 of 6 selections wrong** against WooCommerce — once the wrong
+variation, **twice confidently resolving a combination the store does not sell**. The architect
+ruled that a flag is not an acceptable resting place for a correctness defect and approved a narrow
+amendment: **DECISION AL** (ARCHITECTURE_DECISIONS.md v1.43 → v1.44). **The fix is NOT broadening
+local/custom attribute support** — AG-9 is untouched, nothing about a local attribute is projected,
+named or serialised — **it is making the product's selector capability machine-readable.** The
+Product resource publishes **`variation_selection_supported`**: true means HSP's public Product +
+Variation data is complete enough to resolve a selection safely; false means a consumer **MUST NOT**
+resolve a variation from HSP data alone. It is **not** a "product supported" flag — a false product
+keeps listing, addressing, media, prices, descriptive data and its `woo_product_id` handoff, and
+false is never an error, a 500, an omission or a tombstone. **Classified at capture from
+WooCommerce's own flags, and source type is authoritative:** every attribute with
+`get_variation() === true` must satisfy **`is_taxonomy()`** — the `pa_` name is corroboration only,
+because a local attribute may be *named* like a taxonomy and its values are raw option strings, not
+term slugs (asserted). It is **never inferred from the variation payloads**, which is the whole
+lesson of the hoodie: omitted dimensions leave those rows looking complete. A display-only
+attribute, local or global, does **not** withhold the capability — only variation-defining state
+matters. **A variable product with no variation-defining attributes at all is `false`**, verified
+rather than assumed: Woo's resolver returns 0 unconditionally there while every variation would
+publish an empty pattern matching everything. **Persistence is exactly one nullable boolean** —
+`commerce.products.variation_selection_supported BOOLEAN NULL`, migration `0008` — with **no
+DEFAULT** (true would bless the very products this exists for; false would erase *classified* from
+*never classified*), **no index**, and **no table, selector matrix, option graph or capability
+subsystem**. NULL means unknown or not applicable, and **delivery resolves unknown conservatively to
+`false`** so a consumer is never told selection is safe on a value nobody established and never has
+to infer migration state. The field is **absent entirely on non-variable products** (AK-8's
+precedent) and therefore optional, never `required`. It sits **inside the product checksum** —
+mandatory, because ticking "Used for variations" on a local attribute moves no other projected
+value, so an unchecksummed flag would be write-suppressed and consumers would keep being told a
+product is selectable after it stopped being so. Existing rows therefore converge as
+`checksum_drift` through **ordinary DECISION T/U re-emission**: **proven live — migration applied,
+both variable products read NULL and published `false`, full reconciliation re-emitted, the bounded
+cycle projected, and 94 became `true` / 95 became `false` with no repair SQL and no bespoke worker.**
+The consumer rule is now **two-stage** in the published OpenAPI: check the capability, then — only
+if true — apply the verified WooCommerce algorithm (publish-only candidates, `menu_order` then
+`woo_variation_id`, `""` is a wildcard, first match wins, no match means not sold). The test-only
+reference matcher **refuses** when the flag is false even where the supported subset yields a unique
+answer, which is exactly the hoodie's `green`/`red` false-success. **Live regression: v-neck 94 →
+`true`, 9 of 9 exact `woo_variation_id` parity, 0 wrong; hoodie 95 → `false`, all 6 selections
+refused, WRONG CONFIDENT RESOLUTIONS = 0 (was 3 of 6); 15 simple products carry no field at all;
+impossible selections resolve to null on both sides.** Unit 1766 ✅ · Commerce Integration 149 ✅ ·
+full Integration 406 ✅ (1 skipped — DECISION AI perf gate) · AJV `HSP_REQUIRE_NODE_GATE=1` ✅ ·
+PHPStan 8 ✅ · PHPCS ✅. Mixed-domain latency unchanged at ≈20.1 s worst case. **FLAG-COMMVARLOCAL-1
+is RESOLVED AS AN EXPLICIT UNSUPPORTED CAPABILITY** — the consumer-safety defect is closed while the
+feature support stays deliberately absent; it must never be read as "local/custom variation
+attributes are supported". **architecture decision amended: YES · architecture docs changed: YES ·
+migration: YES · new persistence subsystem: NO · local/custom attribute support: NO · resolver
+endpoint: NO · selector matrix: NO · module boundary change: NO · new cart capability: NO.** P2-S5's
+"a variation's identity is its attribute selection" is **upheld, not replaced** — this states
+whether HSP holds a complete public representation of that identity. FLAG-COMMSOURCEID-1, Commerce
+permalink Phase 4 work and the tagged-post live-verification debt deliberately untouched.)
+
+**Last updated:** 2026-09-14 (Finding 010, first pass — **a shopper's chosen options now resolve to
+exactly one variation from published data alone, and WooCommerce's own rule is written down instead
+of guessed.** The variation `attributes` map was never wrong — it carries taxonomy → term slug and
+keeps the empty-string "any" entry, verified against **WooCommerce 11.1.0** — but a consumer
+could not act on it: the contract said `additionalProperties: {type: string}` and a sentence
+about empty values, and said nothing about **which statuses are candidates**, **how ties are
+broken**, **whether a selection can match more than one variation**, or **where the selectable
+values come from**. Every one of those is decidable only from WooCommerce source, so the
+frontend's only route was to guess. **The verified rule, now published on the endpoint:**
+candidates are variations with `status == "publish"` (Woo's resolver queries no other status);
+order them by `menu_order` ASC then `woo_variation_id` ASC; a candidate matches when every entry
+of **its own** pattern is satisfied — an empty value is a wildcard, a non-empty value demands
+that exact slug, and keys the candidate does not constrain are ignored; resolve to the **first**
+match, which is what `WC_Cart` does; **no match means the store does not sell it** and there is
+no fallback. Ambiguity is real and is documented rather than hidden: overlapping wildcards let
+one complete selection match several variations, and WooCommerce says so in its own code —
+`class-wc-structured-data.php:803` counts matches and refuses to name a single offer when more
+than one matches, while the cart takes the first. Both keys the tiebreak needs were already
+published, so reproducing Woo's answer needs **no new data at all**. **One additive field was
+genuinely required.** Live product 94 (v-neck tee) has three variations that each carry
+`pa_size: ""` — "any size" — so **the sizes on offer appear nowhere in the variation list**, and
+`/product-attributes/pa_size/terms` is not a substitute because it serves the whole store (5
+colours where this product offers 3). WooCommerce resolves the same gap from the parent
+(`read_variation_attributes()` falls back to `wc_get_object_terms()` the moment an empty value
+appears), and **those exact rows were already projected** by the product's own handler. The
+Product resource now publishes `attributes` — `{taxonomy: [{slug, name}]}`, product-specific,
+machine value and label together — as **one correlated `json_agg` subquery**, the same shape
+`content.posts` already uses for tags and categories: **no migration, no new column, no
+duplicated term state, no extra query** (query count for a one-row page equals a full page,
+asserted) and no WordPress read on the delivery path. It is documented as **options, not
+dimensions** — the dimensions are the keys of a variation's map, because a store may attach an
+attribute for display only. **Proven, not asserted:** a test-only reference matcher consuming
+**only** public payload fields (`status`, `menu_order`, `attributes`, `woo_variation_id`) is run
+against WooCommerce's own `find_matching_product_variation()`. **Live: product 94 — 9 of 9
+complete selections resolve to the exact `woo_variation_id` Woo resolves, all 9 involving the
+wildcard dimension, 0 ambiguous, 0 mismatches**, and an impossible selection resolves to nothing
+on both sides for both live variable products. End-to-end integration drives the real spine
+(loader → extractor → transformer → canonical → adapter → live PostgreSQL from the real
+migrations → query provider → Resource → matcher), including **variation-selection change**
+(blue stops resolving 110, green starts), **parent option change converging without rewriting a
+single variation row** (checksums compared), and the **worst projection order** — variations,
+then parent, then terms — where the API answers at every step and converges. **A live product is
+NOT covered, and that is flagged rather than fixed: FLAG-COMMVARLOCAL-1.** The hoodie (95) varies
+by `Logo`, a **local/custom** attribute AG-9 puts out of Phase 2 scope, so variations 118 and 113
+publish byte-identical `{"pa_color":"blue"}`; measured against Woo, a contract-only consumer gets
+**3 of 6 selections wrong** — once resolving the wrong variation, twice confidently resolving a
+combination the store does not sell. Every fix crosses an architect's line (broaden AG-9, persist
+a completeness signal, change visibility semantics, or add a resolver endpoint), so the session
+**stopped**: the scope limit is now stated in the published contract, two tests pin the behaviour
+and record the ambiguity, and the live parity claim excludes that product. Unit 1743 ✅ · Commerce
+Integration 142 ✅ · full Integration 399 ✅ (1 skipped — the DECISION AI performance gate) ·
+ADR-055/OpenAPI + AJV ✅ with `HSP_REQUIRE_NODE_GATE=1` · PHPStan level 8 ✅ · PHPCS ✅. Mixed-domain
+latency unchanged at ≈20.1 s worst case. **migration: No · new persistence: No · selector matrix:
+No · resolver endpoint: No · ADR change: No** — P2-S5's "a variation's identity is its attribute
+selection" was already sufficient authority; this completed it rather than replacing it. No cart,
+checkout, session or Store API surface was added, and DECISION AK's handoff pair is untouched.
+FLAG-COMMSOURCEID-1, Commerce permalink Phase 4 work and the tagged-post live-verification debt
+deliberately untouched.)
+
 **Last updated:** 2026-09-14 (Finding 009 — **products and variations now publish explicit
 WooCommerce cart-handoff identifiers.** The gap was interpretive, not missing data: HSP already
 published these exact integers as `source_id` (product), `source_id` + `product_id` (variation),
@@ -1665,9 +1781,107 @@ named gate tests. Flag resolved.
 
 ---
 
+### FLAG-COMMVARLOCAL-1 — a local/custom variation attribute makes the published selection ambiguous
+
+**Raised:** 2026-09-14 | **Session:** Finding 010 | **Status:** **RESOLVED AS AN EXPLICIT
+UNSUPPORTED CAPABILITY — architect ruling 2026-09-14, DECISION AL (v1.44).**
+
+> **Resolution.** The consumer-safety defect is closed; the underlying feature support remains
+> **deliberately absent**. Local/custom WooCommerce variation attributes are **still out of Phase 2
+> scope** and AG-9 is unchanged — nothing about them is projected, named or serialised. What
+> changed is that HSP no longer lets a consumer *discover* the gap by resolving the wrong
+> variation: the Product resource publishes **`variation_selection_supported`** (AL-1), false for
+> exactly the products whose variation-defining state cannot be represented, and the published
+> algorithm makes checking it **stage 1** — a consumer must not resolve a variation when it is
+> false. **Live: hoodie 95 publishes `false`; all six selections that previously produced 3 wrong
+> answers are now refused, so wrong confident resolutions are 0. V-neck 94 publishes `true` and
+> keeps 9/9 exact `woo_variation_id` parity with WooCommerce's own resolver.** The capability is a
+> source-derived fact classified at capture from `get_variation()` + `is_taxonomy()`, carried on
+> `commerce.products.variation_selection_supported BOOLEAN NULL` (migration `0008`), inside the
+> product checksum, converging through ordinary DECISION T/U re-emission with no repair path.
+> **This flag must NOT be read as "local/custom variation attributes are now supported."** They are
+> not. Supporting them would be a separate architecture decision; this one makes their absence
+> honest and machine-readable.
+
+**Original analysis, retained (the defect this resolved):**
+
+**What was found (live, not hypothetical).** The reference store's **hoodie**
+(`woo_product_id` 95) is a variable product that varies by **two** attributes: `pa_color`
+(a global `pa_*` taxonomy) and **`Logo`, a local/custom WooCommerce attribute** with
+`is_taxonomy() === false`, `get_id() === 0` and `get_variation() === true`. DECISION AG **AG-9**
+places local/custom attributes out of Phase 2 scope, so `VariationExtractor` drops the `logo`
+entry — correctly, and with a test that has asserted it since P2-S5.
+
+**The consequence nobody had looked at.** Dropping a variation-**defining** dimension does not
+merely omit information; it collapses distinct variations into the same published selection
+pattern. Variations **118** (`Blue / Yes`) and **113** (`Blue / No`) both publish
+`"attributes": {"pa_color":"blue"}` — byte-identical. Measured against WooCommerce's own
+resolver (`find_matching_product_variation()`, WooCommerce 11.1.0) over all six concrete source
+selections for this product, a contract-compliant consumer gets **3 of 6 wrong**, in two
+distinct failure modes:
+
+| Source selection | WooCommerce resolves | A contract-only consumer resolves |
+|---|---|---|
+| `blue` + `logo:No`  | variation **113** | **118** (and sees 2 matches) |
+| `green` + `logo:Yes`| **no variation** (not sold) | **112** |
+| `red` + `logo:Yes`  | **no variation** (not sold) | **111** |
+
+The second mode is the worse one: the consumer confidently resolves a combination **the store
+does not sell**, and the resulting `woo_variation_id` is a real variation with the wrong options.
+The distinction between 118 and 113 survives only inside the human-readable `name`
+("Hoodie - Blue, Yes" vs "Hoodie - Blue, No"), which is not a machine contract.
+
+**Why this is a STOP-and-flag, not a fix.** Every available correction crosses a line the
+Finding 010 brief and DECISION AG reserve for an architect:
+
+- projecting local attributes broadens **AG-9** scope;
+- publishing a per-variation *"this selection is complete"* signal needs a fact the extractor
+  discards before projection — i.e. **new persisted state** and a migration;
+- excluding such products or variations from delivery **changes visibility semantics**;
+- a server-side resolver endpoint is a **new API capability** (and Phase 4 composition work).
+
+**What this session did instead.** Nothing was broadened and nothing was invented. The scope
+limit is now stated in the published contract rather than left to be discovered through a wrong
+cart — the variation `attributes` schema and the `/products/{slug}/variations` description both
+say that only global `pa_*` attributes are projected and that such a product's published
+selection is incomplete. Two tests (one unit, one integration) pin the current behaviour and
+record the ambiguity it causes, so the scope cannot expand silently and the consequence cannot
+be forgotten. The live parity claim for Finding 010 **explicitly excludes this product**.
+
+**Ruling needed — options, not a recommendation:**
+- (a) **Accept the limit.** Document it as the Phase 2 boundary; storefronts with local
+  variation attributes fall back to WooCommerce for selection on those products.
+- (b) **Signal incompleteness.** Publish a per-variation or per-product flag saying the
+  published selection does not cover every variation-defining dimension, so a consumer can
+  detect the case instead of resolving wrongly. Requires a new projected fact.
+- (c) **Broaden AG-9** to project local/custom variation attributes (keys are
+  `sanitize_title(name)`, values are raw option text, not term slugs — a different value
+  domain from `pa_*`, which is part of why AG-9 excluded them).
+- (d) **Narrow delivery scope** so an affected product does not present a selector at all.
+
+**Resolution trigger:** An architect ruling picks one of the above and an authorised session
+implements it, after which a live run of the Finding 010 validation covers the hoodie with the
+same exact-id parity the v-neck tee already shows (9/9).
+
+**— MET, with the trigger's own wording corrected by the ruling.** The architect chose **option
+(b)**, and in doing so pointed out that the trigger above asked for the wrong evidence: parity for
+the hoodie was never reachable without broadening AG-9, which option (b) explicitly does not do.
+**The correct success condition is that the hoodie produces no wrong answers**, and it does —
+`variation_selection_supported: false`, all six selections refused, **0 wrong confident
+resolutions** (was 3 of 6). The v-neck keeps its 9/9. Ratified as **DECISION AL** (v1.44) and
+implemented the same day: migration `0008`, the capability carried source → canonical → projection
+→ resource → OpenAPI, the two-stage consumer rule published, and the reference matcher made to
+refuse. **AG-9 unchanged; no local/custom attribute support added.**
+
+---
+
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+
+2026-09-14 | Finding 010 / DECISION AL (variation-selection capability) | **The selector capability is now machine-readable, closing the correctness defect the first pass could only flag.** Architect ruling: a flag is not a resting place for "a contract-only consumer can confidently resolve the WRONG variation", and the fix is **not** broadening local/custom attribute support — it is publishing whether a product's variation-defining state is representable at all. **DECISION AL** (ARCHITECTURE_DECISIONS.md v1.43→**v1.44**, plus an Implications row; IMPLEMENTATION_PLAN.md §5 Phase 2 note + P2-S4/P2-S5 amendment pointers; CLAUDE.md SETTLED entry). **AG-9 IS UNCHANGED** — no local/custom attribute definition, term, label, option string or meta key is projected or serialised anywhere, asserted. **Contract:** `variation_selection_supported` on the Product resource — true = HSP's public Product + Variation data suffices to resolve a selection safely; false = a consumer **MUST NOT** resolve from HSP data alone. Not a "product supported" flag: a false product keeps listing, addressing, media, prices, descriptive data and `woo_product_id`, and false is never an error, 500, omission or tombstone. **Source rule, verified against WooCommerce 11.1.0:** every attribute with `get_variation() === true` must satisfy `is_taxonomy()` (authoritative — the `pa_` name is corroboration only, since a local attribute can be *named* like a taxonomy and its values are raw option strings, not term slugs) and be a taxonomy the module owns; display-only attributes are irrelevant; **never inferred from the variation payloads**; and a variable product with **no** variation-defining attributes is **false** (Woo's resolver returns 0 there while every variation would publish an empty pattern matching everything). **Persistence:** one column — `commerce.products.variation_selection_supported BOOLEAN NULL`, migration `0008_add_commerce_products_variation_selection` — **no DEFAULT** (true would bless the affected products; false would erase *classified* from *never classified*), no index, no new table/matrix/graph/subsystem. NULL = unknown or not applicable; **delivery publishes false for unknown** so consumers never see migration state, and the field is **absent entirely on non-variable products** (AK-8 precedent) and therefore optional, never `required`. Inside the product checksum — mandatory, since the source transition moves no other projected value and would otherwise be write-suppressed — so convergence is **ordinary DECISION T/U re-emission with no repair path**, proven live end to end: migration applied → both variable products NULL and publishing false → full reconciliation reported `checksum_drift` and re-emitted → bounded cycle projected → 94 `true`, 95 `false`, **zero repair SQL**. **Consumer rule is two-stage** in the published OpenAPI (check capability, then the verified algorithm), and the reference matcher **refuses** when false even where the supported subset looks unique. **Live regression: v-neck 94 → true, 9/9 exact `woo_variation_id` parity, 0 wrong; hoodie 95 → false, all 6 selections refused, WRONG CONFIDENT RESOLUTIONS = 0 (was 3/6); 15 simple products carry no field; impossible selections null on both sides.** Unit 1766 ✅ · Commerce Integration 149 ✅ · full Integration 406 ✅ (1 skipped — DECISION AI perf gate) · AJV `HSP_REQUIRE_NODE_GATE=1` ✅ · PHPStan 8 ✅ · PHPCS ✅. **architecture decision amended: YES · architecture docs changed: YES · migration: YES · new persistence subsystem: NO · local/custom attribute support: NO · resolver endpoint: NO · selector matrix: NO · cart capability: NO · module boundary change: NO.** | **FLAG-COMMVARLOCAL-1 RESOLVED AS AN EXPLICIT UNSUPPORTED CAPABILITY** — consumer-safety defect closed, feature support deliberately still absent; must never be read as "local/custom variation attributes are supported". No new flags.
+
+2026-09-14 | Finding 010 (variation selection contract, first pass) | **Deterministic variation selection — the published contract now states WooCommerce's own matching rule, and a consumer can reach the same variation Woo does.** The variation `attributes` map was already semantically correct (taxonomy key → term slug, empty value = "any", verified against **WooCommerce 11.1.0**); what was missing was everything needed to ACT on it — candidate scope, tiebreak order, ambiguity, and where selectable values come from. **Contract (OpenAPI, registry-generated, no hand-authoring):** the variation `attributes` schema now states all three semantics explicitly (KEY = full `pa_`-prefixed taxonomy name; VALUE = term slug scoped by that taxonomy, never a label or id; EMPTY STRING = wildcard, distinct from absent) plus the AG-9 scope limit; `status` and `menu_order` gained descriptions saying they are load-bearing for selection; and `/products/{slug}/variations` publishes the five-step rule verified against `find_matching_product_variation()` (`class-wc-product-data-store-cpt.php:1460`) — publish-only candidates, order by `menu_order` then `woo_variation_id`, per-candidate wildcard matching, first match wins (what `WC_Cart` does), no match = not sold and **no fallback** — and states that ambiguity is possible, citing Woo's own `class-wc-structured-data.php:803`, which counts matches rather than choosing. **One additive field:** `attributes` on the Product resource — `{taxonomy: [{slug, name}]}`, product-specific options with labels — because live product 94's three variations all carry `pa_size: ""`, so the sizes on offer exist nowhere in the variation list, and the store-wide term endpoint would advertise values the product does not sell. Implemented as ONE correlated `json_agg` subquery over the already-projected `commerce.entity_taxonomies` + `commerce.taxonomies` rows, mirroring the `content.posts` tags/categories pattern: **no migration, no column, no duplicated persistence, no row multiplication, no N+1** (one-row page and full page cost the same single query, asserted) and zero WordPress reads on the delivery path. **Proof:** a test-only `VariationSelector` reference matcher reading ONLY public payload fields, checked against WooCommerce's own resolver. **Live: product 94 — 9/9 exact `woo_variation_id` parity, all 9 wildcard-involved, 0 ambiguous, 0 mismatch; impossible selections resolve to nothing on both sides for both live variable products.** Integration drives the real spine end to end (loader → extractor → transformer → canonical → adapter → live PostgreSQL from the real migration files → query provider → Resource → matcher), covering selection change, parent-option change **without rewriting any variation row** (checksums compared), the worst projection order (variations → parent → terms) with no error at any step, tombstoned variations leaving the candidate set, same-slug-different-taxonomy, order-independent maps, partial and invalid selections. Unit 1743 ✅ · Commerce Integration 142 ✅ · full Integration 399 ✅ (1 skipped — DECISION AI perf gate) · AJV with `HSP_REQUIRE_NODE_GATE=1` ✅ · PHPStan 8 ✅ · PHPCS ✅. **migration: No · new persistence: No · selector matrix: No · resolver endpoint: No · ADR change: No** — P2-S5 already ruled that a variation's identity is its attribute selection. | **Raised FLAG-COMMVARLOCAL-1 (OPEN, architect ruling required):** the live hoodie (95) varies by `Logo`, a local/custom attribute AG-9 excludes, so variations 118 and 113 publish identical selection patterns and a contract-only consumer gets 3 of 6 selections wrong against Woo — once the wrong variation, twice a combination the store does not sell. Every correction crosses an architect's line (broaden AG-9 / persist a completeness signal / change visibility semantics / add a resolver endpoint), so the session STOPPED: the limit is now stated in the published contract, two tests pin the behaviour and record the ambiguity, and the live parity claim excludes that product. FLAG-COMMSOURCEID-1 untouched.
 
 2026-07-20 | OAPI-S1 (build) | **OpenAPI Specification, Registry-Generated — SHIPPED.** Additive `EndpointDescriptor` enrichment via three new core value objects (`EndpointAuth`, `EndpointParameter`, `SchemaObject`) carrying params (DECISION F filters + cursor), published request/response shapes (Rule 6 — not internal `content.*`/canonical), auth requirement (Doc 9 §22), cursor envelope (§13), deprecation (§26), version (§7), module owner (§6); the original five fields are RETAINED and the five-arg construction still compiles (proven by test). New core generator `core/Operations/OpenApi/OpenApiGenerator` builds an OpenAPI **3.1** document **from the endpoint registry ONLY** (aggregated via the existing `OperationsService::endpointDescriptors()` seam — never hand-authored, never route-scan-derived); public-only scoping filters on the metadata auth field (ADR-055 (d)). `GET /hsp/v1/openapi.json` registered at the REST boundary (`OpenApiRestRegistrar`→`OpenApiRestController`), **public + stateless** (no capability check inside generation, no PG read, no new handle, no `pg_*` wrapper, never in an ADR-054 cycle). Core-owned `OpenApiEndpointProvider` self-describes the openapi.json route (ADR-055 (4)); `ContentEndpointProvider` populates the six content descriptors; both self-register with the `RefreshCoordinator`. **CI drift guard** (`OpenApiDriftGuardTest`) — four assertions: (1) completeness over the FULL live `hsp/v1` index MINUS the one frozen `hsp/v1/onboarding/` exemption (v1.28 "A-modified" — 13 − 6 = 7 guarded routes; enumerated by driving the real registrars against a capturing `register_rest_route` stub — external ground truth, non-circular); (2) generated doc validates against the pinned official OpenAPI 3.1 meta-schema via the **Node ajv gate** (`tools/openapi-validator/`), layered over a PHP structural pre-check, with the `HSP_REQUIRE_NODE_GATE` skip/fail contract; (3) exclusion (non-public descriptor absent); (4) non-circularity (undescribed non-exempt route fails). **ARCHITECTURE_DECISIONS.md v1.27→v1.28→v1.29**: v1.28 scopes the drift-guard enumeration (full index − frozen onboarding prefix); v1.29 moves the (f)(2) gate to Node ajv and REMOVES `opis/json-schema` (two reproduced 2020-12 conformance defects — dynamic-anchor indexing + `unevaluatedProperties` false-positives). Committed the pinned fixture `tests/fixtures/openapi-3.1-meta-schema-pinned.json` (official OAI 3.1 meta-schema, four semantics-preserving `$dynamicRef "#meta"`→`$ref "#/$defs/schema"` edits; never fetched) and removed the superseded unpinned fixture. `tools/openapi-validator/` committed (`package.json`+`package-lock.json`; `node_modules/` gitignored). Unit **1097/1097 green** (1 pre-existing MySQL-env skip; the ajv gate RAN — node+ajv present), PHPStan level 8 clean, PHPCS clean. `git status` shows only in-scope paths. Pointer → **P1B-S0**. | Two flags raised AND RESOLVED same day by architect ruling: the **drift-guard enumeration scope** ("A-modified", v1.28) and the **meta-schema validator** (ruling D — Node ajv, v1.29). No open flags from this session.
 

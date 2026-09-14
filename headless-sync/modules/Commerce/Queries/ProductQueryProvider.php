@@ -41,8 +41,58 @@ final class ProductQueryProvider implements QueryProviderInterface
                     p.short_description, p.status, p.product_type, p.catalog_visibility,
                     p.featured, p.price, p.regular_price, p.sale_price,
                     p.featured_media_id, p.gallery_media_ids, p.published_at, p.updated_at,
-                    p.meta_jsonb,
-                    i.manages_stock, i.stock_quantity, i.stock_status, i.backorders';
+                    p.meta_jsonb, p.variation_selection_supported,
+                    i.manages_stock, i.stock_quantity, i.stock_status, i.backorders,
+                    ' . self::ATTRIBUTE_TERMS;
+
+    /**
+     * THIS PRODUCT'S `pa_*` terms, grouped by taxonomy — the selectable values of a variable
+     * product, and the labels for them.
+     *
+     * WHY THE PRODUCT HAS TO CARRY THIS AT ALL. A variation publishes its selection as
+     * `{"pa_size": ""}` when it accepts ANY size, which is a live shape, not a hypothetical: the
+     * three v-neck variations on the reference store all carry it. The empty value says a size
+     * must still be chosen, but names none of them, so the set of sizes this product actually
+     * offers appears NOWHERE in the variation list. WooCommerce resolves the same gap from the
+     * parent — `read_variation_attributes()` falls back to `wc_get_object_terms($product, $tax)`
+     * the moment any variation stores an empty value — and these are the same rows, already
+     * projected by the product's own handler.
+     *
+     * THE GLOBAL TERM LIST IS NOT A SUBSTITUTE. `/product-attributes/pa_color/terms` serves every
+     * colour the STORE defines — five on the reference store — while this product offers three.
+     * A selector built from the global list advertises combinations the store does not sell.
+     *
+     * A correlated scalar subquery rather than a join, for the reason `categoryFilter()` records:
+     * joining multiplies a product row per term and the DISTINCT that would fix it breaks the
+     * cursor. One aggregate per row, the same shape `content.posts` already uses for tags and
+     * categories, so the query count for a one-row page equals a full page (no N+1).
+     *
+     * `entity_taxonomies` is keyed by `source_term_id` (migration 0004), so a relationship
+     * written before its term projected resolves to nothing now and starts resolving the moment
+     * that term lands — with no rewrite of the product. Terms are ordered by slug because
+     * WordPress assignment order is not projected, and an unstable order would make consumer
+     * diffs noisy; WooCommerce's own option order is itself branch-dependent, so there is no
+     * source order to reproduce.
+     *
+     * `product_cat` is deliberately excluded: this field answers "which attribute values does
+     * this product offer", and categories are a different question with a different endpoint.
+     */
+    private const ATTRIBUTE_TERMS = "COALESCE((
+                        SELECT json_object_agg(a.taxonomy_type, a.terms)
+                        FROM (
+                            SELECT t.taxonomy_type,
+                                   json_agg(
+                                       json_build_object('slug', t.slug, 'name', t.name)
+                                       ORDER BY t.slug
+                                   ) AS terms
+                            FROM commerce.entity_taxonomies et
+                            JOIN commerce.taxonomies t ON t.source_term_id = et.source_term_id
+                            WHERE et.entity_id = p.id
+                              AND starts_with(t.taxonomy_type, '" . CommerceTaxonomies::ATTRIBUTE_PREFIX . "')
+                              AND t.deleted_at IS NULL
+                            GROUP BY t.taxonomy_type
+                        ) a
+                    ), '{}') AS attribute_terms_json";
 
     /**
      * Stock is JOINED at read time, never copied onto the product row (AG-8).
