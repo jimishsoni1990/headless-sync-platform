@@ -551,7 +551,16 @@ final class ContentRestRegistrar
     /**
      * Common args present on every listing endpoint, plus optional extras.
      *
-     * @param list<string> $extras  Names of optional extra args: 'slug', 'category', 'published_after'
+     * Every extra a caller names must have a branch below. An unbranched name is not a no-op:
+     * the filter keeps working (WordPress hands unregistered query parameters to get_param()
+     * and the handler sanitizes them itself), but WordPress's own published route index omits
+     * it — so `/wp-json/hsp/v1` and the generated OpenAPI end up describing the same endpoint
+     * differently. That is how `tag` went undeclared from P1B-S3 until Finding 002 (B1); the
+     * ADR-055 drift guard compares routes to descriptors, not route args to descriptor
+     * parameters, so nothing caught it. TagFilterContractTest now pins the two together.
+     *
+     * @param list<string> $extras  Names of optional extra args: 'slug', 'category', 'tag',
+     *                              'published_after'
      * @return array<string,array<string,mixed>>
      */
     private function listingArgs(array $extras): array
@@ -575,6 +584,15 @@ final class ContentRestRegistrar
 
         if (in_array('category', $extras, strict: true)) {
             $args['category'] = [
+                'type'              => 'string',
+                'sanitize_callback' => 'sanitize_title',
+            ];
+        }
+
+        // Same sanitizer as the handler applies (sanitizeCategorySlug → sanitize_title): the
+        // declaration has to describe the filter that actually runs, not a second policy.
+        if (in_array('tag', $extras, strict: true)) {
+            $args['tag'] = [
                 'type'              => 'string',
                 'sanitize_callback' => 'sanitize_title',
             ];

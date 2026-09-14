@@ -94,16 +94,41 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     // Posts
     // -------------------------------------------------------------------------
 
+    /**
+     * The ordering sentence publishes DECISION F, it does not decide anything: the sort keys were
+     * ratified at P1A-S5 and PostQueryProvider has always implemented them. Until Finding 002 the
+     * contract said only "cursor-paginated", so a consumer composing "the three most recent posts
+     * sharing this tag" had to guess that the listing is newest-first or read the PHP — the same
+     * gap Finding 010 closed for variation selection.
+     *
+     * It says newest-first and stable, and deliberately NOT `published_at DESC, id DESC`: the
+     * projection UUID is an internal column (ADR-040) and the cursor that carries it is opaque by
+     * contract. Consumers need to know the order is newest-first and that equal timestamps do not
+     * shuffle between pages; they do not need the tie-breaker's identity, and publishing it would
+     * leak one.
+     *
+     * The filter applies BEFORE that ordering, which is the whole of what HSP offers related-content
+     * composition (Finding 002): matching posts in normal listing order, never a relevance ranking.
+     */
     private function postsList(): EndpointDescriptor
     {
         return $this->listing(
             route: '/posts',
-            description: 'List published posts (cursor-paginated).',
+            description: 'List published posts (cursor-paginated). Posts are returned newest '
+                . 'first by published time, with deterministic ordering for posts sharing the '
+                . 'same publication timestamp, so paging never shuffles or repeats a row. '
+                . 'Filters narrow which posts are returned; they never re-rank them — a '
+                . 'filtered listing is ordinary post-list order, not a relevance ranking.',
             itemSchema: $this->postSchema(),
             filters: [
                 EndpointParameter::query('status', 'string', 'Filter by post status (public set: publish).'),
                 EndpointParameter::query('category', 'string', 'Filter by category slug.'),
-                EndpointParameter::query('tag', 'string', 'Filter by tag slug.'),
+                EndpointParameter::query(
+                    'tag',
+                    'string',
+                    'Filter by tag slug. Matches tags only: a category sharing the slug never '
+                    . 'matches, and neither does a deleted tag.'
+                ),
                 EndpointParameter::query('published_after', 'string', 'ISO-8601 UTC lower bound on published_at.'),
             ],
         );

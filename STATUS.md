@@ -10,6 +10,95 @@
 
 **Current phase:** **Phase 2 — WooCommerce Catalog: COMPLETE (P2-S0 … P2-S7 all shipped).** WooCommerce is the second independent HSP domain module, and the success test was never "products synchronize" — it was that this happened **without special-casing Commerce in Core**. It did: a repo-wide assertion proves there is no reference to `HSP\Modules\Commerce` anywhere under `core/`, and none to `HSP\Modules\Content` anywhere under `modules/Commerce/`. Six Commerce aggregates ship — product, product category, attribute definition, `pa_*` attribute term, product variation, inventory — each with capture, projection, delivery, replay, reconciliation and a proven create → update → delete → tombstone → replay lifecycle. The two-module system test runs both domains through one real bounded cycle on live MySQL + PostgreSQL. **Measured: mixed-domain worst-case sync latency is ≈20.1 s against the 30 s SLA — 9.9 s of margin, so Commerce did NOT consume the headroom** and DECISION AG Part 5's STOP-and-flag was not triggered. **Both flags raised in Phase 2 are now RESOLVED by architect ruling (2026-09-08): DECISION AH** closes FLAG-COMMPERMA-1 as Case B authorised with implementation scheduled into Phase 4 — architecture decided, not an open gap — and **DECISION AI** closes FLAG-PERFCYCLE-1 as Option (a), keeping the threshold unchanged and moving enforcement to a controlled CI performance gate (`HSP_PERFORMANCE_GATE=1`). **No open flags.** FLAG-LIFECYCLE-1 was raised and resolved the same day: live-site testing found AG-12's automatic activation transition built but never invoked, and AG-12 had already pre-authorised the correction, so `ModuleLifecycleRunner` now drives it from the bounded WP-Cron cycle — **proven live: a torn-down Commerce module converged its full catalog in ONE cycle with no reactivation, no manual migrate and no manual reconcile.**
 
+**Last updated:** 2026-09-15 (Finding 002 — **the related-by-tag capability was already complete;
+what was missing was two statements of fact, and both are now published.** Finding 002 asked whether
+a contract-only consumer can build a post-detail "related posts" block from HSP's taxonomy
+primitives, and the investigation-first answer is **classification B — small contract defects, no
+related-post subsystem.** HSP does **not** own related-content semantics: WordPress defines no
+universal related-post rule, so `related_posts`, `primary_tag`, `related_rank` and
+`similarity_score` were all deliberately **not** added, and no ranking engine, materialised
+related-post projection, related endpoint, multi-tag resolver or recommendation subsystem exists.
+**What HSP owns:** the post→tag relationship, typed public `{slug, name}` tag references on both
+post surfaces, tag-slug filtering discriminated to `post_tag`, normal newest-first post ordering and
+cursor pagination. **What the site owns:** which tag to use, how many related posts to show, whether
+to use tags at all, and excluding the current post. **The two defects, both declaration-only.**
+**B1 — `?tag=` worked, the generated OpenAPI documented it, and WordPress's own route index denied
+it existed.** `ContentRestRegistrar` passed `'tag'` to `listingArgs()` but that method had branches
+for `category` and `published_after` only, so `/wp-json/hsp/v1` published
+`cursor, per_page, status, category, published_after` — no `tag` — while `/hsp/v1/openapi.json`
+advertised it. **Two machine-readable descriptions of one endpoint disagreed.** The filter never
+stopped working (WordPress hands unregistered query parameters to `get_param()` and the handler
+sanitizes them itself with `sanitize_title`), which is exactly why it survived from P1B-S3
+unnoticed, and why nothing failed: the **ADR-055 drift guard compares routes to descriptors, never
+route ARGS to descriptor PARAMETERS** — recorded as **FLAG-RESTARGDRIFT-1** rather than fixed here,
+because redesigning that guard is not Finding 002's job. The declared sanitizer is the one the
+handler already applies, so no second input policy was invented. **Live, after deploy:
+`args: cursor, per_page, status, category, tag, published_after`.** **B2 — the listing order was
+ratified architecture that the contract never stated.** DECISION F fixed the post sort keys at
+P1A-S5 and `PostQueryProvider` has always implemented them, but the published description said only
+"cursor-paginated" — so "the three most recent posts sharing this tag" was unbuildable without
+guessing or reading PHP, the same gap Finding 010 closed for variation selection. The listing now
+publishes: *"Posts are returned newest first by published time, with deterministic ordering for
+posts sharing the same publication timestamp, so paging never shuffles or repeats a row. Filters
+narrow which posts are returned; they never re-rank them — a filtered listing is ordinary post-list
+order, not a relevance ranking."* **It deliberately does NOT publish `published_at DESC, id DESC`:**
+the tie-breaker is the projection UUID, which ADR-040 keeps internal and which the cursor hides
+behind an opaque token — consumers need to know the order is newest-first and stable, not what makes
+it stable, and naming it would leak an internal column. Asserted, not promised: a guard fails if
+`id DESC`, `ORDER BY` or `uuid` ever appears in that description. The `tag` parameter also now
+states its discrimination ("Matches tags only: a category sharing the slug never matches"). **No
+SQL ordering changed.** **Live verification is no longer owed — the standing tagged-post debt is
+DISCHARGED.** The site now carries **3 `post_tag` terms** (`crypto`, `gold`, `stocks`), **4 tagged
+published posts** and **1 multi-tag post**, and read-only comparison against WordPress source truth
+gives **14 posts compared, 0 tag-set mismatches (actual SETS, not counts), 0 tag-name mismatches,
+0 list/detail mismatches; 3 tag filters compared, 0 result-set mismatches; 0 tag slug/name
+mismatches; 0 multi-tag ordering violations.** **The slug collision the integration suite could
+only fixture is now LIVE and correct:** `crypto` and `stocks` each exist as **both** a tag and a
+category. `?tag=crypto` returns 3 posts while `?category=crypto` returns 4 — the one category-only
+post is correctly absent — and `?tag=stocks` returns 1 against `?category=stocks`'s 3, with **zero
+cross-contamination** between a post's `tags` and `categories` lists. **The reference consumer
+workflow ran on live data, public fields only:** `GET /posts/magni-minus-repudiandae-ea-itaque-aut`
+→ `tags: [{crypto},{stocks}]` → site policy picks the lexicographically first slug `crypto` →
+`GET /posts?tag=crypto` → drop the source post by its public `slug` → two related candidates. **No
+internal identifier is involved at any step** — not the projection UUID, `source_post_id`,
+`source_term_id` or the WordPress term id — and slug-based exclusion is safe to exactly the degree
+`/posts/{slug}` addressing is, because it IS that identity. **Deterministic is not primary:** tags
+publish in slug order so responses and caches do not churn, and a site may adopt "first tag" as a
+policy, but HSP makes no claim that `crypto` matters more to that post than `stocks`. **Smallest
+sufficient policy is ONE tag**, and multi-tag filtering (`tags[]`, `match=any/all`) was **not**
+added — the frontend states no such requirement, and it would be a new query capability. **Tests:**
+new `TagFilterContractTest` (13 unit cases) pins the three declarations of `tag` together in BOTH
+directions and guards the absent semantics; new `RelatedByTagCompositionIntegrationTest` (12 cases,
+194 assertions) proves the workflow against live PostgreSQL reading **only** Resource payloads,
+including add/remove convergence through the REAL handler→extractor→transformer→adapter path (the
+removal half was previously uncovered — an "add" test cannot see that a shrinking term set must
+DELETE links), last-tag removal, the collision, cursor paging with the source post inside the
+result set, and the ordinary case where a 3-post widget needs a second page because page one spent
+a slot on the source post. **Both defects have negative proof** — reverting each fix individually
+fails the new tests and nothing else. Unit 1779 ✅ (3 skipped — pre-existing whole-suite WooCommerce
+process constraint) · Content Integration 176 ✅ · **full Integration 418 ✅ post-commit on a clean
+tree** (1 skipped — DECISION AI performance gate) · ADR-055/OpenAPI drift + AJV
+`HSP_REQUIRE_NODE_GATE=1` 36 ✅ · live OpenAPI document validates against the pinned 3.1 meta-schema
+✅ · **12/12 live payloads validated against the LIVE generated OpenAPI with the project's pinned
+AJV** (unfiltered listing, all three tag filters, an empty filter result, a paged slice, page 2 via
+`next_cursor`, multi-tag / single-tag / untagged single posts, and both tag resources) · PHPStan
+level 8 ✅ · PHPCS ✅. **response shape changed: NO · query semantics: NO · routes: NO · pagination:
+NO · migration: NO · new persistence: NO · ADR change: NO · architecture docs changed: NO ·
+related-post subsystem: NO · new consumer capability: NO — the existing primitives are proven
+sufficient.** Route declaration metadata **was** corrected and the OpenAPI **descriptive** contract
+**was** clarified; no response field, identifier semantic or SQL ordering moved. **Two flags raised,
+neither fixed here:** **FLAG-RESTARGDRIFT-1** (route args and descriptor parameters can drift
+without the ADR-055 completeness guard noticing — a test-infrastructure gap needing no ADR) and
+**FLAG-TAGCOUNT-1** (live `/hsp/v1/tags` publishes `post_count: 0` for all three tags while
+WordPress reports 3/1/1, while category `post_count` is 0-mismatch on the same site — tagging a post
+changes the term's count in WordPress but emits no taxonomy event, so the projected count only
+refreshes on a term edit or a reconcile). Neither touches the related-by-tag path, which reads
+neither field. The dead `listingArgs(['slug', …])` entry for `/pages` was found and deliberately
+**left untouched** (recorded under FLAG-RESTARGDRIFT-1). FLAG-COMMSOURCEID-1, FLAG-GATE-WORKTREE-1
+(which behaved exactly as recorded — the negative half failed on the dirty worktree alone and passed
+committed; the gate was NOT modified) and the Commerce permalink Phase 4 work are deliberately
+untouched.)
+
 **Last updated:** 2026-09-14 (Finding 010 / **DECISION AL** — **every public variable product is now
 either safely selectable from HSP data or explicitly machine-readable as unsupported. There is no
 silent third state.** The first pass of this work shipped the selection contract and then *stopped*
@@ -411,26 +500,35 @@ change.**)
 
 **Last updated:** 2026-07-18 (ONB-S2 SELF-REMEDIATION **SHIPPED** — first-run self-remediation for the two ONB-S2 backfill gates → **zero-configuration fresh install** (ADR-054 **Principle 8**); **DECISION W (f) amended → v1.23** (ARCHITECTURE_DECISIONS.md v1.25), architect-approved this session. Each gate keeps its **hard block** and gains an in-product action — action, NOT bypass; nothing projects until the gate genuinely passes. **(1) Migrate endpoint** — new `POST hsp/v1/onboarding/migrate` (nonce + capability + sanitize at the JSON boundary — DECISION W (a)/V (b)) applies the outstanding core + content migrations through the **EXISTING** migration engine (`MigrationRunner`) over the **DECISION W (e) delegate list** (core `migrations.core` + module migrations collected via the module registry's declarative `getMigrations()` — OPEN-9; **Rule 5** — core imports no module migration class). New `core/Onboarding/MigrationApplier` (+ `MigrationApplyResult`) is a **thin delegator**: no new engine, no new DDL, no new schema, no new `pg_*` wrapper (DECISION E), no new PG handle (DECISION L Ruling 0); all inputs resolved LAZILY (the pgsql DDL link opens eagerly + throws → deferred into a caught path). GUARDED on the four ONB-S1b environment preflight checks (409 until they pass); `MigrationsAppliedCheck` re-evaluated after and returned; idempotent. Content migrations wired into `ContentModule::getMigrations()` (built over `migration.connection.pgsql` via a lazy factory closure — no Container ref, ADR-012). **(2) Heartbeat gate remediation** — new `POST hsp/v1/onboarding/spawn-worker` → `core/Onboarding/WorkerCronSpawner` (+ `WorkerCronSpawnResult`): ensures the processing-cycle cron is scheduled and issues a **NON-BLOCKING** `spawn_cron()` loopback so a bounded cycle runs and a heartbeat appears. **NO in-request drain — DECISION W (c) intact** (the cycle runs only inside WP-Cron execution; the engine is never materialised inline). Explicit **WP-Cron-only** warning when `DISABLE_WP_CRON` is set (`wp cron event run --due-now`) — no supervisor/systemd/daemon/restart wording (ADR-054 §5; grep-guarded in tests). **(3) Plugin lifecycle (OPEN-9)** — `Application::activate()`/`upgrade()` (+ `ContentModule::activate()`/`upgrade()` reconciled to the single shared engine path) attempt pending migrations through the same engine **IFF `HSP_PG_*` defined AND PG reachable** (connection-free `PgConstantsCheck` gates first; then `OnboardingConnectionProbe::isReachable()`), **silent no-op otherwise** — **activation never fatals on an unconfigured site** (the applier also catches all failures). Module `activate()`/`upgrade()` fire via `module.registrar` after the shared engine (no second migration path). **(4) Docs** — DECISION W (f) **clause** amendment note (clause history v1.21→v1.22→**v1.23**) + one **document**-version increment (amendment log **1.24→1.25**, header set to 1.25 to match the latest log row — the prior header string was a stale `1.23` left over from before DECISION X took the doc to 1.24, corrected here) + a new Implications row; cites ADR-054 Principle 8. Doc-version and clause-version are independent sequences; both are gapless (header 1.25 == latest log row 1.25). **React admin UI** — `api.ts` gains `migrate()`/`spawnWorker()` + types; `BackfillPanel` renders per-gate self-remediation buttons ("Apply migrations" / "Start processing"); `App.tsx` wires the actions + a read-only gate refresh + notices; `dist/` **rebuilt and committed** (stable `hsp-onboarding.{js,css}` filenames, no host build step — DECISION W (a)). **Tests:** +17 Unit (migrate endpoint 401/403/blocked-env-preflight/success/idempotent/engine-fail/already-complete; spawn 401/spawn-issued; `MigrationApplierTest` bootstrap→run ordering + never-throws + lazy resolution; `WorkerCronSpawnerTest` incl. DISABLE_WP_CRON in a separate process; `ApplicationMigrationGuardTest` no-op-when-unconfigured via reflection). Added `spawn_cron` stub to `tests/bootstrap.php`. **Suite: Unit 1072/1072 green, 0 deprecations** (was 1053; +19 net incl. the migrate/spawn/guard tests and `CoreMigrationsListTest`), 1 pre-existing skip; Integration 147 loads clean, DB tests self-skip without env. **FRESH-INSTALL E2E on the live Local site (real WordPress + real `$wpdb` + live PG `hsp`, state reset — `hsp_onboarding_state` deleted, PG `system`+`content` schemas dropped):** drove the ACTUAL controller flow (the same code the wp-admin REST endpoints call) — preflight (4 checks) → `handleMigrate` (**20 migrations applied**, migrations gate PASS) → worker gate correctly BLOCKS pre-cycle → `handleSpawnWorker` (non-blocking spawn) → one real Processing Engine cycle produces a heartbeat → both gates PASS ("cycle ran 0s ago") → `handleBackfill` (reconcileFull re-emitted 27 aggregates) → one cron cycle drains (relayed 27 → dispatched 27 → projected 27) → converged, `hsp_onboarding_state = complete`, **redirect = operations** — **ZERO manual CLI/engine steps → PASS ✓**. **This E2E surfaced + fixed a PRE-EXISTING latent bug** (see below). **HARD constraints:** no schema change beyond running EXISTING migrations; no OPSC/pipeline changes; no new PG handle / `pg_*` wrapper; no second repair path; DECISION W (c) no-in-request-drain preserved; constructor injection (ADR-012). robocopy to Local site done. `MigrationApplier` is non-`final` solely to allow the `SpyMigrationApplier` controller-boundary test double. **PRE-EXISTING BUG FOUND + FIXED (FLAG-ONBS2-1):** the fresh-install E2E's first real cron cycle crashed with "no unique or exclusion constraint matching the ON CONFLICT specification" on `system.queue_jobs`. Root cause: migration **`0011_add_unique_event_id_to_queue_jobs`** (the `UNIQUE(event_id)` the dispatcher's `enqueueIdempotent()` `ON CONFLICT(event_id)` depends on — DECISION L v1.12) shipped in P1A-S6d as a **raw SQL file with NO PHP migration class** and was **never wired into `MigrationServiceProvider::migrations.core`**, so the engine never applied it on a real fresh install (integration tests seed schema directly, masking the gap). Fix (in scope — "run the EXISTING migrations"): added `database/Core/Pgsql/AddUniqueEventIdToQueueJobsMigration.php` wrapping the EXISTING frozen SQL (no schema change) + wired it into `migrations.core` (sorts after 0003) + added it to `MigrationsAppliedCheck::REQUIRED` (pipeline-critical) + a `CoreMigrationsListTest` regression guard (asserts every pipeline-critical migration is in the delegate list). Updated the affected migration-list fixtures (BackfillGate/BackfillService/OnboardingRestController/PreflightChecks/BackfillIntegration) to include 0011. Post-fix E2E re-run = PASS. **Scope note:** `database/` was not in the literal in-scope list — flagged, added only because it blocks the DoD and wraps an existing frozen migration. `git status` shows docs + STATUS + `headless-sync/{bootstrap,core,modules,resources,tests,database}/`.)
 
-**Next session:** **Finding 010 — variation-selection semantic sufficiency.** The current workstream
-is the real-world implementation findings raised against the live site, not the
+**Next session:** **no finding is pointed at — 002, 003, 004, 005, 009 and 010 are all CLOSED.** The
+current workstream is the real-world implementation findings raised against the live site, not the
 IMPLEMENTATION_PLAN.md Session Map: Phase 2 (P2-S0 … P2-S7) is COMPLETE and the Session Map has no
-row left to point at. Finding 010 asks whether HSP exposes enough deterministic attribute
-information to map a shopper's selected options to exactly ONE variation — **Finding 009
-deliberately did not answer it.** 009 answered only "once I know the intended product/variation,
-which Woo identifier do I hand to Woo?"; 010 answers "how do I deterministically select the
-intended variation?". Findings still open and explicitly NOT touched by Finding 009: **010**
-(variation-selection semantic sufficiency), the **tagged-post live-verification debt** (the live
-site has no `post_tag` terms, so tag behaviour is proven by test only — Findings 003 and 004 both
-exercised the shared-taxonomy collision path in integration coverage, but neither could reach live
-data), **FLAG-GATE-WORKTREE-1** (test-infrastructure defect, separately tracked below — deliberately
-NOT implemented during Finding 003, 005 or 009 closeout), and the new **FLAG-COMMSOURCEID-1**
-(Commerce publishes `id` + `source_id` on all four resources with no authorising decision; see
-Flags). **Finding 009 is CLOSED** (2026-09-14): products publish `woo_product_id`, variations
-publish `woo_product_id` + `woo_variation_id`, matching Woo source truth on every live product and
-variation. **Finding 005 is CLOSED** (2026-09-14): every listed page publishes its canonical full
-ancestor path, usable verbatim as `GET /hsp/v1/pages/{path}`. **Finding 003 is CLOSED**
-(2026-09-14, commit `39cd94a` on origin/main): post responses expose typed public category
-references.
+row left to point at. The next session should either take a newly raised finding, or pick up one of
+the open flags below. **Open and explicitly NOT touched by Finding 002:** **FLAG-TAGCOUNT-1** (the
+tag resource publishes `post_count: 0` on the live site while WordPress reports 3/1/1 — categories
+are correct on the same site, so the likely cause is that tagging a post changes the term count in
+WordPress without emitting a taxonomy event; it affects no related-by-tag behaviour, which reads
+neither field), **FLAG-RESTARGDRIFT-1** (REST route argument metadata and EndpointDescriptor
+parameters can drift without the ADR-055 completeness guard detecting it — Finding 002 pinned the
+`/posts` case and deliberately did not redesign the guard; the dead `listingArgs(['slug', …])` entry
+for `/pages` is recorded there too), **FLAG-COMMSOURCEID-1** (Commerce publishes `id` + `source_id`
+on all four resources with no authorising decision), **FLAG-GATE-WORKTREE-1** (test-infrastructure
+defect — the extensibility gate's negative half asserts on the developer's working tree) and the
+Commerce permalink work DECISION AH scheduled into Phase 4. **Finding 002 is CLOSED** (2026-09-15):
+HSP exposes typed post tag references and tag-filtered post listings sufficient for site-defined
+related-by-tag composition; the frontend/site owns tag choice, source-post exclusion and display
+policy; HSP defines no primary-tag semantics, relevance ranking, recommendation score or universal
+related-post algorithm. **The tagged-post live-verification debt is DISCHARGED** — the live site now
+has 3 `post_tag` terms across 4 tagged posts, and post tag sets, tag filters, the tag/category slug
+collision and the full consumer workflow were all verified read-only against WordPress source truth
+with 0 mismatches. **Finding 010 is CLOSED** (2026-09-14): every public variable product is either
+safely selectable from HSP data or explicitly machine-readable as unsupported. **Finding 009 is
+CLOSED** (2026-09-14): products publish `woo_product_id`, variations publish `woo_product_id` +
+`woo_variation_id`, matching Woo source truth on every live product and variation. **Finding 005 is
+CLOSED** (2026-09-14): every listed page publishes its canonical full ancestor path, usable verbatim
+as `GET /hsp/v1/pages/{path}`. **Finding 004 is CLOSED** (2026-09-14, DECISION AJ): a populated
+category no longer serves an empty archive. **Finding 003 is CLOSED** (2026-09-14, commit `39cd94a`
+on origin/main): post responses expose typed public category references.
 
 > **⚠ Pointer staleness found and corrected 2026-09-14 (Finding 004 closeout), NOT silently.** This
 > line read "**P2-S2 part 2** — close the Commerce product row, then P2-S3" while the 2026-09-08
@@ -635,6 +733,89 @@ so the gate executes at full fidelity and cannot degrade to a skip. Locally, the
 
 ## Flags
 
+### FLAG-TAGCOUNT-1 — the tag resource publishes `post_count: 0` on a site whose tags have posts
+
+**Raised:** 2026-09-15 | **Session:** Finding 002 | **Status:** **OPEN — reported, not resolved. No
+production code was changed, because the fix is a capture-coverage question outside Finding 002's
+declaration-only scope.**
+
+**What was found.** Finding 002's live verification compared `GET /hsp/v1/tags` against WordPress
+source truth, as the task required. Slug and name match on all three terms. `post_count` does not:
+
+```
+crypto   WP count=3   HSP post_count=0   MISMATCH
+gold     WP count=1   HSP post_count=0   MISMATCH
+stocks   WP count=1   HSP post_count=0   MISMATCH
+```
+
+**On the same site, at the same moment, category `post_count` mismatches = 0** across all seven
+categories. So this is not "the field is unimplemented" — `content.taxonomies.post_count` is
+projected, published by the shared `CategoryResource`, and correct for one taxonomy.
+
+**Likely cause, stated as a hypothesis and not as a finding.** `HookWiring` subscribes to
+`created_term`, `edited_term` and `delete_term`. Tagging a post does not edit the term — WordPress
+recounts it through `wp_update_term_count()`, which writes `wp_term_taxonomy.count` and fires
+`edited_term_taxonomy`, a hook HSP does not listen to. The projected count therefore reflects
+whatever the term's count was when the term was last captured, and only refreshes on a genuine term
+edit or a reconcile pass (`count` is inside `CanonicalCategory`'s checksum, so re-emission would
+repair it). That fits the observed split exactly: these tags were created before they were assigned,
+and the categories were last reconciled after their assignments settled. **It is a hypothesis: no
+event timeline was pulled and no fix was attempted.**
+
+**Why it is NOT fixed here.** It affects **categories as much as tags** — the same hook set, the
+same column — so it is a platform-wide capture-coverage question, not a tag question, and Finding
+002's authorised production scope was two declaration fixes with "response shape change: No, query
+behaviour change: No". **Nothing in the related-by-tag path reads `post_count`:** the workflow uses
+`post.tags` and `?tag=`, both verified with 0 live mismatches, so this blocks no consumer capability
+Finding 002 established.
+
+**Options for whoever takes it.** (a) Subscribe to `edited_term_taxonomy` and emit a term
+`.updated`, accepting one extra event per term per post save. (b) Re-emit the affected terms from
+the post handler — rejected on sight, since it makes the post pipeline write outside its aggregate.
+(c) Treat `post_count` as reconcile-repaired-only and say so in the contract, which is honest but
+means a site can serve a stale count indefinitely. (d) Stop publishing `post_count` — a removal, and
+therefore its own compatibility decision (Doc 9 §26). **Recommendation: (a)**, with the caveat that
+the event volume needs measuring against the DECISION AB cadence first.
+
+---
+
+### FLAG-RESTARGDRIFT-1 — REST route argument metadata and EndpointDescriptor parameters can drift undetected
+
+**Raised:** 2026-09-15 | **Session:** Finding 002 | **Status:** **OPEN — the `/posts` instance is
+FIXED and regression-guarded; the general gap is recorded, not closed. No ADR is required — this is
+a test-infrastructure gap, not an architecture question.**
+
+**What was found.** HSP publishes two machine-readable descriptions of every delivery endpoint: the
+args WordPress itself exposes at `/wp-json/hsp/v1`, and the `EndpointDescriptor` parameters the
+ADR-055 generator turns into `/hsp/v1/openapi.json`. The ADR-055 completeness guard
+(`OpenApiDriftGuardTest`) compares **routes to descriptors** — it proves every route has a
+descriptor. It does **not** compare **route args to descriptor parameters**, so a filter can exist
+in one description and not the other indefinitely.
+
+That is not theoretical. `?tag=` on `/posts` shipped in P1B-S3 with a descriptor parameter and no
+route argument, and stayed that way until Finding 002 read the live route index. The filter worked
+throughout — WordPress passes unregistered query parameters to `get_param()`, and the handler
+sanitizes them itself — so no test, no user and no error surfaced it.
+
+**What Finding 002 did.** Fixed the `/posts` instance and added `TagFilterContractTest`, which
+asserts the two parameter name sets are **identical** for `/posts` — failing in both directions, so
+it catches a descriptor-only parameter (the shipped defect) and a route-only one (an undocumented
+filter). It was deliberately **not** generalised to every listing endpoint, for a concrete reason
+rather than scope caution: `/pages` is registered as `listingArgs(['slug', …])` and there is **no
+`slug` branch, no handler reading `?slug=`, and no descriptor publishing it** — dead input that
+nothing claims works. A platform-wide equality assertion would fail on that immediately, and
+deleting it is unrelated tidying that Finding 002 was explicitly told to leave alone. **So the dead
+`/pages` `slug` extra is recorded here too, untouched.**
+
+**Options.** (a) Extend the ADR-055 guard to assert route-args ⇄ descriptor-parameters equality
+across all endpoints, after removing the dead `/pages` `slug` entry — the thorough fix; the capture
+infrastructure already exists (`$GLOBALS['_hsp_stub_rest_routes']` records `args` today, and
+`TagFilterContractTest` shows the assertion is four lines). (b) Leave per-endpoint guards where a
+finding has touched them — cheap, and leaves the same class latent everywhere else. (c) Do nothing.
+**Recommendation: (a)**, as one small test-infrastructure session; it needs no ADR and no production
+change beyond deleting the dead argument name.
+
+---
 ### FLAG-COMMSOURCEID-1 — Commerce publishes `id` and `source_id` with no authorising decision, and Finding 009 now duplicates one of them
 
 **Raised:** 2026-09-14 | **Session:** Finding 009 | **Status:** **OPEN — reported, not resolved.
@@ -2013,3 +2194,5 @@ refuse. **AG-9 unchanged; no local/custom attribute support added.**
 2026-09-14 | Finding 005 | **Nested pages are now addressable: the listing publishes each page's canonical full ancestor path.** The gap: `GET /pages` returned the live site's nested page as `{slug: jimish-soni, parent_id: 83}` while the only address a page has is `GET /pages/{full ancestor path}` (DECISION AD) — `/pages/jimish-soni` 404s, `/pages/our-team/jimish-soni` resolves. A contract-compliant consumer therefore held a page it could not route to, since guessing the parent slug, using the WordPress id, querying WordPress and rebuilding the tree from repeated API calls are all forbidden. **HSP already defined this identity and simply never published it** — additive, no migration, no new persistence, no ADR. **Contract:** `path` on the Page resource, on BOTH surfaces, carrying exactly what `{path}` takes: `our-team/jimish-soni`, `about/team/leadership`, bare slug for top-level. No leading/trailing slash, no host, no `/hsp/v1` prefix — HSP's relative page identity, not permalink generation — and **no alias** (`uri`/`full_path`/`permalink`/`url`), guarded by assertions in both the resource and the schema. `parent_id` deliberately left in place; removing a published field is its own compatibility decision. **Read-time only, proven rather than asserted:** renaming ONLY the parent changes the child's published path immediately while the child's `checksum` and `synced_at` stay byte-identical — no descendant rewrite, no replay, no fan-out, no invalidation table — and the live `information_schema` guard (extended to `url`) fails if any derived column lands on `content.pages`. **One ancestor walk, shared by both surfaces**, so they cannot disagree; `findByPath()` returns the RECONSTRUCTED path rather than echoing its argument. **Cost bounded by the requested page:** the cursor window is selected first (`WITH RECURSIVE paged AS …`) and only those rows are walked to the root; the path is a SCALAR sub-select, so it cannot multiply, drop or reorder rows — cursor values, tie-breakers, cardinality, terminal `next_cursor` and eligibility all unchanged (14 rows at 5/page → 5+5+4, each row seen exactly once, shared `published_at` throughout). **One query per page at any size** — counting connection on live PostgreSQL: 1-row page and 20-row page both cost exactly one query, never 1+N. `MAX_ANCESTOR_DEPTH` survives on both surfaces: a parent cycle publishes `path: null` and terminates. **DECISION AE preserved, and the listing representation DERIVED not chosen:** a page under a never-published ancestor has no reconstructable path; omitting it would change listing eligibility (it is public by OPEN-10's predicate and was listed before this field existed), and publishing the leaf slug would advertise an address that 404s — the one-segment fallback DECISION AF removed, re-entering through the listing. `path: null` is what the frozen rulings leave, and it matches what the lookup says about that page. The known limit is **not** claimed fixed. **No index added, deliberately:** at 1,000 pages the planner hashes the small table for the recursive hop and that is cheaper; at 50,000 it switches to `uq_content_pages_source_post_id` unaided — the test pins that the access path is taken when it earns its keep, repeating the Finding 003 lesson rather than demanding the planner make the worse choice on a small site. **Live: 12 of 12 published pages compared against WordPress `get_page_uri()` source truth — 0 path mismatches, 0 list/detail mismatches, 0 null paths**; the Finding 005 page resolves at `our-team/jimish-soni` and the bare leaf still 404s; live payloads validated against the **live** generated OpenAPI with the project's pinned AJV on both surfaces. **Live limitation stated:** the site has neither duplicate leaf slugs nor a never-published ancestor, so those two paths are proven by fixture and live-PostgreSQL coverage only — no live content was manufactured. Unit 1697 ✅ · Content Integration 164 ✅ · **full Integration 380 ✅ post-commit on a clean tree** (1 skipped — DECISION AI performance gate) · ADR-055/OpenAPI drift + AJV 37 ✅ with `HSP_REQUIRE_NODE_GATE=1` · PHPStan level 8 ✅ · PHPCS ✅. Response shape changed ADDITIVELY; OpenAPI changed; **no** existing field, page-addressing semantic, pagination behaviour, migration, persistence model, module boundary or ADR change. **No new flags.** FLAG-GATE-WORKTREE-1 behaved exactly as Finding 003 recorded — the extensibility gate's negative half failed on the dirty worktree alone and passed in the committed state; the gate was NOT modified. Findings 009, 010 and the tagged-post live-verification debt deliberately untouched.
 
 2026-09-14 | Finding 009 | **Products and variations now publish explicit WooCommerce cart-handoff identifiers — an API contract clarification over data HSP was already publishing.** The gap was interpretive, not missing data, and the investigation is the substance. HSP already published these exact integers as `source_id` (product) and `source_id` + `product_id` (variation), with **no `description` at all** in the generated OpenAPI — and `source_id` means a *term* id on `/product-categories` and an attribute-*definition* id on `/product-attributes`, so a consumer holding only the contract could not conclude that this particular one was the id WooCommerce's own cart accepts. The only route open to the frontend was to **guess**, and a guess is not a contract. **Verified against the installed WooCommerce 11.1.0 rather than assumed:** `WC_Cart::add_to_cart($product_id, $qty, $variation_id, $variation)` (`class-wc-cart.php:1149`), the `?add-to-cart=` + `variation_id` form handler (`class-wc-form-handler.php:922,1051`) and the Store API (`CartAddItem.php:47`) all consume WordPress post ids, and all three need the parent id, the variation id, or both. **Contract:** `woo_product_id` on Product; `woo_product_id` (the PARENT) + `woo_variation_id` on Variation. A simple product gets **no invented variation field** — no `woo_variation_id: 0`, no meaningless null — and the two variation ids are **never derived from each other** (`get_id()` vs `get_parent_id()`), so re-parenting moves one and leaves the other, asserted rather than assumed. Descriptions carry the semantics the names cannot: which id is the parent, that both are needed for a variable handoff, and that they are **site-specific** — authoritative for the connected store, explicitly not globally unique, no `global_product_id`, no cross-site federation. `minimum: 1` is published because the columns are `BIGINT NOT NULL` with UNIQUE constraints, not as decoration. **Architecture: a NEW RULING was required, and the first reading of this was wrong.** `grep -ri "handoff|interoperab|add-to-cart" docs/` returned one incidental line — there was **no cart-handoff architecture in the repository**. The initial report treated "the integers were already published" as meaning the Woo semantics were already ratified, and **that inference does not hold**: publishing a value is a data decision, while promising it is authoritative against a downstream runtime is an interoperability decision, and only the first had ever been taken. **DECISION AK** (ARCHITECTURE_DECISIONS.md v1.42 to v1.43, architect-approved 2026-09-14) records the second explicitly — HSP may expose source Woo product/variation ids as public **interoperability** identifiers for handing an ALREADY-SELECTED catalogue entity to the connected Woo runtime, **Commerce Product + Variation resources ONLY and expressly not a precedent** for source-id exposure elsewhere (DECISION F internal-column exclusion and ADR-040 stand platform-wide). Each frozen ruling it could have collided with is untouched — WordPress ids must not become the **addressing** contract (AD ruling 8, AH-8; `/products/{slug}` unchanged), no cart projection (AG Part 6), no delivery-time WordPress read (ADR-040), no stored derived URL (AH-5). Guards assert no `add_to_cart_url` / `cart_url` / `checkout_url` / `woo_url` / `permalink` / `nonce` ever appears. **Identity proven through the real spine, not a hand-built Resource array:** a new integration test runs extractor → transformer → canonical model → adapter → live PostgreSQL (schema from the real migration files) → query provider → resource, including **parent integrity** two products deep (245/246 under 200, 999 under 311 — a variation id from one product can never pair with a parent id from the other) and the **variation-before-parent** order, where AG-7's source-keyed reference means the handoff pair is already correct before the parent has projected. **Stated environment limit:** the first hop uses `InMemoryCommerceLoader`, because `WpCommerceLoaderImpl` needs a booted WordPress with WooCommerce; that hop is proven against the live site instead. **Live: 16 of 16 products and 7 of 7 variations compared against real `wc_get_product()` objects — 0 mismatches, exact values not counts.** Every `woo_product_id` equals `WC_Product::get_id()` and resolves to the same slug; every `woo_variation_id` equals `WC_Product_Variation::get_id()` with `get_parent_id()` equal to the published `woo_product_id` (Hoodie 95 → 118/111/112/113; V-Neck 94 → 108/109/110). **Non-destructive handoff proof:** Woo reports the published simple id as a purchasable, in-stock product, and the published `(95, 118)` pair appears in the parent's own `get_available_variations()` — **no cart mutated, no session created, no order placed.** Live payloads validated against the **live** generated OpenAPI with the project's pinned AJV across the product listing, two single products and two variation listings. Unit 1708 ✅ · full Integration 389 ✅ (1 skipped — the DECISION AI performance gate) · ADR-055/OpenAPI drift + AJV ✅ with `HSP_REQUIRE_NODE_GATE=1` · PHPStan level 8 ✅ · PHPCS ✅. Response shape changed **ADDITIVELY**; OpenAPI changed; **architecture decision AMENDED (DECISION AK) and architecture docs CHANGED**; **no** field removed or renamed, and no route, pagination, addressing, migration, persistence or module-boundary change. **Flag raised, deliberately unresolved: FLAG-COMMSOURCEID-1** — Commerce publishes `id` (projection UUID) and `source_id` on all four resources; DECISION F's internal-column-exclusion clause names both as internal, Content publishes neither, `grep -rn "source_id" docs/` returns zero matches and no commit records a rationale. Classified **historical leakage now encoded into contract**, left in place because removing a published field is a separate compatibility decision, with the duplicate exposure `woo_product_id` now creates alongside it left for the architect to rule on rather than silently resolved. **Finding 010 is explicitly NOT solved** — 009 answers "which identifier do I hand to Woo once I know the intended variation?", 010 answers "how do I deterministically select the intended variation?"; variation-selection semantics remain open, along with the tagged-post live-verification debt and FLAG-GATE-WORKTREE-1, none of which were touched.
+
+2026-09-15 | Finding 002 | **The related-by-tag capability already existed; two declarations of it were wrong, and that was the whole finding.** Investigation-first, classified **B**: HSP does not own related-content semantics, so no `related_posts`, `primary_tag`, `related_rank`, `similarity_score`, ranking engine, related-post projection, related endpoint or multi-tag resolver was added — WordPress defines no universal related-post rule, and which tag to use, how many posts to show and whether to use tags at all are the site's decisions. **B1:** `?tag=` worked and the OpenAPI documented it, but `ContentRestRegistrar::listingArgs()` had no `tag` branch, so WordPress's own route index published `cursor, per_page, status, category, published_after` and **denied the filter existed** — two machine-readable descriptions of one endpoint disagreeing since P1B-S3, invisible because WordPress hands unregistered query parameters to `get_param()` and the handler sanitizes them itself. **B2:** DECISION F ratified the post sort keys at P1A-S5, but the contract said only "cursor-paginated", so "the three most recent posts sharing this tag" was unbuildable without guessing — the listing now publishes newest-first plus stable ordering on equal timestamps, and **deliberately not** `published_at DESC, id DESC`, because the tie-breaker is the internal projection UUID (ADR-040) that the opaque cursor exists to hide; a guard fails if `id DESC`/`ORDER BY`/`uuid` ever appears there. No SQL ordering changed. **The live-verification debt is DISCHARGED** — the site now has 3 `post_tag` terms, 4 tagged posts, 1 multi-tag post: **14 posts compared, 0 tag-set mismatches (SETS, not counts), 0 name mismatches, 0 list/detail mismatches, 3 tag filters compared, 0 result-set mismatches, 0 ordering violations**. **The slug collision is now live and correct**: `crypto` and `stocks` are each both a tag and a category; `?tag=crypto` returns 3 against `?category=crypto`'s 4, `?tag=stocks` 1 against 3, zero cross-contamination. Live reference workflow: `/posts/magni-minus-…` → `tags:[crypto,stocks]` → site policy picks `crypto` → `?tag=crypto` → exclude by public `slug` → 2 candidates, **no internal identifier at any step**. Deterministic slug order is explicitly not primacy. Smallest sufficient policy is ONE tag; multi-tag filtering was NOT added. Tests: `TagFilterContractTest` (13) pins the three declarations in both directions and guards the absent semantics; `RelatedByTagCompositionIntegrationTest` (12, 194 assertions) proves the workflow on live PostgreSQL from Resource payloads only, including **tag REMOVAL convergence through the real handler path** (previously uncovered — an add-test cannot see that a shrinking term set must DELETE links), last-tag removal, the collision, cursor paging with the source post inside the result set, and the second-page case a 3-post widget genuinely hits. Both fixes have negative proof. Unit 1779 ✅ (3 pre-existing skips) · Content Integration 176 ✅ · full Integration 418 ✅ post-commit clean tree (1 skipped — DECISION AI) · ADR-055/AJV `HSP_REQUIRE_NODE_GATE=1` 36 ✅ · live OpenAPI validates against the pinned 3.1 meta-schema ✅ · 12/12 live payloads validated against the live OpenAPI with the pinned AJV ✅ · PHPStan 8 ✅ · PHPCS ✅. **response shape: No · query semantics: No · routes: No · pagination: No · migration: No · new persistence: No · ADR: No · architecture docs: No · related-post subsystem: No · new consumer capability: No.** Route declaration metadata corrected; OpenAPI descriptive contract clarified. **Flags raised, neither fixed:** **FLAG-TAGCOUNT-1** (live `/hsp/v1/tags` publishes `post_count: 0` while WordPress reports 3/1/1, with category counts 0-mismatch on the same site — tagging a post recounts the term without emitting a taxonomy event; affects neither field the related-by-tag path reads) and **FLAG-RESTARGDRIFT-1** (route args ⇄ descriptor parameters can drift unseen by the ADR-055 guard; the `/posts` case is pinned, the guard deliberately not redesigned, and the dead `/pages` `slug` argument recorded and left untouched). FLAG-GATE-WORKTREE-1 behaved exactly as recorded and was NOT modified. FLAG-COMMSOURCEID-1 and the Commerce permalink Phase 4 work deliberately untouched.
