@@ -390,6 +390,32 @@ updated_at TIMESTAMP
 
 ## content.entity_taxonomies
 
+> ## ⚠ AMENDED BY DECISION AJ (v1.42, 2026-09-14) — read before implementing
+>
+> **The term-identity column below is superseded. It is RETAINED for history.** Where this banner
+> and the block beneath it disagree, `docs/ARCHITECTURE_DECISIONS.md` wins by precedence.
+>
+> The shipped shape references the term by its **stable source identity**:
+>
+> ```sql
+> entity_id      UUID   NOT NULL
+> source_term_id BIGINT NOT NULL
+> PRIMARY KEY (entity_id, source_term_id)
+> -- reverse access path: (source_term_id, entity_id)
+> ```
+>
+> **Why.** `taxonomy_id UUID` required `content.taxonomies` to have projected before a post's
+> relationship could be written. Under at-least-once, non-FIFO delivery a post routinely projects
+> first, so the write silently produced nothing — and the gap was permanent, because the post's own
+> checksum does not move and both replay and reconciliation compare it (Finding 004). Keyed on the
+> source id, a relationship row is a pure function of the post's own state and is correct in any
+> arrival order.
+>
+> **Unchanged:** still a pure relationship table — composite PK only, no timestamps, no checksum,
+> no metadata, no surrogate id, no foreign keys. `content.taxonomies` still owns `taxonomy_type`
+> and discrimination remains mandatory on every read of the shared projection. `source_term_id` is
+> an internal projection identity, never a public Delivery API identifier.
+
 ```sql
 entity_id UUID
 

@@ -233,7 +233,14 @@ WordPress hooks: `save_post`, `transition_post_status`, `wp_trash_post`, `after_
 - `content.pages` — `id UUID PK`, `source_post_id BIGINT UNIQUE`, `source_entity_type VARCHAR(50)`, `slug VARCHAR(255)`, `uri VARCHAR(500)`, `title TEXT`, `status VARCHAR(50)`, `published_at TIMESTAMPTZ`, `updated_at TIMESTAMPTZ`, `deleted_at TIMESTAMPTZ NULL`, `checksum VARCHAR(64)`, `structure_jsonb JSONB`, `meta_jsonb JSONB`, `created_at TIMESTAMPTZ`, `synced_at TIMESTAMPTZ`. Indexes: slug, uri, status, published_at, updated_at. GIN: structure_jsonb, meta_jsonb.
 - `content.posts` — same shape plus `excerpt TEXT`.
 - `content.taxonomies` — `id UUID PK`, `source_term_id BIGINT UNIQUE`, `taxonomy_type VARCHAR(50)`, `slug VARCHAR(255)`, `name VARCHAR(255)`, `description TEXT`, `deleted_at TIMESTAMPTZ NULL`, `created_at TIMESTAMPTZ`, `updated_at TIMESTAMPTZ`.
-- `content.entity_taxonomies` — `(entity_id UUID, taxonomy_id UUID) PK`.
+- `content.entity_taxonomies` — `(entity_id UUID, taxonomy_id UUID) PK`. **AMENDED by DECISION AJ
+  (ARCHITECTURE_DECISIONS.md v1.42, 2026-09-14): the term is referenced by its stable source
+  identity, so the shipped shape is `(entity_id UUID, source_term_id BIGINT) PK` with reverse index
+  `(source_term_id, entity_id)` — migration `0009_align_content_entity_taxonomies_to_source_term_id`.
+  Keyed on the projection UUID a relationship could only be written after `content.taxonomies` had
+  materialised, which under non-FIFO delivery it often has not; the resulting missing relationships
+  were permanent, because the post's checksum never moves and replay and reconciliation both
+  compare it (Finding 004). Still a pure relationship table — composite PK only.**
 
 Note: Doc 3 §9–11 shows bare `TIMESTAMP`; the OPEN-3 amendment (ARCHITECTURE_DECISIONS.md v1.2) supersedes this. All `content.*` PostgreSQL timestamp columns must be `TIMESTAMPTZ` and all checksum columns `VARCHAR(64)`. This is the v1.2 type canon applied platform-wide including module-owned tables.
 
