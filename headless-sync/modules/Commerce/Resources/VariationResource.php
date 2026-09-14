@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce\Resources;
 
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Core\Delivery\JsonMap;
 
 /**
  * Shapes a commerce.product_variations row into the published variation contract.
@@ -42,7 +43,7 @@ final class VariationResource implements ResourceInterface
                 'regular_price' => $this->nullableString($row['regular_price'] ?? null),
                 'sale_price'    => $this->nullableString($row['sale_price'] ?? null),
             ],
-            'attributes' => $this->jsonObject($row['attributes'] ?? '{}'),
+            'attributes' => JsonMap::decode($row['attributes'] ?? '{}'),
             'media'      => ['featured_id' => (int) ($row['featured_media_id'] ?? 0)],
             'menu_order' => (int) ($row['menu_order'] ?? 0),
         ];
@@ -63,15 +64,5 @@ final class VariationResource implements ResourceInterface
     private function nullableString(mixed $value): ?string
     {
         return $value === null || $value === '' ? null : (string) $value;
-    }
-
-    /** @return array<string,mixed> */
-    private function jsonObject(mixed $value): array
-    {
-        if (is_string($value)) {
-            $value = json_decode($value, associative: true);
-        }
-
-        return is_array($value) ? $value : [];
     }
 }

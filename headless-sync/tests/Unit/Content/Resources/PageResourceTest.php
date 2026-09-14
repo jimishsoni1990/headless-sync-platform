@@ -112,20 +112,22 @@ final class PageResourceTest extends TestCase
         self::assertSame('My Page', $result['meta']['seo_title']);
     }
 
-    public function test_empty_meta_jsonb_returns_empty_array(): void
+    /**
+     * `meta` is a MAP, so an empty one must publish `{}`. These previously asserted `[]`, which
+     * encoded the defect: PHP cannot tell an empty list from an empty map, so json_encode emitted
+     * a JSON array where the contract — and every populated response — says object.
+     */
+    public function test_empty_meta_jsonb_publishes_an_empty_json_object(): void
     {
-        $row    = $this->makeRow(['meta_jsonb' => '{}']);
-        $result = $this->resource->toArray($row);
+        foreach (['{}', null] as $empty) {
+            $result = $this->resource->toArray($this->makeRow(['meta_jsonb' => $empty]));
 
-        self::assertSame([], $result['meta']);
-    }
-
-    public function test_null_meta_jsonb_returns_empty_array(): void
-    {
-        $row    = $this->makeRow(['meta_jsonb' => null]);
-        $result = $this->resource->toArray($row);
-
-        self::assertSame([], $result['meta']);
+            self::assertSame(
+                '{}',
+                json_encode($result['meta'], JSON_THROW_ON_ERROR),
+                'empty meta must publish {} not []',
+            );
+        }
     }
 
     // -------------------------------------------------------------------------

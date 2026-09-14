@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce\Resources;
 
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Core\Delivery\JsonMap;
 
 /**
  * Shapes a commerce.products projection row into the published product contract.
@@ -68,7 +69,7 @@ final class ProductResource implements ResourceInterface
             ],
             'published_at'       => $this->nullableString($row['published_at'] ?? null),
             'updated_at'         => $this->nullableString($row['updated_at'] ?? null),
-            'meta'               => $this->jsonObject($row['meta_jsonb'] ?? '{}'),
+            'meta'               => JsonMap::decode($row['meta_jsonb'] ?? '{}'),
         ];
     }
 
@@ -107,15 +108,5 @@ final class ProductResource implements ResourceInterface
         }
 
         return array_values(array_map('intval', array_filter($value, 'is_scalar')));
-    }
-
-    /** @return array<string,mixed> */
-    private function jsonObject(mixed $value): array
-    {
-        if (is_string($value)) {
-            $value = json_decode($value, associative: true);
-        }
-
-        return is_array($value) ? $value : [];
     }
 }

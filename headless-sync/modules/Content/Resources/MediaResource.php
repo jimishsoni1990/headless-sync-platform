@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Resources;
 
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Core\Delivery\JsonMap;
 
 /**
  * Serializes content.media projection rows to the /hsp/v1/media response contract.
@@ -36,11 +37,11 @@ final class MediaResource implements ResourceInterface
             'description'    => $row['description'] ?? '',
             'width'          => isset($row['width']) ? (int) $row['width'] : 0,
             'height'         => isset($row['height']) ? (int) $row['height'] : 0,
-            'sizes'          => $this->decodeJson($row['sizes_jsonb'] ?? null),
+            'sizes'          => JsonMap::decode($row['sizes_jsonb'] ?? null),
             'attached_to_id' => isset($row['attached_to_id']) ? (int) $row['attached_to_id'] : 0,
             'published_at'   => $this->normaliseTimestamp($row['published_at'] ?? null),
             'updated_at'     => $this->normaliseTimestamp($row['updated_at'] ?? null),
-            'meta'           => $this->decodeJson($row['meta_jsonb'] ?? null),
+            'meta'           => JsonMap::decode($row['meta_jsonb'] ?? null),
         ];
     }
 
@@ -64,15 +65,5 @@ final class MediaResource implements ResourceInterface
         } catch (\Throwable) {
             return null;
         }
-    }
-
-    /** @return array<string,mixed> */
-    private function decodeJson(?string $json): array
-    {
-        if ($json === null || $json === '') {
-            return [];
-        }
-        $decoded = json_decode($json, associative: true);
-        return is_array($decoded) ? $decoded : [];
     }
 }

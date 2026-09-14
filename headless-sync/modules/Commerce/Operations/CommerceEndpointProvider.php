@@ -253,7 +253,11 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             'source_id'   => 'integer',
             // The parent's source id, so a consumer holding a variation can get back to it.
             'product_id'  => 'integer',
-            'sku'         => 'string',
+            // NULLABLE for the same reason as a product's: the column is `VARCHAR(255) NULL`.
+            'sku'         => [
+                'type'        => ['string', 'null'],
+                'description' => 'Stock keeping unit, or null when the store has not set one.',
+            ],
             'name'        => 'string',
             'description' => 'string',
             'status'      => 'string',
@@ -290,9 +294,14 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             'slug'        => 'string',
             'name'        => 'string',
             'description' => 'string',
-            // Parent SOURCE term id, or null at top level — so a consumer can rebuild the tree
-            // without a second lookup.
-            'parent'      => 'integer',
+            // Parent SOURCE term id, or NULL at top level — so a consumer can rebuild the tree
+            // without a second lookup. The column is `NOT NULL DEFAULT 0`, but the published
+            // contract deliberately maps the sentinel 0 to null: "top level" reads better than a
+            // magic zero in JSON, and the schema must say so rather than promise an integer.
+            'parent'      => [
+                'type'        => ['integer', 'null'],
+                'description' => 'Parent source term id, or null for a top-level term.',
+            ],
             'count'       => 'integer',
         ]);
     }
@@ -308,7 +317,12 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
         return SchemaObject::object([
             'id'                 => 'string',
             'source_id'          => 'integer',
-            'sku'                => 'string',
+            // NULLABLE: `commerce.products.sku` is `VARCHAR(255) NULL` because a WooCommerce SKU
+            // is optional. A product without one publishes null, not an empty string.
+            'sku'                => [
+                'type'        => ['string', 'null'],
+                'description' => 'Stock keeping unit, or null when the store has not set one.',
+            ],
             'slug'               => 'string',
             'name'               => 'string',
             'description'        => 'string',
@@ -323,7 +337,13 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             // Joined from commerce.inventory at read time, never stored on the product (AG-8).
             // Every field inside is nullable, and null means UNKNOWN rather than out of stock.
             'stock'              => self::stockSchema(),
-            'published_at'       => 'string',
+            // NULLABLE: `commerce.products.published_at` is `TIMESTAMPTZ NULL` — a product that
+            // has never been published carries no date. `updated_at` is NOT NULL DEFAULT NOW(),
+            // so it stays a plain string.
+            'published_at'       => [
+                'type'        => ['string', 'null'],
+                'description' => 'Publication timestamp, or null when the product has none.',
+            ],
             'updated_at'         => 'string',
             'meta'               => self::openMapSchema(
                 'Product meta the projection carries. Deliberately OPEN: the key set belongs to '

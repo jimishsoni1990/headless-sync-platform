@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Resources;
 
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Core\Delivery\JsonMap;
 
 /**
  * Serializes content.pages projection rows to the /hsp/v1/pages response contract.
@@ -33,7 +34,7 @@ final class PageResource implements ResourceInterface
             'menu_order'  => isset($row['menu_order']) ? (int) $row['menu_order'] : 0,
             'published_at' => $this->normaliseTimestamp($row['published_at'] ?? null),
             'updated_at'  => $this->normaliseTimestamp($row['updated_at'] ?? null),
-            'meta'        => $this->decodeMeta($row['meta_jsonb'] ?? null),
+            'meta'        => JsonMap::decode($row['meta_jsonb'] ?? null),
             'featured_media' => $this->featuredMedia($row),
         ];
     }
@@ -62,7 +63,7 @@ final class PageResource implements ResourceInterface
             'mime_type' => (string) ($row['fm_mime_type'] ?? ''),
             'width'     => (int) ($row['fm_width'] ?? 0),
             'height'    => (int) ($row['fm_height'] ?? 0),
-            'sizes'     => $this->decodeMeta($row['fm_sizes_jsonb'] ?? null),
+            'sizes'     => JsonMap::decode($row['fm_sizes_jsonb'] ?? null),
         ];
     }
 
@@ -86,15 +87,5 @@ final class PageResource implements ResourceInterface
         } catch (\Throwable) {
             return null;
         }
-    }
-
-    /** @return array<string,mixed> */
-    private function decodeMeta(?string $json): array
-    {
-        if ($json === null || $json === '') {
-            return [];
-        }
-        $decoded = json_decode($json, associative: true);
-        return is_array($decoded) ? $decoded : [];
     }
 }

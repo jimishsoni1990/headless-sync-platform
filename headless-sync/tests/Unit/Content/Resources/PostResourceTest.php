@@ -79,11 +79,20 @@ final class PostResourceTest extends TestCase
         self::assertSame('SEO Title', $result['meta']['_yoast_wpseo_title']);
     }
 
-    public function test_empty_meta_returns_empty_array(): void
+    /** `meta` is a MAP: an empty one publishes `{}`, not the `[]` this previously asserted. */
+    public function test_empty_meta_publishes_an_empty_json_object(): void
     {
         $result = $this->resource->toArray($this->makeRow(['meta_jsonb' => '{}']));
 
-        self::assertSame([], $result['meta']);
+        self::assertSame('{}', json_encode($result['meta'], JSON_THROW_ON_ERROR));
+    }
+
+    /** …while `tags` is a LIST and must stay `[]` — the distinction the fix must not blur. */
+    public function test_empty_tags_still_publishes_an_empty_json_array(): void
+    {
+        $result = $this->resource->toArray($this->makeRow(['tags_json' => '[]']));
+
+        self::assertSame('[]', json_encode($result['tags'], JSON_THROW_ON_ERROR));
     }
 
     public function test_to_collection_structure(): void
