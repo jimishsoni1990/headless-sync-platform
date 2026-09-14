@@ -474,9 +474,9 @@ final class OperationsProvidersIntegrationTest extends TestCase
     {
         $host = getenv('HSP_TEST_PGSQL_HOST')     ?: '127.0.0.1';
         $port = getenv('HSP_TEST_PGSQL_PORT')     ?: '5432';
-        $user = getenv('HSP_TEST_PGSQL_USER')     ?: 'hsp';
-        $pass = getenv('HSP_TEST_PGSQL_PASSWORD') ?: 'hsp_secret';
-        $db   = getenv('HSP_TEST_PGSQL_DATABASE') ?: 'hsp';
+        $user = getenv('HSP_TEST_PGSQL_USER')     ?: '';
+        $pass = getenv('HSP_TEST_PGSQL_PASSWORD') ?: '';
+        $db   = getenv('HSP_TEST_PGSQL_DATABASE') ?: '';
 
         return "host={$host} port={$port} user={$user} password={$pass} dbname={$db}";
     }

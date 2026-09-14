@@ -629,3 +629,31 @@ if (! function_exists('wc_get_product')) {
         };
     }
 }
+
+// ---------------------------------------------------------------------------
+// Destructive-integration-suite safety boundary.
+//
+// The PostgreSQL integration tests DROP the real system/content/commerce schemas, so they must
+// prove they are pointed at an authorized test database before PHPUnit starts collecting. The
+// guard fails CLOSED and aborts the run; it never downgrades to a skip, because a skipped safety
+// check reads exactly like a passing one.
+//
+// Skipped for an explicitly Unit-only run: those tests open no database, so there is nothing to
+// protect and no reason to require test-database configuration. Any other invocation — including
+// a bare `phpunit` or a `--filter` with no suite, both of which DO run the Integration suite — is
+// guarded.
+// ---------------------------------------------------------------------------
+(static function (): void {
+    $argv = $_SERVER['argv'] ?? [];
+
+    foreach ($argv as $i => $arg) {
+        if ($arg === '--testsuite' && ($argv[$i + 1] ?? '') === 'Unit') {
+            return;
+        }
+        if ($arg === '--testsuite=Unit') {
+            return;
+        }
+    }
+
+    \HSP\Tests\Support\IntegrationDatabaseGuard::enforce();
+})();
