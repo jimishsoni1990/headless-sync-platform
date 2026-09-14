@@ -32,6 +32,13 @@ env:
   HSP_TEST_PGSQL_USER: hsp
   HSP_TEST_PGSQL_PASSWORD: hsp_secret
   HSP_TEST_PGSQL_DATABASE: hsp_test
+  # Explicitly adopt the PostgreSQL test database (tests/Support/IntegrationDatabaseGuard).
+  # The destructive integration suite refuses to run against a database that has not positively
+  # identified itself as a test target, and adoption is NEVER implicit — an empty database is not
+  # evidence of a disposable one, since a freshly provisioned staging database is empty too.
+  # CI provisions a throwaway `hsp_test` service container per run, so it adopts it deliberately
+  # here. Adoption is still refused for any database holding HSP delivery data.
+  HSP_TEST_PGSQL_ADOPT: '1'
   HSP_TEST_MYSQL_HOST: 127.0.0.1
   HSP_TEST_MYSQL_PORT: '3306'
   HSP_TEST_MYSQL_USER: root

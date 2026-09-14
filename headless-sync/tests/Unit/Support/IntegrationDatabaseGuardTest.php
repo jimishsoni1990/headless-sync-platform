@@ -20,16 +20,16 @@ final class IntegrationDatabaseGuardTest extends TestCase
 {
     /**
      * @param array<string,mixed> $overrides
-     * @return array{serverReachable:bool,database:string|null,sentinelPresent:bool,hspSchemasPresent:bool,adoptRequested:bool}
+     * @return array{serverReachable:bool,database:string|null,sentinelPresent:bool,hspDataPresent:bool,adoptRequested:bool}
      */
     private static function facts(array $overrides = []): array
     {
         return [
-            'serverReachable'   => true,
-            'database'          => 'hsp_test',
-            'sentinelPresent'   => true,
-            'hspSchemasPresent' => true,
-            'adoptRequested'    => false,
+            'serverReachable' => true,
+            'database'        => 'hsp_test',
+            'sentinelPresent' => true,
+            'hspDataPresent'  => false,
+            'adoptRequested'  => false,
             ...$overrides,
         ];
     }
@@ -39,19 +39,42 @@ final class IntegrationDatabaseGuardTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * THE INCIDENT CASE. Credentials that reach a real delivery database: HSP schemas present,
-     * no sentinel. Must ABORT before any DROP SCHEMA runs.
+     * THE INCIDENT CASE. Credentials that reach a real delivery database: data present, no
+     * sentinel. Must ABORT before any DROP SCHEMA runs.
      */
-    public function test_refuses_a_database_holding_hsp_schemas_without_a_sentinel(): void
+    public function test_refuses_a_populated_database_without_a_sentinel(): void
     {
         [$outcome, $reason] = IntegrationDatabaseGuard::decide(self::facts([
-            'database'          => 'hsp',
-            'sentinelPresent'   => false,
-            'hspSchemasPresent' => true,
+            'database'        => 'hsp',
+            'sentinelPresent' => false,
+            'hspDataPresent'  => true,
         ]));
 
         self::assertSame(IntegrationDatabaseGuard::ABORT, $outcome);
         self::assertStringContainsString('cannot be distinguished from a real delivery database', $reason);
+    }
+
+    /**
+     * NO IMPLICIT FIRST-TIME ADOPTION — the hardening this model turns on.
+     *
+     * An EMPTY, unmarked database must ABORT, not adopt. A freshly provisioned staging or
+     * production database is empty too, so emptiness is not evidence of disposability; adopting
+     * it would stamp a durable test sentinel into it permanently.
+     */
+    public function test_refuses_an_empty_unmarked_database_and_does_not_adopt_it(): void
+    {
+        [$outcome, $reason] = IntegrationDatabaseGuard::decide(self::facts([
+            'sentinelPresent' => false,
+            'hspDataPresent'  => false,
+            'adoptRequested'  => false,
+        ]));
+
+        self::assertSame(
+            IntegrationDatabaseGuard::ABORT,
+            $outcome,
+            'An empty database must NOT be adopted implicitly — it may be a new staging database.',
+        );
+        self::assertStringContainsString('not evidence of a', $reason);
     }
 
     /**
@@ -76,9 +99,8 @@ final class IntegrationDatabaseGuardTest extends TestCase
     public function test_the_database_name_alone_does_not_authorize(): void
     {
         [$outcome] = IntegrationDatabaseGuard::decide(self::facts([
-            'database'          => 'hsp_test',
-            'sentinelPresent'   => false,
-            'hspSchemasPresent' => true,
+            'database'        => 'hsp_test',
+            'sentinelPresent' => false,
         ]));
 
         self::assertSame(
@@ -88,19 +110,41 @@ final class IntegrationDatabaseGuardTest extends TestCase
         );
     }
 
+    /**
+     * Even an EXPLICIT adoption request is refused for a database holding delivery data: a
+     * populated store is indistinguishable from production, and no environment variable may
+     * sign that away.
+     */
+    public function test_explicit_adoption_is_refused_for_a_database_holding_delivery_data(): void
+    {
+        [$outcome, $reason] = IntegrationDatabaseGuard::decide(self::facts([
+            'sentinelPresent' => false,
+            'hspDataPresent'  => true,
+            'adoptRequested'  => true,
+        ]));
+
+        self::assertSame(IntegrationDatabaseGuard::ABORT, $outcome);
+        self::assertStringContainsString('already holds HSP delivery', $reason);
+    }
+
     /** Refusal is an ABORT, never a skip — a silently skipped check reads like a passing one. */
-    public function test_refusal_is_never_expressed_as_allow(): void
+    public function test_refusal_is_never_expressed_as_allow_or_adopt(): void
     {
         $dangerous = [
-            self::facts(['database' => 'hsp', 'sentinelPresent' => false]),
-            self::facts(['database' => null]),
-            self::facts(['database' => 'production', 'sentinelPresent' => false]),
+            'live, populated, unmarked'  => self::facts([
+                'database' => 'hsp', 'sentinelPresent' => false, 'hspDataPresent' => true,
+            ]),
+            'no target configured'       => self::facts(['database' => null]),
+            'empty but unmarked'         => self::facts(['sentinelPresent' => false]),
+            'adopt requested, populated' => self::facts([
+                'sentinelPresent' => false, 'hspDataPresent' => true, 'adoptRequested' => true,
+            ]),
         ];
 
-        foreach ($dangerous as $i => $facts) {
+        foreach ($dangerous as $label => $facts) {
             [$outcome] = IntegrationDatabaseGuard::decide($facts);
-            self::assertNotSame(IntegrationDatabaseGuard::ALLOW, $outcome, "dangerous case {$i}");
-            self::assertNotSame(IntegrationDatabaseGuard::ADOPT, $outcome, "dangerous case {$i}");
+            self::assertNotSame(IntegrationDatabaseGuard::ALLOW, $outcome, $label);
+            self::assertNotSame(IntegrationDatabaseGuard::ADOPT, $outcome, $label);
         }
     }
 
@@ -112,6 +156,7 @@ final class IntegrationDatabaseGuardTest extends TestCase
     {
         [$outcome, $reason] = IntegrationDatabaseGuard::decide(self::facts([
             'sentinelPresent' => true,
+            'adoptRequested'  => false,
         ]));
 
         self::assertSame(IntegrationDatabaseGuard::ALLOW, $outcome);
@@ -119,38 +164,35 @@ final class IntegrationDatabaseGuardTest extends TestCase
     }
 
     /**
-     * CI path: a freshly provisioned service container has no HSP schemas, so there is no HSP
-     * data to lose and it is adopted automatically. This is what keeps CI zero-configuration.
+     * A retained test database keeps its schemas and rows between runs, so an existing sentinel
+     * authorizes it whatever its data state — the sentinel IS the proof of ownership, and
+     * requiring emptiness here would break every second run.
      */
-    public function test_adopts_a_virgin_database_automatically(): void
+    public function test_an_existing_sentinel_authorizes_without_an_adopt_request(): void
     {
-        [$outcome, $reason] = IntegrationDatabaseGuard::decide(self::facts([
-            'sentinelPresent'   => false,
-            'hspSchemasPresent' => false,
+        [$outcome] = IntegrationDatabaseGuard::decide(self::facts([
+            'sentinelPresent' => true,
+            'hspDataPresent'  => true,
+            'adoptRequested'  => false,
         ]));
 
-        self::assertSame(IntegrationDatabaseGuard::ADOPT, $outcome);
-        self::assertStringContainsString('no HSP schemas', $reason);
+        self::assertSame(IntegrationDatabaseGuard::ALLOW, $outcome);
     }
 
     /**
-     * A real test database that already ran the suite has schemas but no sentinel. It is adopted
-     * only on a deliberate one-time request — and adoption writes a DURABLE marker, so the env
-     * var is an action rather than a standing permission.
+     * The ONLY route to a sentinel: an explicit one-time request against a database with no
+     * delivery data to lose. This is the CI lifecycle — fresh database, explicit adoption.
      */
-    public function test_adopts_a_populated_database_only_on_explicit_request(): void
+    public function test_adopts_only_on_explicit_request_against_an_empty_database(): void
     {
-        $withoutRequest = IntegrationDatabaseGuard::decide(self::facts([
+        [$outcome, $reason] = IntegrationDatabaseGuard::decide(self::facts([
             'sentinelPresent' => false,
-            'adoptRequested'  => false,
-        ]));
-        $withRequest = IntegrationDatabaseGuard::decide(self::facts([
-            'sentinelPresent' => false,
+            'hspDataPresent'  => false,
             'adoptRequested'  => true,
         ]));
 
-        self::assertSame(IntegrationDatabaseGuard::ABORT, $withoutRequest[0]);
-        self::assertSame(IntegrationDatabaseGuard::ADOPT, $withRequest[0]);
+        self::assertSame(IntegrationDatabaseGuard::ADOPT, $outcome);
+        self::assertStringContainsString('HSP_TEST_PGSQL_ADOPT=1', $reason);
     }
 
     /**
@@ -169,7 +211,11 @@ final class IntegrationDatabaseGuardTest extends TestCase
         self::assertSame(IntegrationDatabaseGuard::ALLOW, $outcome);
     }
 
-    /** Unreachable outranks every other fact — there is simply nothing to destroy. */
+    /**
+     * Unreachable outranks every other fact — there is simply nothing to destroy.
+     *
+     * @param array<string,mixed> $overrides
+     */
     #[DataProvider('dangerousFactCombinations')]
     public function test_unreachable_server_is_always_allowed(array $overrides): void
     {
@@ -184,9 +230,11 @@ final class IntegrationDatabaseGuardTest extends TestCase
     public static function dangerousFactCombinations(): array
     {
         return [
-            'live database, no sentinel' => [['database' => 'hsp', 'sentinelPresent' => false]],
-            'no target configured'       => [['database' => null]],
-            'populated, unmarked'        => [['sentinelPresent' => false, 'hspSchemasPresent' => true]],
+            'live database, populated' => [
+                ['database' => 'hsp', 'sentinelPresent' => false, 'hspDataPresent' => true],
+            ],
+            'no target configured'     => [['database' => null]],
+            'empty, unmarked'          => [['sentinelPresent' => false]],
         ];
     }
 
@@ -207,7 +255,8 @@ final class IntegrationDatabaseGuardTest extends TestCase
      * PostgreSQL integration tests still drop the REAL schema names — that is deliberate, because
      * HSP hard-qualifies every schema and renaming them would make the tests materially different
      * from production. This asserts the destructive surface is what the guard assumes it is; if a
-     * new schema is dropped by the suite, the guard's virgin-database check must learn about it.
+     * new schema is dropped by the suite, the guard's data check must learn about it, or adoption
+     * could clear a database that actually holds delivery state.
      */
     public function test_the_destructive_surface_is_confined_to_the_known_hsp_schemas(): void
     {
@@ -238,9 +287,8 @@ final class IntegrationDatabaseGuardTest extends TestCase
         self::assertSame(
             ['commerce', 'content', 'system'],
             \array_keys($dropped),
-            'The integration suite drops a schema the guard does not treat as HSP data. Add it to '
-            . 'IntegrationDatabaseGuard::HSP_SCHEMAS, or the virgin-database check will adopt a '
-            . 'database that actually holds data.',
+            'The integration suite drops a schema the guard does not search for data. Add it to '
+            . 'IntegrationDatabaseGuard::HSP_SCHEMAS, or adoption could clear a populated database.',
         );
     }
 }
