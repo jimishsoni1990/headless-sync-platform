@@ -252,6 +252,9 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     {
         return SchemaObject::object([
             'slug'         => 'string',
+            // The canonical public page identity (Finding 005) — published on BOTH page surfaces,
+            // because an identity is only useful where the resource appears.
+            'path'         => self::pagePathSchema(),
             'title'        => 'string',
             'content'      => 'string',
             'status'       => 'string',
@@ -356,6 +359,31 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     // with no way to read data the contract deliberately publishes.
     // -------------------------------------------------------------------------
 
+    /**
+     * The canonical public page path — the value `GET /pages/{path}` takes, verbatim.
+     *
+     * NULLABLE via `type: ['string','null']` (OpenAPI 3.1), and the null is a real contract state,
+     * not an oversight: a page whose ancestor was never published has no reconstructable path
+     * (DECISION AE), and neither does one caught in a corrupt parent cycle. Such a page is not
+     * addressable through `GET /pages/{path}` either, so the contract says so rather than
+     * publishing a leaf slug that would 404.
+     *
+     * @return array<string,mixed>
+     */
+    private static function pagePathSchema(): array
+    {
+        return [
+            'type'        => ['string', 'null'],
+            'description' => 'Canonical public page identity: the full `/`-separated ancestor '
+                . 'path (e.g. about/team), usable verbatim as the {path} parameter of '
+                . 'GET /pages/{path}. A top-level page publishes its bare slug (e.g. about) — '
+                . 'no leading or trailing slash, no host, no /hsp/v1 prefix. Derived from the '
+                . 'projected hierarchy at read time, so a parent rename changes every '
+                . "descendant's path immediately. Null when the path cannot be reconstructed "
+                . 'because an ancestor was never published (DECISION AE); such a page is not '
+                . 'addressable, and no leaf-slug substitute is invented.',
+        ];
+    }
     /**
      * The resolved featured image PostResource/PageResource::featuredMedia() builds, or null.
      *

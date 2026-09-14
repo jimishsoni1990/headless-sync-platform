@@ -17,6 +17,12 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  * endpoints must not query tables directly. ADR-040 — no WordPress reads.
  * ADR-038 — transport-agnostic; no WP_REST_* types.
  *
+ * Every row this provider returns — listing or lookup — carries `path`, the canonical public page
+ * identity (Finding 005): the full `/`-separated ancestor path that `GET /hsp/v1/pages/{path}`
+ * takes. It is DERIVED at read time from `slug` + `parent_id` + `source_post_id`; there is no
+ * stored path column and no cache (DECISION AD ruling 3). NULL means the path is unreconstructable
+ * from the projection — see {@see findByPath()}'s known limit.
+ *
  * Listing sort order: (published_at DESC, id DESC) — deterministic tiebreaker
  * proves no skipped or duplicated rows when rows share the same published_at.
  *
@@ -68,6 +74,50 @@ final class PageQueryProvider implements QueryProviderInterface, HierarchicalQue
                     fm.slug AS fm_slug, fm.url AS fm_url, fm.alt_text AS fm_alt_text,
                     fm.mime_type AS fm_mime_type, fm.width AS fm_width, fm.height AS fm_height,
                     fm.sizes_jsonb AS fm_sizes_jsonb';
+
+    /**
+     * The ONE ancestor walk (DECISION AD ruling 4), shared by the listing and the single-page
+     * lookup so the two can never disagree about what a page's canonical path is.
+     *
+     * Walks UP from an anchor set — `leaf → parent → … → root` — prepending each ancestor's slug
+     * through `parent_id → source_post_id`, which rides `uq_content_pages_source_post_id`. The
+     * branch that reaches `next_parent = 0` carries the full ancestor path; a branch that cannot
+     * reach the root carries nothing, which is the honest answer for both an unprojected ancestor
+     * (DECISION AE) and a corrupt parent cycle.
+     *
+     * `%s` is the ANCHOR relation — the requested cursor window for a listing, the candidate
+     * leaves for a lookup — so the recursion costs anchor rows × ancestor depth and never walks
+     * the whole table to answer for one page of results. `%d` is {@see MAX_ANCESTOR_DEPTH}, the
+     * corruption guard that terminates a cycle (a cycle can never reach `parent_id = 0`).
+     *
+     * Correlation is on `id`, the projection PK, so each anchor row matches back to its own path
+     * and hierarchy can never leak across rows.
+     */
+    private const ANCESTRY_CTE =
+        "ancestry AS (
+                 SELECT anchor.id         AS row_id,
+                        anchor.parent_id  AS next_parent,
+                        anchor.slug::text AS path,
+                        1                 AS depth
+                 FROM   %s anchor
+
+                 UNION ALL
+
+                 SELECT a.row_id,
+                        anc.parent_id,
+                        anc.slug || '/' || a.path,
+                        a.depth + 1
+                 FROM   ancestry a
+                 JOIN   content.pages anc ON anc.source_post_id = a.next_parent
+                 WHERE  a.next_parent <> 0
+                   AND  a.depth < %d
+             )";
+
+    /** {@see ANCESTRY_CTE} bound to one anchor relation. */
+    private static function ancestryCte(string $anchor): string
+    {
+        return sprintf(self::ANCESTRY_CTE, $anchor, self::MAX_ANCESTOR_DEPTH);
+    }
 
     public function __construct(
         private readonly DatabaseConnectionInterface $db,
@@ -128,17 +178,35 @@ final class PageQueryProvider implements QueryProviderInterface, HierarchicalQue
 
         // Fetch limit+1 to detect whether a next page exists.
         $params[] = $limit + 1;
-        $fetchSql  = sprintf(
-            'SELECT %s
-             FROM content.pages p
+
+        // The cursor window is selected FIRST, and only those rows are walked up to the root
+        // (Finding 005): `paged` is the eligibility + ordering + LIMIT the listing has always
+        // run, untouched, and the ancestor recursion anchors on its output. So the hierarchy
+        // cost is page size × depth rather than the whole site's page tree, and the path is a
+        // SCALAR sub-select per row — it cannot multiply, drop or reorder rows the way a join
+        // could, which is what keeps the cursor contract intact.
+        $fetchSql = sprintf(
+            'WITH RECURSIVE paged AS (
+                 SELECT %s
+                 FROM content.pages p
+                 %s
+                 WHERE %s
+                 ORDER BY p.published_at DESC, p.id DESC
+                 LIMIT $%d
+             ),
              %s
-             WHERE %s
-             ORDER BY p.published_at DESC, p.id DESC
-             LIMIT $%d',
+             SELECT paged.*,
+                    (SELECT a.path
+                     FROM   ancestry a
+                     WHERE  a.row_id = paged.id AND a.next_parent = 0
+                     LIMIT  1) AS path
+             FROM paged
+             ORDER BY paged.published_at DESC, paged.id DESC',
             self::COLUMNS,
             self::FEATURED_MEDIA_JOIN,
             $whereClause,
-            count($params)
+            count($params),
+            self::ancestryCte('paged')
         );
 
         $rows = $this->db->query($fetchSql, $params);
@@ -205,6 +273,10 @@ final class PageQueryProvider implements QueryProviderInterface, HierarchicalQue
      * NO stored path column, no cache, no new persistence: the path is derived from
      * `slug` + `parent_id` + `source_post_id` at request time, so a parent rename is reflected as
      * soon as the parent's own projection row is updated — nothing downstream can go stale.
+     *
+     * The resolved path is RETURNED on the row as `path` (Finding 005) — the value the CTE
+     * reconstructed, not the caller's argument echoed back — so a page carries the same canonical
+     * identity here and in the listing.
      */
     public function findByPath(string $path): ?array
     {
@@ -217,39 +289,23 @@ final class PageQueryProvider implements QueryProviderInterface, HierarchicalQue
 
         $rows = $this->db->query(
             sprintf(
-                "WITH RECURSIVE ancestry AS (
-                 SELECT leaf.source_post_id AS leaf_id,
-                        leaf.parent_id      AS next_parent,
-                        leaf.slug::text     AS path,
-                        1                   AS depth
-                 FROM   content.pages leaf
-                 WHERE  leaf.slug = \$1
-                   AND  leaf.deleted_at IS NULL
-                   AND  leaf.status = 'publish'
-
-                 UNION ALL
-
-                 SELECT a.leaf_id,
-                        anc.parent_id,
-                        anc.slug || '/' || a.path,
-                        a.depth + 1
-                 FROM   ancestry a
-                 JOIN   content.pages anc ON anc.source_post_id = a.next_parent
-                 WHERE  a.next_parent <> 0
-                   AND  a.depth < %d
-             )
-             SELECT %s
-             FROM   content.pages p
+                "WITH RECURSIVE %s
+             SELECT %s, matched.path
+             FROM   (SELECT row_id, path
+                     FROM   ancestry
+                     WHERE  next_parent = 0 AND path = \$2
+                     ORDER  BY row_id
+                     LIMIT  1) matched
+             JOIN   content.pages p ON p.id = matched.row_id
              %s
-             WHERE  p.source_post_id = (
-                        SELECT leaf_id
-                        FROM   ancestry
-                        WHERE  next_parent = 0 AND path = \$2
-                        ORDER  BY leaf_id
-                        LIMIT  1
-                    )
              LIMIT 1",
-                self::MAX_ANCESTOR_DEPTH,
+                self::ancestryCte(
+                    "(SELECT leaf.id, leaf.parent_id, leaf.slug
+                       FROM   content.pages leaf
+                       WHERE  leaf.slug = \$1
+                         AND  leaf.deleted_at IS NULL
+                         AND  leaf.status = 'publish')"
+                ),
                 self::COLUMNS,
                 self::FEATURED_MEDIA_JOIN,
             ),

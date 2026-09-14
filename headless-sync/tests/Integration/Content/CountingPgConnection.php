@@ -19,9 +19,17 @@ final class CountingPgConnection extends PostgresDatabaseConnection
 {
     public int $queries = 0;
 
+    /** The last statement executed — so an EXPLAIN can run the REAL query, never a hand-copy. */
+    public string $lastSql = '';
+
+    /** @var list<mixed> */
+    public array $lastParams = [];
+
     public function query(string $sql, array $params = []): array
     {
         $this->queries++;
+        $this->lastSql    = $sql;
+        $this->lastParams = $params;
 
         return parent::query($sql, $params);
     }

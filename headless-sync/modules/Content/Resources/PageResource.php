@@ -16,10 +16,16 @@ use HSP\Core\Delivery\JsonMap;
  * ADR-038 — transport-agnostic; no WP_REST_* types.
  *
  * Contract fields exposed:
- *   slug, title, content, status, parent_id, menu_order, published_at, updated_at, meta
+ *   slug, path, title, content, status, parent_id, menu_order, published_at, updated_at, meta
  *
  * meta_jsonb is decoded from the JSON string the DB driver returns; exposed as 'meta'.
  * Timestamps are returned as ISO-8601 strings (UTC).
+ *
+ * `path` is NULL only when the projection cannot reconstruct one: an ancestor that was never
+ * published has no row to contribute its slug (DECISION AE), and a corrupt parent cycle never
+ * reaches the root. Null says "this page has no canonical address", which is the truth — the
+ * lookup endpoint cannot resolve it either. Publishing the bare leaf slug instead would hand
+ * consumers an address that 404s, reviving exactly the fallback DECISION AF removed.
  */
 final class PageResource implements ResourceInterface
 {
@@ -27,6 +33,11 @@ final class PageResource implements ResourceInterface
     {
         return [
             'slug'        => $row['slug'],
+            // The canonical public page identity (Finding 005): the full ancestor path, exactly
+            // what GET /pages/{path} takes. Supplied ALREADY RESOLVED by the Query Provider —
+            // hierarchy is query logic, and a Resource that walked parents would be a second
+            // hierarchy implementation free to disagree with the first (Doc 9 §11).
+            'path'        => isset($row['path']) ? (string) $row['path'] : null,
             'title'       => $row['title'],
             'content'     => $row['content'],
             'status'      => $row['status'],
