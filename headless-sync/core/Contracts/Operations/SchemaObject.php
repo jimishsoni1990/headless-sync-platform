@@ -27,18 +27,26 @@ final class SchemaObject
     }
 
     /**
-     * Build an `object` schema from a `field => JSON-Schema-type` map.
+     * Build an `object` schema from a `field => shape` map.
      *
-     * A convenience for the common case of a flat published resource whose fields are simple
-     * scalars (or `object`/`array` where a nested shape is not further specified at MVP).
+     * A value may be either:
+     *   - a JSON Schema TYPE NAME (`'string'`, `'integer'`, …) — the flat-scalar shorthand, or
+     *   - a JSON Schema FRAGMENT (an array) — embedded VERBATIM, so a module can describe a
+     *     nested object, an array of objects, a nullable object (`['object','null']`) or an
+     *     open map (`additionalProperties`) without the field collapsing to a bare
+     *     `type: object` the consumer cannot generate a type from (ADR-055 (c)).
      *
-     * @param array<string,string> $properties field name → JSON Schema type
+     * The fragment is still written out EXPLICITLY by the owning module — nothing here infers a
+     * shape by reflecting over a Resource or a projection row (ADR-055 (a)).
+     *
+     * @param array<string,string|array<string,mixed>> $properties field name → JSON Schema type
+     *                                                             name, or a verbatim fragment
      */
     public static function object(array $properties): self
     {
         $props = [];
-        foreach ($properties as $name => $type) {
-            $props[$name] = ['type' => $type];
+        foreach ($properties as $name => $shape) {
+            $props[$name] = is_array($shape) ? $shape : ['type' => $shape];
         }
 
         return new self([

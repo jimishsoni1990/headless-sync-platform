@@ -144,6 +144,137 @@ final class OpenApiGeneratorTest extends TestCase
         self::assertSame('v1', $op['x-hsp-version']);
     }
 
+    // -------------------------------------------------------------------------
+    // Nested schema fidelity (ADR-055 (c)) — the generator must carry a nested fragment
+    // through VERBATIM. A field that arrives as a bare `type: object` on the far side leaves a
+    // generated consumer type unable to read data the contract deliberately publishes.
+    // -------------------------------------------------------------------------
+
+    public function test_nested_object_properties_and_required_survive_generation(): void
+    {
+        $item = SchemaObject::object([
+            'slug'           => 'string',
+            'featured_media' => [
+                'type'       => ['object', 'null'],
+                'properties' => [
+                    'url'   => ['type' => 'string'],
+                    'width' => ['type' => 'integer'],
+                ],
+                'required'   => ['url', 'width'],
+            ],
+        ]);
+
+        $schema = $this->responseSchemaFor($item);
+        $nested = $schema['properties']['featured_media'];
+
+        // NULLABLE nested object: OpenAPI 3.1 / JSON Schema 2020-12 type union, not `nullable: true`.
+        self::assertSame(['object', 'null'], $nested['type']);
+        self::assertSame('string', $nested['properties']['url']['type']);
+        self::assertSame('integer', $nested['properties']['width']['type']);
+        self::assertSame(['url', 'width'], $nested['required']);
+        // The flat-scalar shorthand still works alongside a fragment.
+        self::assertSame('string', $schema['properties']['slug']['type']);
+    }
+
+    public function test_array_of_nested_objects_survives_generation(): void
+    {
+        $item = SchemaObject::object([
+            'tags' => [
+                'type'  => 'array',
+                'items' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'slug' => ['type' => 'string'],
+                        'name' => ['type' => 'string'],
+                    ],
+                    'required'   => ['slug', 'name'],
+                ],
+            ],
+        ]);
+
+        $tags = $this->responseSchemaFor($item)['properties']['tags'];
+
+        self::assertSame('array', $tags['type']);
+        self::assertSame('object', $tags['items']['type']);
+        self::assertArrayHasKey('slug', $tags['items']['properties']);
+        self::assertSame(['slug', 'name'], $tags['items']['required']);
+    }
+
+    public function test_open_map_additional_properties_survives_generation(): void
+    {
+        $item = SchemaObject::object([
+            // Open key set, KNOWN value shape — the sizes/attributes case.
+            'sizes' => [
+                'type'                 => 'object',
+                'additionalProperties' => [
+                    'type'       => 'object',
+                    'properties' => ['url' => ['type' => 'string']],
+                    'required'   => ['url'],
+                ],
+            ],
+            // Deliberately opaque map — stays opaque.
+            'meta'  => ['type' => 'object', 'additionalProperties' => true],
+        ]);
+
+        $props = $this->responseSchemaFor($item)['properties'];
+
+        self::assertSame('object', $props['sizes']['additionalProperties']['type']);
+        self::assertSame('string', $props['sizes']['additionalProperties']['properties']['url']['type']);
+        self::assertTrue($props['meta']['additionalProperties']);
+        self::assertArrayNotHasKey('properties', $props['meta'], 'An opaque map must stay opaque.');
+    }
+
+    public function test_nested_schemas_survive_the_cursor_envelope_wrapping(): void
+    {
+        $item = SchemaObject::object([
+            'prices' => [
+                'type'       => 'object',
+                'properties' => ['price' => ['type' => ['string', 'null']]],
+                'required'   => ['price'],
+            ],
+        ]);
+
+        $descriptor = new EndpointDescriptor(
+            method: 'GET',
+            route: '/products',
+            namespace: 'hsp/v1',
+            displayGroup: 'Commerce',
+            description: 'List products.',
+            responseSchema: $item->asCursorPage(),
+            paginated: true,
+        );
+
+        $schema = (new OpenApiGenerator())->generate([$descriptor])
+            ['paths']['/hsp/v1/products']['get']['responses']['200']['content']['application/json']['schema'];
+        $prices = $schema['properties']['data']['items']['properties']['prices'];
+
+        self::assertSame(['string', 'null'], $prices['properties']['price']['type']);
+        self::assertSame(['price'], $prices['required']);
+    }
+
+    /**
+     * Generate a single-resource GET and return its 200 response schema.
+     *
+     * @return array<string,mixed>
+     */
+    private function responseSchemaFor(SchemaObject $item): array
+    {
+        $descriptor = new EndpointDescriptor(
+            method: 'GET',
+            route: '/posts/{slug}',
+            namespace: 'hsp/v1',
+            displayGroup: 'Content',
+            description: 'Fetch a post.',
+            responseSchema: $item,
+        );
+
+        /** @var array<string,mixed> $schema */
+        $schema = (new OpenApiGenerator())->generate([$descriptor])
+            ['paths']['/hsp/v1/posts/{slug}']['get']['responses']['200']['content']['application/json']['schema'];
+
+        return $schema;
+    }
+
     private function publicGet(string $route): EndpointDescriptor
     {
         return new EndpointDescriptor(

@@ -259,10 +259,13 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'menu_order'   => 'integer',
             'published_at' => 'string',
             'updated_at'   => 'string',
-            'meta'         => 'object',
+            'meta'         => self::openMapSchema(
+                'WordPress post meta the projection carries. Deliberately OPEN: the key set '
+                . 'belongs to the site, not to the published contract.'
+            ),
             // Resolved featured image, or null (P1B-S2). Nullable because the reference is soft
             // (ADR-013): no image set, never projected, or soft-deleted all read as null.
-            'featured_media' => 'object',
+            'featured_media' => self::featuredMediaSchema(),
         ]);
     }
 
@@ -278,12 +281,15 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'author'       => 'string',
             'published_at' => 'string',
             'updated_at'   => 'string',
-            'meta'         => 'object',
+            'meta'         => self::openMapSchema(
+                'WordPress post meta the projection carries. Deliberately OPEN: the key set '
+                . 'belongs to the site, not to the published contract.'
+            ),
             // Resolved featured image, or null (P1B-S2). Nullable because the reference is soft
             // (ADR-013): no image set, never projected, or soft-deleted all read as null.
-            'featured_media' => 'object',
+            'featured_media' => self::featuredMediaSchema(),
             // The post's tags (P1B-S3): always an array — empty when untagged, never null.
-            'tags'         => 'array',
+            'tags'         => self::tagListSchema(),
         ]);
     }
 
@@ -318,11 +324,121 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'description'    => 'string',
             'width'          => 'integer',
             'height'         => 'integer',
-            'sizes'          => 'object',
+            'sizes'          => self::mediaSizesSchema(),
             'attached_to_id' => 'integer',
             'published_at'   => 'string',
             'updated_at'     => 'string',
-            'meta'           => 'object',
+            'meta'           => self::openMapSchema(
+                'WordPress attachment meta the projection carries. Deliberately OPEN: the key '
+                . 'set belongs to the site, not to the published contract.'
+            ),
         ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Nested published shapes (ADR-055 (c))
+    //
+    // These are written out EXPLICITLY, exactly as the Resources build them. Nothing here
+    // reflects over a Resource or infers a shape from a projection row (ADR-055 (a)) — a
+    // nested field that stayed a bare `type: object` would leave a generated consumer type
+    // with no way to read data the contract deliberately publishes.
+    // -------------------------------------------------------------------------
+
+    /**
+     * The resolved featured image PostResource/PageResource::featuredMedia() builds, or null.
+     *
+     * NULLABLE via `type: ['object','null']` (OpenAPI 3.1 / JSON Schema 2020-12): the reference
+     * is soft (ADR-013), so no image set, the attachment never projected, and the attachment
+     * soft-deleted all read as null. Every property is present whenever the object itself is —
+     * the Resource emits all seven unconditionally — so all seven are `required`.
+     *
+     * @return array<string,mixed>
+     */
+    private static function featuredMediaSchema(): array
+    {
+        return [
+            'type'        => ['object', 'null'],
+            'description' => 'Resolved featured image, or null when no image is set, the '
+                . 'attachment never projected, or it was soft-deleted (ADR-013).',
+            'properties'  => [
+                'slug'      => ['type' => 'string'],
+                'url'       => ['type' => 'string', 'description' => 'Absolute URL of the original.'],
+                'alt_text'  => ['type' => 'string'],
+                'mime_type' => ['type' => 'string'],
+                'width'     => ['type' => 'integer'],
+                'height'    => ['type' => 'integer'],
+                'sizes'     => self::mediaSizesSchema(),
+            ],
+            'required'    => ['slug', 'url', 'alt_text', 'mime_type', 'width', 'height', 'sizes'],
+        ];
+    }
+
+    /**
+     * Generated size variants: an OPEN map keyed by registered WordPress size name whose VALUES
+     * are a fixed, closed shape.
+     *
+     * `additionalProperties` rather than a property list because the key set is the site's —
+     * a theme registers whatever sizes it likes — while every value is the same four fields.
+     * Freezing the keys would be wrong on the next site; leaving the whole thing opaque would
+     * lose the value shape, which IS platform-owned.
+     *
+     * @return array<string,mixed>
+     */
+    private static function mediaSizesSchema(): array
+    {
+        return [
+            'type'                 => 'object',
+            'description'          => 'Generated size variants keyed by registered size name. The '
+                . 'key set is site-specific; each value carries an already-resolved absolute URL '
+                . '(the transformer resolved it write-side — Rule 2).',
+            'additionalProperties' => [
+                'type'       => 'object',
+                'properties' => [
+                    'url'       => ['type' => 'string'],
+                    'width'     => ['type' => 'integer'],
+                    'height'    => ['type' => 'integer'],
+                    'mime_type' => ['type' => 'string'],
+                ],
+                'required'   => ['url', 'width', 'height', 'mime_type'],
+            ],
+        ];
+    }
+
+    /**
+     * The post's tags (P1B-S3), as PostQueryProvider aggregates them: `{slug, name}` pairs
+     * ordered by slug. Always an array — empty when untagged, never null.
+     *
+     * @return array<string,mixed>
+     */
+    private static function tagListSchema(): array
+    {
+        return [
+            'type'        => 'array',
+            'description' => "The post's tags, ordered by slug. Empty when untagged; never null.",
+            'items'       => [
+                'type'       => 'object',
+                'properties' => [
+                    'slug' => ['type' => 'string'],
+                    'name' => ['type' => 'string'],
+                ],
+                'required'   => ['slug', 'name'],
+            ],
+        ];
+    }
+
+    /**
+     * An INTENTIONALLY OPAQUE map: the key set belongs to the site, not to the published
+     * contract, so it is described as an open object rather than frozen into a closed property
+     * list that would be wrong on the next install. Opaque by decision, not by omission.
+     *
+     * @return array<string,mixed>
+     */
+    private static function openMapSchema(string $description): array
+    {
+        return [
+            'type'                 => 'object',
+            'description'          => $description,
+            'additionalProperties' => true,
+        ];
     }
 }

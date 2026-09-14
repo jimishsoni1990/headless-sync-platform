@@ -258,12 +258,12 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             'description' => 'string',
             'status'      => 'string',
             // Exact decimal strings, never JSON numbers (Requirement C).
-            'prices'      => 'object',
+            'prices'      => self::pricesSchema(),
             // taxonomy => selected value. An EMPTY value means "any value of this attribute",
             // which is not the same as the attribute being absent.
-            'attributes'  => 'object',
+            'attributes'  => self::variationAttributesSchema(),
             // Attachment id reference; content.media owns the projection (AG-10).
-            'media'       => 'object',
+            'media'       => self::variationMediaSchema(),
             'menu_order'  => 'integer',
         ]);
     }
@@ -317,15 +317,185 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             'catalog_visibility' => 'string',
             'featured'           => 'boolean',
             // Exact decimal strings, never JSON numbers (Requirement C).
-            'prices'             => 'object',
+            'prices'             => self::pricesSchema(),
             // Attachment id references; content.media owns the projection (AG-10).
-            'media'              => 'object',
+            'media'              => self::productMediaSchema(),
             // Joined from commerce.inventory at read time, never stored on the product (AG-8).
             // Every field inside is nullable, and null means UNKNOWN rather than out of stock.
-            'stock'              => 'object',
+            'stock'              => self::stockSchema(),
             'published_at'       => 'string',
             'updated_at'         => 'string',
-            'meta'               => 'object',
+            'meta'               => self::openMapSchema(
+                'Product meta the projection carries. Deliberately OPEN: the key set belongs to '
+                . 'the store, not to the published contract.'
+            ),
         ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Nested published shapes (ADR-055 (c))
+    //
+    // Written out EXPLICITLY, exactly as ProductResource / VariationResource build them.
+    // Nothing here reflects over a Resource or infers a shape from a projection row
+    // (ADR-055 (a)) — a nested field left as a bare `type: object` gives a generated consumer
+    // type no way to read data the contract deliberately publishes.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Money, shared by products and variations.
+     *
+     * Every member is `string|null`, NEVER a JSON number: a number would hand consumers a binary
+     * float for a decimal quantity, which is how 19.99 becomes 19.989999999999998 in a cart total
+     * (Requirement C). Null means the store has not set that price — `sale_price` is null on most
+     * products. All three keys are always present, so all three are `required`.
+     *
+     * @return array<string,mixed>
+     */
+    private static function pricesSchema(): array
+    {
+        return [
+            'type'        => 'object',
+            'description' => 'Exact decimal strings, never JSON numbers (Requirement C). A null '
+                . 'member means the store has not set that price.',
+            'properties'  => [
+                'price'         => ['type' => ['string', 'null'], 'description' => 'Effective price.'],
+                'regular_price' => ['type' => ['string', 'null']],
+                'sale_price'    => ['type' => ['string', 'null']],
+            ],
+            'required'    => ['price', 'regular_price', 'sale_price'],
+        ];
+    }
+
+    /**
+     * Product media: attachment id REFERENCES only (AG-10). `content.media` remains the single
+     * attachment projection, so a consumer resolves these against `/hsp/v1/media` — Commerce
+     * does not duplicate attachment state and does not require the Content module to be active.
+     *
+     * `featured_id` is 0 when the product has no featured image (the Resource casts a missing id
+     * to 0 rather than null), and `gallery_ids` is an empty list when there is no gallery.
+     *
+     * @return array<string,mixed>
+     */
+    private static function productMediaSchema(): array
+    {
+        return [
+            'type'        => 'object',
+            'description' => 'WordPress attachment id references. Resolve them against the '
+                . 'media endpoint, which owns attachment delivery; Commerce publishes the '
+                . 'reference only.',
+            'properties'  => [
+                'featured_id' => [
+                    'type'        => 'integer',
+                    'description' => 'Featured attachment id; 0 when the product has none.',
+                ],
+                'gallery_ids' => [
+                    'type'        => 'array',
+                    'items'       => ['type' => 'integer'],
+                    'description' => 'Gallery attachment ids in store order; empty when there is no gallery.',
+                ],
+            ],
+            'required'    => ['featured_id', 'gallery_ids'],
+        ];
+    }
+
+    /**
+     * Variation media: a single attachment id reference, with no gallery — WooCommerce gives a
+     * variation one image, not a gallery (AG-10 as above).
+     *
+     * @return array<string,mixed>
+     */
+    private static function variationMediaSchema(): array
+    {
+        return [
+            'type'        => 'object',
+            'description' => 'WordPress attachment id reference. Resolve it against the media '
+                . 'endpoint, which owns attachment delivery.',
+            'properties'  => [
+                'featured_id' => [
+                    'type'        => 'integer',
+                    'description' => 'Variation image attachment id; 0 when the variation has none.',
+                ],
+            ],
+            'required'    => ['featured_id'],
+        ];
+    }
+
+    /**
+     * Stock, joined from `commerce.inventory` at read time (AG-8).
+     *
+     * EVERY member is nullable and null means UNKNOWN — a product whose inventory row has not
+     * projected yet — which is deliberately NOT the same as out of stock (AG-8 / AG-14). A
+     * consumer that chooses to treat null as false is making its own call; the contract does not
+     * make it for them, which is exactly why the nullability is published rather than smoothed
+     * over. `quantity` is null for both "not tracked" and "not yet known"; `managed` tells them
+     * apart. All four keys are always present.
+     *
+     * @return array<string,mixed>
+     */
+    private static function stockSchema(): array
+    {
+        return [
+            'type'        => 'object',
+            'description' => 'Inventory joined at read time (AG-8). NULL means UNKNOWN — the '
+                . 'inventory row has not projected — which is NOT the same as out of stock.',
+            'properties'  => [
+                'status'     => [
+                    'type'        => ['string', 'null'],
+                    'description' => "WooCommerce stock status, e.g. 'instock'. Null = unknown.",
+                ],
+                'managed'    => [
+                    'type'        => ['boolean', 'null'],
+                    'description' => 'Whether the store tracks quantity for this item. Null = unknown.',
+                ],
+                'quantity'   => [
+                    'type'        => ['integer', 'null'],
+                    'description' => 'Null for BOTH "not tracked" and "not yet known" — `managed` '
+                        . 'is what tells them apart.',
+                ],
+                'backorders' => ['type' => ['string', 'null']],
+            ],
+            'required'    => ['status', 'managed', 'quantity', 'backorders'],
+        ];
+    }
+
+    /**
+     * A variation's selected attribute values: an OPEN map of attribute taxonomy name
+     * (`pa_colour`) to the selected term slug.
+     *
+     * `additionalProperties` rather than a property list because attribute taxonomies are
+     * DYNAMIC — an operator defines `pa_colour` whenever they like — so there is no closed key
+     * set to publish. The VALUE type is platform-owned and therefore described.
+     *
+     * An EMPTY string value means "any value of this attribute", which is not the same as the
+     * attribute being absent from the map; a consumer matching a shopper's selection needs both.
+     *
+     * @return array<string,mixed>
+     */
+    private static function variationAttributesSchema(): array
+    {
+        return [
+            'type'                 => 'object',
+            'description'          => 'Selected attribute values keyed by attribute taxonomy name '
+                . '(e.g. pa_colour). The key set is store-defined. An EMPTY value means the '
+                . 'variation matches ANY value of that attribute — not the same as the attribute '
+                . 'being absent.',
+            'additionalProperties' => ['type' => 'string'],
+        ];
+    }
+
+    /**
+     * An INTENTIONALLY OPAQUE map: the key set belongs to the store, not to the published
+     * contract, so it is described as an open object rather than frozen into a closed property
+     * list that would be wrong on the next store. Opaque by decision, not by omission.
+     *
+     * @return array<string,mixed>
+     */
+    private static function openMapSchema(string $description): array
+    {
+        return [
+            'type'                 => 'object',
+            'description'          => $description,
+            'additionalProperties' => true,
+        ];
     }
 }

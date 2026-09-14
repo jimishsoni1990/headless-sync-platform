@@ -68,4 +68,42 @@ final class EndpointMetadataValueObjectsTest extends TestCase
         self::assertSame(['string', 'null'], $envelope['properties']['next_cursor']['type']);
         self::assertSame(['data', 'next_cursor'], $envelope['required']);
     }
+
+    /**
+     * A property value that is an ARRAY is a JSON Schema fragment and must be embedded verbatim
+     * — that is what lets a module publish a nested object, a nullable object, an array of
+     * objects or an open map instead of a bare `type: object` (ADR-055 (c)).
+     */
+    public function test_schema_object_embeds_a_nested_fragment_verbatim(): void
+    {
+        $fragment = [
+            'type'       => ['object', 'null'],
+            'properties' => ['url' => ['type' => 'string']],
+            'required'   => ['url'],
+        ];
+
+        $schema = SchemaObject::object([
+            'slug'           => 'string',
+            'featured_media' => $fragment,
+        ])->schema;
+
+        self::assertSame($fragment, $schema['properties']['featured_media']);
+        // The flat shorthand is untouched — existing descriptors keep working unchanged.
+        self::assertSame(['type' => 'string'], $schema['properties']['slug']);
+    }
+
+    public function test_cursor_envelope_preserves_a_nested_item_fragment(): void
+    {
+        $envelope = SchemaObject::object([
+            'tags' => [
+                'type'  => 'array',
+                'items' => ['type' => 'object', 'properties' => ['slug' => ['type' => 'string']]],
+            ],
+        ])->asCursorPage()->schema;
+
+        $tags = $envelope['properties']['data']['items']['properties']['tags'];
+
+        self::assertSame('array', $tags['type']);
+        self::assertArrayHasKey('slug', $tags['items']['properties']);
+    }
 }
