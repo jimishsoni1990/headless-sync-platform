@@ -10,6 +10,58 @@
 
 **Current phase:** **Phase 2 — WooCommerce Catalog: COMPLETE (P2-S0 … P2-S7 all shipped).** WooCommerce is the second independent HSP domain module, and the success test was never "products synchronize" — it was that this happened **without special-casing Commerce in Core**. It did: a repo-wide assertion proves there is no reference to `HSP\Modules\Commerce` anywhere under `core/`, and none to `HSP\Modules\Content` anywhere under `modules/Commerce/`. Six Commerce aggregates ship — product, product category, attribute definition, `pa_*` attribute term, product variation, inventory — each with capture, projection, delivery, replay, reconciliation and a proven create → update → delete → tombstone → replay lifecycle. The two-module system test runs both domains through one real bounded cycle on live MySQL + PostgreSQL. **Measured: mixed-domain worst-case sync latency is ≈20.1 s against the 30 s SLA — 9.9 s of margin, so Commerce did NOT consume the headroom** and DECISION AG Part 5's STOP-and-flag was not triggered. **Both flags raised in Phase 2 are now RESOLVED by architect ruling (2026-09-08): DECISION AH** closes FLAG-COMMPERMA-1 as Case B authorised with implementation scheduled into Phase 4 — architecture decided, not an open gap — and **DECISION AI** closes FLAG-PERFCYCLE-1 as Option (a), keeping the threshold unchanged and moving enforcement to a controlled CI performance gate (`HSP_PERFORMANCE_GATE=1`). **No open flags.** FLAG-LIFECYCLE-1 was raised and resolved the same day: live-site testing found AG-12's automatic activation transition built but never invoked, and AG-12 had already pre-authorised the correction, so `ModuleLifecycleRunner` now drives it from the bounded WP-Cron cycle — **proven live: a torn-down Commerce module converged its full catalog in ONE cycle with no reactivation, no manual migrate and no manual reconcile.**
 
+**Last updated:** 2026-09-14 (Finding 003 — **post responses now expose typed public category
+references.** A consumer holding a post could not tell which categories it belonged to. HSP
+published category resources and accepted `?category=` as a *filter input*, but the post resource
+carried no category field at all, so a frontend had to invent the relationship or guess. The
+relationship data already existed in `content.entity_taxonomies` and had been reliable since
+Finding 004 — **this was a read-side omission, not missing data**, which is why it needed no
+migration, no new persistence and no architecture decision. **Published contract:** `categories`
+alongside `tags`, reusing the taxonomy-reference shape tags established in P1B-S3 —
+`{slug, name}` pairs, `slug` being the public addressing identity (the same value `?category=`
+accepts and what a consumer routes on) and `name` the label. **All currently valid assigned
+categories** are exposed; **deterministic slug ordering**; **no primary-category semantics**;
+**no internal IDs**; **projection-only**; **no N+1**. **The scope rule was the substance, not the
+plumbing.** WordPress defines no universal primary category, so electing one — first row, lowest
+id, alphabetically first — would be a presentation policy dressed up as source truth, and that
+choice belongs to the consumer. Two regression tests fail if `primary_category` / `is_primary` /
+a singular `category` ever appears, and a third fails if any identifier (projection UUID,
+`source_term_id`, WP term id) leaks into a reference — ADR-040 and DECISION AJ (AJ-2) both hold.
+**Implementation is one more correlated `json_agg` scalar subquery beside the tags one**, differing
+only in the `taxonomy_type` discriminator; the two now share one SQL template, one Resource decoder
+and one OpenAPI schema helper. **Scalar, deliberately:** it answers once per post row and cannot
+multiply parent rows the way a join would, so a post in three categories still appears exactly once
+and the cursor keeps its guarantees — no `DISTINCT`, no pagination change. **One query per page at
+any page size**, proven with a counting connection against live PostgreSQL (20-row page = 1 query).
+**DECISION AJ pays off at read time too:** the hop goes through `source_term_id`, so a relationship
+written before its term projected resolves the moment that term lands — asserted by comparing the
+owning post's `checksum` and `synced_at` before and after and finding them identical, i.e. **no
+rewrite of the post is required**. The read path inherits AJ's order-independence instead of
+recreating there the dependency AJ removed at write time. **No index was added, and the
+investigation is why.** `content.taxonomies` holds terms, not content: at 1,000 terms PostgreSQL
+correctly prices a scan of the small table below repeated index lookups (8.9 ms/page), and at
+50,000 terms it flips to a Memoized index scan on `uq_content_taxonomies_source_term_id` on its own
+(10.4 ms/page). An initial "never a seq scan" assertion **failed, and the assertion was wrong, not
+the query** — it would have demanded the planner make the worse choice on a normal site. The tests
+now pin what is load-bearing: the per-post link lookup rides `pk_content_entity_taxonomies` and is
+never a seq scan, and the term hop demonstrably uses the existing unique index once terms are many.
+**Live verification against WordPress source truth: 14 posts compared, 0 category-set mismatches, 9
+multi-category posts, list/detail disagreements 0** — actual sets compared, not counts — and live
+payloads validated against the **live** generated OpenAPI with the project's own pinned AJV across
+all three arms (empty `[]`, one item, many items). **Live limitation, stated rather than papered
+over:** the site has no `post_tag` terms, so the category/tag slug-collision path is proven by
+fixture and live-PostgreSQL coverage only; no live content was modified to manufacture one. Unit
+1681 ✅ · Content Integration 151 ✅ · full Integration 367 ✅ **post-commit on a clean tree**
+(1 skipped — the DECISION AI performance gate) · ADR-055/OpenAPI drift + AJV 37 ✅ with
+`HSP_REQUIRE_NODE_GATE=1` · PHPStan level 8 ✅ · PHPCS ✅. **Response shape changed ADDITIVELY;
+OpenAPI changed; no existing field, public-identifier semantic, pagination behaviour, migration,
+persistence model, module boundary or ADR changed.** **One flag raised, deliberately NOT fixed
+here: FLAG-GATE-WORKTREE-1** — the extensibility gate's negative half asserts on the developer's
+working tree, so it fails for any session that legitimately edits its guarded paths. Proven to be a
+harness artefact rather than a defect by stashing, watching the gate pass, restoring, committing,
+and re-running the complete suite green. Findings 005, 009, 010 and the tagged-post live-verification
+debt deliberately untouched.)
+
 **Last updated:** 2026-09-14 (Finding 004 — **a populated category served an empty archive, and the
 fix required amending a frozen architecture ruling: DECISION AJ.** Live evidence first:
 `GET /hsp/v1/categories/etf` reported `post_count: 6` while `GET /hsp/v1/posts?category=etf` returned
@@ -123,11 +175,14 @@ change.**)
 **Next session:** **Finding 005 — nested page paths.** The current workstream is the real-world
 implementation findings raised against the live site, not the IMPLEMENTATION_PLAN.md Session Map:
 Phase 2 (P2-S0 … P2-S7) is COMPLETE and the Session Map has no row left to point at. Findings still
-open and explicitly NOT touched by Finding 004: **003** (post category references in post-detail
-responses), **005** (nested page paths), **009** (Woo cart-handoff identity), **010**
-(variation-selection semantic sufficiency), and the **tagged-post live-verification debt** (the live
-site has no `post_tag` terms, so tag behaviour is proven by test only — Finding 004 exercised the
-shared-taxonomy collision path in `CategoryArchiveIntegrationTest`, but not against live data).
+open and explicitly NOT touched by Finding 003: **005** (nested page paths), **009** (Woo
+cart-handoff identity), **010** (variation-selection semantic sufficiency), the **tagged-post
+live-verification debt** (the live site has no `post_tag` terms, so tag behaviour is proven by test
+only — Findings 003 and 004 both exercised the shared-taxonomy collision path in integration
+coverage, but neither could reach live data), and **FLAG-GATE-WORKTREE-1** (test-infrastructure
+defect, separately tracked below — deliberately NOT implemented during Finding 003 closeout).
+**Finding 003 is CLOSED** (2026-09-14, commit `39cd94a` on origin/main): post responses expose
+typed public category references.
 
 > **⚠ Pointer staleness found and corrected 2026-09-14 (Finding 004 closeout), NOT silently.** This
 > line read "**P2-S2 part 2** — close the Commerce product row, then P2-S3" while the 2026-09-08
@@ -331,6 +386,71 @@ so the gate executes at full fidelity and cannot degrade to a skip. Locally, the
 ---
 
 ## Flags
+
+### FLAG-GATE-WORKTREE-1 — the extensibility gate's negative half tests the developer's working tree, not its own demonstration
+
+**Raised:** 2026-09-14 | **Session:** Finding 003 | **Status:** **OPEN — accepted as a
+test-infrastructure defect by scope-owner ruling 2026-09-14. No ADR required. Deliberately NOT
+fixed as part of Finding 003.**
+
+**Classification: test-harness defect, not a production defect and not an architectural
+violation.** No shipped behaviour is affected and no consumer is affected.
+
+**The gate and its criterion are correct.** GATE-S4 criterion 3 proves a genuine architectural
+property — *"add a new API resource without modifying existing endpoints"* — and its positive half
+does so honestly: it builds a brand-new `authors` Query Provider + Resource against the real core
+contracts and serves them without touching the registrar. **The criterion itself must not be
+weakened or narrowed.**
+
+**The defect is in the negative half's mechanism.** It asserts the property by running:
+
+```
+git status --porcelain -- headless-sync/modules/Content/Resources/
+git status --porcelain -- headless-sync/modules/Content/Queries/
+git status --porcelain -- headless-sync/modules/Content/Rest/ContentRestRegistrar.php
+```
+
+and requiring empty output. That inspects the **whole working tree**, which cannot distinguish the
+demonstration's own writes from the session's unrelated, legitimate, uncommitted work:
+
+```
+legitimate developer edit already exists in a guarded path
+    ↓
+test runs its own demonstration successfully (touches nothing)
+    ↓
+test inspects the entire dirty path
+    ↓
+test reports FAILURE
+```
+
+So the gate is partly asserting **"was the developer's worktree pristine?"** rather than
+exclusively **"did this extensibility operation require forbidden modifications?"**
+
+**How it surfaced.** Finding 003 additively extends an existing Post Resource — it adds no new API
+resource and therefore does not exercise criterion 3 at all — yet the gate failed. Established as a
+harness artefact by evidence, not argument: the change was stashed, the single test ran green
+(**OK, 12 assertions**), the work was restored, committed, and the **complete Integration suite
+re-run in the committed state passed 367/367** with the gate explicitly re-verified (**OK, 3 tests,
+28 assertions**). The prior stash experiment alone was not treated as sufficient.
+
+**Blast radius.** The full Integration suite cannot be green mid-session for **any** session that
+legitimately edits the three guarded paths. Finding 004 (`modules/Content/Queries/`) would have hit
+the same thing. CI is unaffected — it runs on a clean checkout.
+
+**Expected correction — recorded, NOT implemented.** The gate should evaluate mutations caused by
+**its own operation**. Candidate approaches to investigate later:
+
+- **Option A — before/after snapshot.** Capture guarded-path state before the demonstration, run
+  it, capture after, assert no forbidden delta *attributable to the demonstration*.
+- **Option B — isolated fixture/worktree.** Run the demonstration in a temporary copy/worktree so
+  the developer's tree is not in scope at all.
+- **Option C — another deterministic repository-state comparison** that separates pre-existing
+  legitimate edits from edits caused by the demonstration.
+
+**Constraint on any fix:** the architectural criterion stays exactly as strong as it is today. Do
+not remove the dirty-tree sensitivity by turning the gate into a weaker architectural test.
+
+---
 
 ### FLAG-LIFECYCLE-1 — AG-12's automatic activation transition is built but never invoked
 
@@ -1492,3 +1612,5 @@ named gate tests. Flag resolved.
 2026-09-08 | Defect: onboarding convergence was unreachable on any store with an unsupported product | Found by the first-run test above, which sat at **96% forever** — expected 126, projected 122, `in_flight: 0`, nothing left to drain. `WpCommerceReconciliationSource::listAggregateIds()` returned every product regardless of type, and `BackfillProgress` derives its EXPECTED counts from exactly that method, so one `grouped` and one `external` product (plus their 2 inventory rows) were counted as expected while the projection correctly excluded them. AG-13 is explicit that an unsupported type "must not count as an expected Phase 2 projected Product". **Any real store with a single grouped or external product could never show a converged onboarding.** The corpus is now filtered to in-scope entities. This looked unsafe and is not: an entity that LEAVES scope is still tombstoned, because `ReconciliationService::findOrphans()` enumerates the PROJECTION table and asks `getSourceState()` about each row — that direction never consults this corpus, and an out-of-scope product still reports `exists=true, public=false`, which is what the orphan sweep acts on. The subtle half is PAGING, and it is why the filter lives INSIDE the pager rather than being applied to its output: `ReconciliationService` loops `do { … } while ($ids !== [])`, so a page that filtered down to empty would be read as "corpus exhausted" and silently truncate the scan — a store whose page happened to be all grouped products would lose every product after it. `ReconciliationCorpusScopeTest` (8 tests) covers the defect, the paging trap, an entirely out-of-scope corpus, cursor advancement, variations following their parent's scope, inventory counting OWNERS only (AG-14 — a parent-managed variation has no row and counting it would make convergence unreachable the same way), and the tombstone property that made this look risky. Re-run from a clean database: **converged true, 100%, 21/21 PASS.** Unit 1596, Integration 327, PHPStan L8 clean, PHPCS clean.
 
 2026-09-14 | Finding 004 (architecture amendment + fix) | **A populated category served an empty archive — and the correction required amending a frozen ruling, so it shipped as DECISION AJ (ARCHITECTURE_DECISIONS.md v1.41→v1.42) plus the implementation.** Live: `/categories/etf` reported `post_count: 6` beside an empty `/posts?category=etf`, with **zero `content.entity_taxonomies` rows platform-wide** while all 14 posts and 7 categories were correctly projected. **Cause:** `PostAdapter` resolved each source term id to a `content.taxonomies.id` at write time and silently dropped what was missing; the event timeline shows every post projected before every category (posts 07:12:09–10, categories 07:12:10). Nothing back-links — `PostAdapter` is the table's only writer — and write suppression made it **permanent**, because category ids sit in the post's checksum, so replay recomputed the same value and reconciliation compared that same value. Zero errors logged. `commerce.entity_taxonomies` on the same site, same backfill, same ordering held 38 correct rows because AG-7 keys it on `source_term_id` — **supporting precedent, not retroactive authority; Content's UUID identity was frozen until amended here.** **DECISION AJ** amends FLAG-P1AS4-1 and DECISION AA: `(entity_id UUID, source_term_id BIGINT)` PK + `(source_term_id, entity_id)`, so relationships are a pure function of the post's own state and both event orderings converge identically. **AJ-1** widens write suppression to **exact relationship-set equality** — the first implementation used cardinality and that was wrong (`[10,20]` vs `[10,30]` share a count), proven by reverting the predicate and watching the miskeyed link survive; exact comparison adds no round-trip and is what lets damaged installs heal through ordinary replay with no second repair path. Migration 0009 translates existing rows preserving every resolvable link and drops untranslatable dangling rows without inventing an id. Unchanged: pure relationship table, no separate category/tag tables, `taxonomy_type` still mandatory on reads, no FKs, `source_term_id` internal, consumers filter by slug. **Root cause of the shipped defect was the test strategy** — every prior category-filter test hand-seeded the join rows, so the pipeline was never asked to produce them; the new `CategoryArchiveIntegrationTest` (21 cases) seeds none and drives the real handler path, and `EntityTaxonomyMigrationIntegrationTest` (5 cases) applies the real migration file and asserts the final shape. Live repair used `Application::upgrade()` + `ReplayService::replayEntity()` only — no hand-written rows, no SQL against the delivery DB. All 7 categories now match WordPress post-by-post; filtered cursor pagination proven across 3 live pages. Unit 1665 ✅ · Integration 354 ✅ post-commit clean tree · drift 49 ✅ · PHPStan 8 ✅ · PHPCS ✅. No API/OpenAPI/module-boundary change. **Flags raised:** (1) the **"Next session" pointer was stale**, still naming P2-S2 part 2 though Phase 2 closed on 2026-09-08 — corrected and annotated in place rather than silently rewritten; (2) **tagged-post live verification remains owed** — the live site has no `post_tag` terms, so tag behaviour through the shared taxonomy projection is proven by test only. Findings 003, 005, 009, 010 deliberately untouched.
+
+2026-09-14 | Finding 003 | **Post responses now expose typed public category references — an additive delivery capability built entirely from relationships HSP already owned.** The gap: HSP published category resources and accepted `?category=` as a filter *input*, but the post resource had no category field, so a consumer holding a post could not tell which categories it belonged to and a frontend had to invent the relationship. The data was already correct in `content.entity_taxonomies` (Finding 004) — **a read-side omission, not missing data**, hence no migration, no new persistence, no ADR. **Contract:** `categories` beside `tags`, reusing the `{slug, name}` taxonomy-reference shape tags established in P1B-S3; slug is the public addressing identity (the same value `?category=` accepts), name is the label. All currently valid assigned categories, deterministic slug ordering, no primary-category semantics, no internal IDs, projection-only, no N+1. **The scope rule was the substance:** WordPress defines no universal primary category, so electing one (first row, lowest id, alphabetically first) would be a presentation policy dressed up as source truth — that choice belongs to the consumer. Guarded by assertions that fail if `primary_category`/`is_primary`/a singular `category` appears, or if any identifier (projection UUID, `source_term_id`, WP term id) leaks into a reference. **Implementation:** one more correlated `json_agg` **scalar** subquery beside the tags one, differing only in the `taxonomy_type` discriminator; the two now share one SQL template, one Resource decoder and one OpenAPI helper. Scalar deliberately — it answers once per post row and cannot multiply parent rows, so a post in three categories still appears exactly once, no `DISTINCT`, cursor and pagination untouched. One query per page at any page size, proven with a counting connection against live PostgreSQL. **DECISION AJ pays off at READ time too:** the hop goes through `source_term_id`, so a relationship written before its term projected resolves the moment that term lands — proven by asserting the owning post's `checksum` and `synced_at` are byte-identical before and after, i.e. **no rewrite of the post is needed**. The read path inherits AJ's order-independence rather than recreating there the dependency AJ removed at write time. **No index added, and the investigation is the reason.** An initial "never a seq scan" assertion FAILED and **the assertion was wrong, not the query**: `content.taxonomies` holds terms, not content, and at 1,000 terms PostgreSQL correctly prices a scan of the small table below repeated index lookups (8.9 ms/page), flipping to a Memoized index scan on `uq_content_taxonomies_source_term_id` by itself at 50,000 terms (10.4 ms/page). Demanding "never a seq scan" would have demanded the planner make the worse choice on a normal site. The tests now pin what is load-bearing — the per-post link lookup rides `pk_content_entity_taxonomies` and is never a seq scan; the term hop demonstrably uses the existing unique index once terms are many. **Live: 14 posts compared against WordPress `wp_term_relationships` source truth, 0 category-set mismatches (actual SETS, not counts), 9 multi-category posts, list/detail disagreements 0**; live payloads validated against the **live** generated OpenAPI with the project's own pinned AJV across empty `[]`, one item and many items. **Live limitation stated rather than papered over:** the site has no `post_tag` terms, so the category/tag slug-collision path is proven by fixture and live-PostgreSQL coverage only — no live content was modified to manufacture one. Unit 1681 ✅ · Content Integration 151 ✅ · **full Integration 367 ✅ post-commit on a clean tree** (1 skipped — DECISION AI performance gate) · ADR-055/OpenAPI drift + AJV 37 ✅ with `HSP_REQUIRE_NODE_GATE=1` · PHPStan level 8 ✅ · PHPCS ✅. Response shape changed ADDITIVELY; OpenAPI changed; **no** existing field, public-identifier semantic, pagination behaviour, migration, persistence model, module boundary or ADR change. **Flag raised and deliberately left unimplemented: FLAG-GATE-WORKTREE-1** — the extensibility gate's negative half asserts on the developer's working tree via `git status --porcelain`, so it fails for any session legitimately editing its guarded paths; established as a harness artefact by stashing (gate green), restoring, committing and re-running the complete suite green in the committed state, rather than by argument. Recorded as a test-infrastructure defect needing no ADR, with snapshot/isolated-worktree correction options noted for later; the architectural criterion itself must stay exactly as strong. Findings 005, 009, 010 and the tagged-post live-verification debt deliberately untouched.
