@@ -407,7 +407,19 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 'type'        => ['integer', 'null'],
                 'description' => 'Parent source term id, or null for a top-level term.',
             ],
-            'count'       => 'integer',
+            // The SOURCE count, projected verbatim — not a Delivery API result count and not a
+            // pagination total (FLAG-COMMTERMCOUNT-1). It shipped with no description at all,
+            // which is the ambiguity the flag named; the semantic itself is unchanged.
+            'count'       => [
+                'type'        => 'integer',
+                'description' => 'Number of published products this term is DIRECTLY assigned '
+                    . 'to, as counted by WordPress/WooCommerce itself and projected verbatim. '
+                    . 'It follows the store\'s own membership and product status changes. '
+                    . 'Products in a child category are NOT rolled up into the parent. It is '
+                    . 'NOT the number of results a Delivery API listing returns and NOT a '
+                    . 'pagination total: a product hidden from the catalog, or of a product '
+                    . 'type outside Phase 2 support, still counts here.',
+            ],
         ]);
     }
 

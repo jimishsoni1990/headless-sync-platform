@@ -10,6 +10,71 @@
 
 **Current phase:** **Phase 2 — WooCommerce Catalog: COMPLETE (P2-S0 … P2-S7 all shipped).** WooCommerce is the second independent HSP domain module, and the success test was never "products synchronize" — it was that this happened **without special-casing Commerce in Core**. It did: a repo-wide assertion proves there is no reference to `HSP\Modules\Commerce` anywhere under `core/`, and none to `HSP\Modules\Content` anywhere under `modules/Commerce/`. Six Commerce aggregates ship — product, product category, attribute definition, `pa_*` attribute term, product variation, inventory — each with capture, projection, delivery, replay, reconciliation and a proven create → update → delete → tombstone → replay lifecycle. The two-module system test runs both domains through one real bounded cycle on live MySQL + PostgreSQL. **Measured: mixed-domain worst-case sync latency is ≈20.1 s against the 30 s SLA — 9.9 s of margin, so Commerce did NOT consume the headroom** and DECISION AG Part 5's STOP-and-flag was not triggered. **Both flags raised in Phase 2 are now RESOLVED by architect ruling (2026-09-08): DECISION AH** closes FLAG-COMMPERMA-1 as Case B authorised with implementation scheduled into Phase 4 — architecture decided, not an open gap — and **DECISION AI** closes FLAG-PERFCYCLE-1 as Option (a), keeping the threshold unchanged and moving enforcement to a controlled CI performance gate (`HSP_PERFORMANCE_GATE=1`). **No open flags.** FLAG-LIFECYCLE-1 was raised and resolved the same day: live-site testing found AG-12's automatic activation transition built but never invoked, and AG-12 had already pre-authorised the correction, so `ModuleLifecycleRunner` now drives it from the bounded WP-Cron cycle — **proven live: a torn-down Commerce module converged its full catalog in ONE cycle with no reactivation, no manual migrate and no manual reconcile.**
 
+**Last updated:** 2026-09-15 (FLAG-COMMTERMCOUNT-1 — **Commerce `term_count` had the same capture
+gap, and it is now closed on Commerce's own evidence rather than by copying the Content patch. Root
+cause A — capture-event gap — with a genuine taxonomy-family divergence (E) that changed nothing
+about the fix and two Content details that did NOT carry over.** **Semantics, stated for the first
+time:** `commerce.taxonomies.term_count`, published as `count`, is `wp_term_taxonomy.count` read
+through `get_term()` and projected verbatim — the number of published products a term is **directly**
+assigned to. No child rollup (`clothing` is 1, not 1+5+4+5), and it counts products the Delivery API
+does not list: `decor`'s single product is an `external` type, outside Phase 2 support, and still
+counts. That was correct in code and **absent from the contract** — `count` shipped with no
+description at all, the same ambiguity the Content flag named. **Supported families: `product_cat`
+and every `pa_*`** — the whole Commerce corpus; `product_tag` stays out (AG-9). **They do not share a
+recount mechanism, and that had to be checked:** WooCommerce 11.1.0 registers `pa_*` with WordPress's
+own `_update_post_term_count`, and `product_cat` with its **own** `_wc_term_recount`, which computes
+**two** counts — delegating to `_update_post_term_count()` for `wp_term_taxonomy.count`, then writing
+a second, catalog-visibility-aware count to `wp_termmeta`. **HSP projects the first**: the termmeta
+count only reaches `get_terms()` through the `wc_change_term_counts` filter, and `loadTerm()` uses
+`get_term()`, which that filter does not touch. So both families land on `edited_term_taxonomy`
+anyway, and the `$callback = false` paths (`_wc_recount_terms_by_product`) move only the termmeta
+count and are correctly silent. `pa_*` is registered for object type `product` only, so a variation's
+selected value never moves an attribute-term count — the parent's assignment does. **Live parity
+proved nothing, and the evidence is exact:** all fifteen Commerce terms have emitted **exactly one
+event in their life**, every one at 07:12:05 on 2026-09-14 — the onboarding backfill — and no product
+membership had changed since. **Fix: one hook, inside the existing pipeline.**
+`edited_term_taxonomy` → `commerce.{product_category,attribute_term}.updated` → existing
+`TermUpsertHandler` → `loadTerm()` → extractor → transformer → `TermAdapter` → `term_count`. It
+carries a `term_taxonomy_id`, resolved through the public `get_term_by()` — no raw table read — and
+the payload stays `{term_id}` so the worker reloads current state (DECISION H / ADR-044).
+**Commerce's capture-side dedupe had to GO for term upserts, and Content never had one to copy:**
+with the new hook the first-emit-wins guard was actively wrong — a term created and assigned in one
+request would emit `created` at count 0 and swallow the recount — and WordPress can move one term's
+count twice in a request while a concurrent cron cycle processes the collapsed first emit.
+Duplicates are what at-least-once is for (Rule 4) and `TermAdapter` suppresses the redundant write by
+checksum; the terminal delete block is kept. **`pre_delete_term` was NOT added, and that is verified
+divergence, not omission:** `wp_delete_term()` reassigns a term's products before deleting it, so a
+recount does fire for the doomed term — but Content needed the guard because
+`CategoryUpsertHandler` **throws** on a vanished term, dead-lettering an ordinary delete, whereas
+`TermUpsertHandler` **no-ops**, the convention every Commerce handler follows. Pinned by a test, not
+by a comment. **Checksum and replay needed nothing:** `count` was already inside `CanonicalTerm`'s
+digest (verified), so a count-only change is not write-suppressed — which is also why ordinary replay
+and reconciliation already repaired stale values, confirming capture coverage as the sole defect.
+**Live, three round trips, each restoring the site exactly as found:** membership
+`product_cat/music` 2→3→2 — one `commerce.product_category.updated`, aggregate_version 2, with
+`uncategorized` correctly silent because its relationships did not change; membership
+`pa_color/yellow` 1→2→1; status transition publish→draft→publish moving `product_cat/music` 2→1→2.
+**Final read-only parity: 15/15 terms match WordPress on value AND set** — `product_cat` accessories
+5, clothing 1, decor 1, hoodies 4, music 2, tshirts 5, uncategorized 1; `pa_color` blue 4, gray 3,
+green 3, red 4, yellow 1; `pa_size` large 1, medium 1, small 1. DLQ 0, queue 193/193 completed.
+**OpenAPI: description only** — `count` now states the verified existing semantic (source count,
+direct assignment, no rollup, explicitly not a listing result count and not a pagination total). No
+field, type, route, pagination or envelope change. Tests: **Unit 1798 ✅** (4 pre-existing skips) ·
+`CommerceHookWiringTest` 24 ✅ (+8) · new `CommerceTermCountIntegrationTest` 20 ✅ (both families
+through 0→1→2→1→0, product status transitions, count-only change not suppressed, identical
+re-emission still suppressed, redelivery idempotent, out-of-order older event does not regress, stale
+count converging through ordinary re-emission, recount-for-a-deleting-term does not fail, a term
+gaining reassigned products converges, published resource carries the converged value) · **full
+Integration 446 ✅** on `hsp_test` (1 skipped — DECISION AI performance gate) · ADR-055/AJV
+`HSP_REQUIRE_NODE_GATE=1` 31 ✅ · PHPStan 8 ✅ · PHPCS ✅. **ADR change: No · architecture docs: No ·
+migration: No · new persistence: No · cross-aggregate write: No · delivery-time WordPress read: No ·
+response shape: No · field type: No · route: No · pagination: No · module boundary change: No ·
+new Commerce taxonomy capture signal: YES · public-data correctness: YES.** **Only Commerce was
+touched** — no `core/`, no `modules/Content/`, and no shared taxonomy-hook seam was created.
+**FLAG-COMMTERMCOUNT-1 is RESOLVED. No new flags.** FLAG-RESTARGDRIFT-1, FLAG-COMMSOURCEID-1,
+FLAG-GATE-WORKTREE-1, the Commerce permalink Phase 4 work and the product-media delivery gap are
+deliberately untouched; the media gap is next.)
+
 **Last updated:** 2026-09-15 (FLAG-TAGCOUNT-1 — **`post_count` was frozen at whatever WordPress last
 recounted BEFORE HSP heard about the term; it now tracks every source recount. Root cause A — a
 capture-event gap, and it was never a tag defect.** `post_count` already had an explicit semantic:
@@ -573,10 +638,9 @@ IMPLEMENTATION_PLAN.md Session Map: Phase 2 (P2-S0 … P2-S7) is COMPLETE and th
 row left to point at. The next session should either take a newly raised finding, or pick up one of
 the open flags below. **FLAG-TAGCOUNT-1 is CLOSED** (2026-09-15) — taxonomy `post_count` now tracks
 every WordPress recount through the normal pipeline, and live parity is 10/10 terms on both count and
-membership. **Open flags:** **FLAG-COMMTERMCOUNT-1** (the same capture gap in the Commerce module's
-term hooks — `commerce.taxonomies.term_count`, published as `count`; not visibly wrong today for the
-same incidental reason the categories weren't, and a Content session cannot fix another module's
-capture layer under Rule 5 — the FLAG-TAGCOUNT-1 fix is the shape to copy),
+membership. **FLAG-COMMTERMCOUNT-1 is also CLOSED** (2026-09-15) — Commerce `term_count` now tracks
+every source recount for both `product_cat` and `pa_*`, live parity 15/15 on value and set; the next
+piece of live-site work is the **product-media delivery gap**. **Open flags:**
 **FLAG-RESTARGDRIFT-1** (REST route argument metadata and EndpointDescriptor
 parameters can drift without the ADR-055 completeness guard detecting it — Finding 002 pinned the
 `/posts` case and deliberately did not redesign the guard; the dead `listingArgs(['slug', …])` entry
@@ -911,8 +975,76 @@ the event volume needs measuring against the DECISION AB cadence first.
 
 ### FLAG-COMMTERMCOUNT-1 — Commerce taxonomy `count` has the identical capture gap FLAG-TAGCOUNT-1 closed
 
-**Raised:** 2026-09-15 | **Session:** FLAG-TAGCOUNT-1 | **Status:** **OPEN — reported with evidence,
-not fixed. Out of scope for a Content session, and currently correct on live data.**
+**Raised:** 2026-09-15 | **Session:** FLAG-TAGCOUNT-1 | **Resolved:** 2026-09-15 |
+**Status:** **RESOLVED — root cause A, a capture-event gap. Verified on Commerce's own evidence, not
+inherited from the Content patch.**
+
+**Resolution (2026-09-15).** The defect was real and the analogy held, but three of its details did
+not survive verification and each changed the fix.
+
+**Affected families — both, for different reasons.** `product_cat` and every `pa_*` taxonomy are the
+whole Commerce corpus (`CommerceTaxonomies`; `product_tag` is out of scope per AG-9 and stays out).
+They do **not** share a recount mechanism: WooCommerce 11.1.0 registers `pa_*` with WordPress's own
+`_update_post_term_count`, and `product_cat` with its **own** `_wc_term_recount`. That callback
+computes **two** counts — it delegates to `_update_post_term_count()` for `wp_term_taxonomy.count`,
+then writes a second, catalog-visibility-aware count to `wp_termmeta.product_count_product_cat`.
+**HSP projects the first.** The termmeta count only reaches `get_terms()` through the
+`wc_change_term_counts` filter, and `WpCommerceLoaderImpl::loadTerm()` uses `get_term()`, which that
+filter does not touch. So both families converge on the same signal, and the `$callback = false`
+recount paths (`_wc_recount_terms_by_product`) move only the termmeta count and are correctly
+silent.
+
+**Lifecycle signal added — one hook.** `edited_term_taxonomy` →
+`commerce.{product_category,attribute_term}.updated` → existing `TermUpsertHandler` → `loadTerm()` →
+`TermExtractor` → `TermTransformer` → `TermAdapter` → `commerce.taxonomies.term_count`. It carries a
+`term_taxonomy_id`, resolved through the public `get_term_by()` — no raw table read; the payload
+stays `{term_id}` and the worker reloads current WordPress state (DECISION H / ADR-044).
+
+**Capture-side dedupe REMOVED for term upserts.** Commerce had a first-emit-wins guard Content never
+had, and with the new hook it was actively wrong: a term created and assigned in one request would
+have emitted `created` at count 0 and swallowed the recount. WordPress can also move one term's count
+twice in a request, and a concurrent cron cycle can process the collapsed first emit. Duplicates are
+what at-least-once is for (Rule 4) and `TermAdapter` suppresses the redundant write by checksum. The
+**terminal delete block is kept**.
+
+**NO `pre_delete_term` suppression — a verified divergence from Content, not an omission.**
+`wp_delete_term()` reassigns a term's products before deleting it, so a recount does fire for the
+doomed term. Content needed the guard because `CategoryUpsertHandler` **throws** on a vanished term,
+which would dead-letter an ordinary delete. `TermUpsertHandler` **no-ops** — the convention every
+Commerce handler follows — so the stray upsert is harmless. Proven by test, not asserted.
+
+**Checksum and replay needed no change** (verified, not assumed): `count` was already inside
+`CanonicalTerm`'s digest, so a count-only change is not write-suppressed — which is also why ordinary
+replay and reconciliation already repaired stale values. The defect was capture coverage only.
+
+**Why live parity proved nothing.** Every one of the fifteen Commerce terms has emitted **exactly one
+event in its life**, all at 07:12:05 on 2026-09-14 — the onboarding backfill — and no product
+membership had changed since. Incidental, exactly as suspected.
+
+**Live proof, three round trips, site restored exactly as found:** membership `product_cat/music`
+2→3→2 (one `commerce.product_category.updated`, aggregate_version 2, and `uncategorized` correctly
+silent because its relationships did not change); membership `pa_color/yellow` 1→2→1; product status
+transition publish→draft→publish moving `product_cat/music` 2→1→2. Final read-only parity: **15/15
+terms match WordPress on both value and set** (`product_cat` accessories 5, clothing 1, decor 1,
+hoodies 4, music 2, tshirts 5, uncategorized 1; `pa_color` blue 4, gray 3, green 3, red 4, yellow 1;
+`pa_size` large 1, medium 1, small 1). DLQ 0, queue 193/193 completed.
+
+**`term_count` remains SOURCE-derived**, not delivery-derived: the number of published products a
+term is **directly** assigned to, no child rollup, counting products the Delivery API does not list
+(`decor`'s single product is an `external` type, outside Phase 2 support, and still counts). That
+semantic was correct in code and **absent from the contract** — the published `count` shipped with no
+description at all, the same ambiguity FLAG-TAGCOUNT-1 named for `post_count`. OpenAPI description
+added; nothing redefined.
+
+**Impact: ADR change No · architecture docs No · migration No · new persistence No ·
+cross-aggregate write No (no `ProductAdapter`/`VariationAdapter` touches `commerce.taxonomies`) ·
+delivery-time WordPress read No · response shape No · field type No · route No · pagination No ·
+module boundary No · OpenAPI description YES · public-data correctness YES.**
+
+---
+
+<details>
+<summary>Original report (2026-09-15, raised by the FLAG-TAGCOUNT-1 session)</summary>
 
 **What was found.** `modules/Commerce/HookWiring.php` subscribes to exactly the same three term
 hooks Content did — `created_term`, `edited_term`, `delete_term` — and `commerce.taxonomies` carries
@@ -930,6 +1062,11 @@ defect fix. The Content fix is therefore not a patch that "also covers" Commerce
 session should apply the same shape — `edited_term_taxonomy` → the module's own term `.updated`
 event, plus the `pre_delete_term` guard — with its own tests. **No ADR is required**: like
 FLAG-TAGCOUNT-1, `count` is already a captured source fact under existing ownership.
+
+</details>
+
+*(The instinct above was right about the hook and wrong about `pre_delete_term`: Commerce's handler
+no-ops where Content's throws, so the guard was not needed — see the resolution.)*
 
 ---
 
@@ -2352,3 +2489,5 @@ refuse. **AG-9 unchanged; no local/custom attribute support added.**
 2026-09-14 | Finding 009 | **Products and variations now publish explicit WooCommerce cart-handoff identifiers — an API contract clarification over data HSP was already publishing.** The gap was interpretive, not missing data, and the investigation is the substance. HSP already published these exact integers as `source_id` (product) and `source_id` + `product_id` (variation), with **no `description` at all** in the generated OpenAPI — and `source_id` means a *term* id on `/product-categories` and an attribute-*definition* id on `/product-attributes`, so a consumer holding only the contract could not conclude that this particular one was the id WooCommerce's own cart accepts. The only route open to the frontend was to **guess**, and a guess is not a contract. **Verified against the installed WooCommerce 11.1.0 rather than assumed:** `WC_Cart::add_to_cart($product_id, $qty, $variation_id, $variation)` (`class-wc-cart.php:1149`), the `?add-to-cart=` + `variation_id` form handler (`class-wc-form-handler.php:922,1051`) and the Store API (`CartAddItem.php:47`) all consume WordPress post ids, and all three need the parent id, the variation id, or both. **Contract:** `woo_product_id` on Product; `woo_product_id` (the PARENT) + `woo_variation_id` on Variation. A simple product gets **no invented variation field** — no `woo_variation_id: 0`, no meaningless null — and the two variation ids are **never derived from each other** (`get_id()` vs `get_parent_id()`), so re-parenting moves one and leaves the other, asserted rather than assumed. Descriptions carry the semantics the names cannot: which id is the parent, that both are needed for a variable handoff, and that they are **site-specific** — authoritative for the connected store, explicitly not globally unique, no `global_product_id`, no cross-site federation. `minimum: 1` is published because the columns are `BIGINT NOT NULL` with UNIQUE constraints, not as decoration. **Architecture: a NEW RULING was required, and the first reading of this was wrong.** `grep -ri "handoff|interoperab|add-to-cart" docs/` returned one incidental line — there was **no cart-handoff architecture in the repository**. The initial report treated "the integers were already published" as meaning the Woo semantics were already ratified, and **that inference does not hold**: publishing a value is a data decision, while promising it is authoritative against a downstream runtime is an interoperability decision, and only the first had ever been taken. **DECISION AK** (ARCHITECTURE_DECISIONS.md v1.42 to v1.43, architect-approved 2026-09-14) records the second explicitly — HSP may expose source Woo product/variation ids as public **interoperability** identifiers for handing an ALREADY-SELECTED catalogue entity to the connected Woo runtime, **Commerce Product + Variation resources ONLY and expressly not a precedent** for source-id exposure elsewhere (DECISION F internal-column exclusion and ADR-040 stand platform-wide). Each frozen ruling it could have collided with is untouched — WordPress ids must not become the **addressing** contract (AD ruling 8, AH-8; `/products/{slug}` unchanged), no cart projection (AG Part 6), no delivery-time WordPress read (ADR-040), no stored derived URL (AH-5). Guards assert no `add_to_cart_url` / `cart_url` / `checkout_url` / `woo_url` / `permalink` / `nonce` ever appears. **Identity proven through the real spine, not a hand-built Resource array:** a new integration test runs extractor → transformer → canonical model → adapter → live PostgreSQL (schema from the real migration files) → query provider → resource, including **parent integrity** two products deep (245/246 under 200, 999 under 311 — a variation id from one product can never pair with a parent id from the other) and the **variation-before-parent** order, where AG-7's source-keyed reference means the handoff pair is already correct before the parent has projected. **Stated environment limit:** the first hop uses `InMemoryCommerceLoader`, because `WpCommerceLoaderImpl` needs a booted WordPress with WooCommerce; that hop is proven against the live site instead. **Live: 16 of 16 products and 7 of 7 variations compared against real `wc_get_product()` objects — 0 mismatches, exact values not counts.** Every `woo_product_id` equals `WC_Product::get_id()` and resolves to the same slug; every `woo_variation_id` equals `WC_Product_Variation::get_id()` with `get_parent_id()` equal to the published `woo_product_id` (Hoodie 95 → 118/111/112/113; V-Neck 94 → 108/109/110). **Non-destructive handoff proof:** Woo reports the published simple id as a purchasable, in-stock product, and the published `(95, 118)` pair appears in the parent's own `get_available_variations()` — **no cart mutated, no session created, no order placed.** Live payloads validated against the **live** generated OpenAPI with the project's pinned AJV across the product listing, two single products and two variation listings. Unit 1708 ✅ · full Integration 389 ✅ (1 skipped — the DECISION AI performance gate) · ADR-055/OpenAPI drift + AJV ✅ with `HSP_REQUIRE_NODE_GATE=1` · PHPStan level 8 ✅ · PHPCS ✅. Response shape changed **ADDITIVELY**; OpenAPI changed; **architecture decision AMENDED (DECISION AK) and architecture docs CHANGED**; **no** field removed or renamed, and no route, pagination, addressing, migration, persistence or module-boundary change. **Flag raised, deliberately unresolved: FLAG-COMMSOURCEID-1** — Commerce publishes `id` (projection UUID) and `source_id` on all four resources; DECISION F's internal-column-exclusion clause names both as internal, Content publishes neither, `grep -rn "source_id" docs/` returns zero matches and no commit records a rationale. Classified **historical leakage now encoded into contract**, left in place because removing a published field is a separate compatibility decision, with the duplicate exposure `woo_product_id` now creates alongside it left for the architect to rule on rather than silently resolved. **Finding 010 is explicitly NOT solved** — 009 answers "which identifier do I hand to Woo once I know the intended variation?", 010 answers "how do I deterministically select the intended variation?"; variation-selection semantics remain open, along with the tagged-post live-verification debt and FLAG-GATE-WORKTREE-1, none of which were touched.
 
 2026-09-15 | Finding 002 | **The related-by-tag capability already existed; two declarations of it were wrong, and that was the whole finding.** Investigation-first, classified **B**: HSP does not own related-content semantics, so no `related_posts`, `primary_tag`, `related_rank`, `similarity_score`, ranking engine, related-post projection, related endpoint or multi-tag resolver was added — WordPress defines no universal related-post rule, and which tag to use, how many posts to show and whether to use tags at all are the site's decisions. **B1:** `?tag=` worked and the OpenAPI documented it, but `ContentRestRegistrar::listingArgs()` had no `tag` branch, so WordPress's own route index published `cursor, per_page, status, category, published_after` and **denied the filter existed** — two machine-readable descriptions of one endpoint disagreeing since P1B-S3, invisible because WordPress hands unregistered query parameters to `get_param()` and the handler sanitizes them itself. **B2:** DECISION F ratified the post sort keys at P1A-S5, but the contract said only "cursor-paginated", so "the three most recent posts sharing this tag" was unbuildable without guessing — the listing now publishes newest-first plus stable ordering on equal timestamps, and **deliberately not** `published_at DESC, id DESC`, because the tie-breaker is the internal projection UUID (ADR-040) that the opaque cursor exists to hide; a guard fails if `id DESC`/`ORDER BY`/`uuid` ever appears there. No SQL ordering changed. **The live-verification debt is DISCHARGED** — the site now has 3 `post_tag` terms, 4 tagged posts, 1 multi-tag post: **14 posts compared, 0 tag-set mismatches (SETS, not counts), 0 name mismatches, 0 list/detail mismatches, 3 tag filters compared, 0 result-set mismatches, 0 ordering violations**. **The slug collision is now live and correct**: `crypto` and `stocks` are each both a tag and a category; `?tag=crypto` returns 3 against `?category=crypto`'s 4, `?tag=stocks` 1 against 3, zero cross-contamination. Live reference workflow: `/posts/magni-minus-…` → `tags:[crypto,stocks]` → site policy picks `crypto` → `?tag=crypto` → exclude by public `slug` → 2 candidates, **no internal identifier at any step**. Deterministic slug order is explicitly not primacy. Smallest sufficient policy is ONE tag; multi-tag filtering was NOT added. Tests: `TagFilterContractTest` (13) pins the three declarations in both directions and guards the absent semantics; `RelatedByTagCompositionIntegrationTest` (12, 194 assertions) proves the workflow on live PostgreSQL from Resource payloads only, including **tag REMOVAL convergence through the real handler path** (previously uncovered — an add-test cannot see that a shrinking term set must DELETE links), last-tag removal, the collision, cursor paging with the source post inside the result set, and the second-page case a 3-post widget genuinely hits. Both fixes have negative proof. Unit 1779 ✅ (3 pre-existing skips) · Content Integration 176 ✅ · full Integration 418 ✅ post-commit clean tree (1 skipped — DECISION AI) · ADR-055/AJV `HSP_REQUIRE_NODE_GATE=1` 36 ✅ · live OpenAPI validates against the pinned 3.1 meta-schema ✅ · 12/12 live payloads validated against the live OpenAPI with the pinned AJV ✅ · PHPStan 8 ✅ · PHPCS ✅. **response shape: No · query semantics: No · routes: No · pagination: No · migration: No · new persistence: No · ADR: No · architecture docs: No · related-post subsystem: No · new consumer capability: No.** Route declaration metadata corrected; OpenAPI descriptive contract clarified. **Flags raised, neither fixed:** **FLAG-TAGCOUNT-1** (live `/hsp/v1/tags` publishes `post_count: 0` while WordPress reports 3/1/1, with category counts 0-mismatch on the same site — tagging a post recounts the term without emitting a taxonomy event; affects neither field the related-by-tag path reads) and **FLAG-RESTARGDRIFT-1** (route args ⇄ descriptor parameters can drift unseen by the ADR-055 guard; the `/posts` case is pinned, the guard deliberately not redesigned, and the dead `/pages` `slug` argument recorded and left untouched). FLAG-GATE-WORKTREE-1 behaved exactly as recorded and was NOT modified. FLAG-COMMSOURCEID-1 and the Commerce permalink Phase 4 work deliberately untouched.
+
+2026-09-15 | FLAG-COMMTERMCOUNT-1 | **Commerce `term_count` now tracks every source recount — root cause A, a capture-event gap, established on Commerce's own evidence rather than by copying the Content patch, and three details of the analogy did not survive verification.** **Semantics, published for the first time:** `commerce.taxonomies.term_count` (delivered as `count`) is `wp_term_taxonomy.count` read through `get_term()` and projected verbatim — the number of published products a term is **directly** assigned to, no child rollup (`clothing` is 1, not 1+5+4+5), and it counts products the Delivery API does not list (`decor`'s one product is an `external` type, outside Phase 2 scope, and still counts). Correct in code, **absent from the contract**: `count` shipped with no description at all. **Families: `product_cat` + every `pa_*`** (the whole corpus; `product_tag` stays out per AG-9), and **they do not share a recount mechanism** — WooCommerce 11.1.0 registers `pa_*` with WordPress's `_update_post_term_count` and `product_cat` with its **own** `_wc_term_recount`, which computes **two** counts: it delegates to `_update_post_term_count()` for `wp_term_taxonomy.count`, then writes a second catalog-visibility-aware count to `wp_termmeta`. **HSP projects the first** — the termmeta count only reaches `get_terms()` via the `wc_change_term_counts` filter and `loadTerm()` uses `get_term()`, which that filter does not touch — so both families land on `edited_term_taxonomy` anyway, and the `$callback = false` paths (`_wc_recount_terms_by_product`) move only the termmeta count and are correctly silent. `pa_*` is registered for object type `product` only, so a variation's selected value never moves an attribute-term count; the parent's assignment does. **Live parity proved nothing, with exact evidence:** all fifteen Commerce terms have emitted **exactly one event in their life**, every one at 07:12:05 on 2026-09-14 — the onboarding backfill — and no membership had changed since. **Fix: one hook inside the existing pipeline** — `edited_term_taxonomy` → `commerce.{product_category,attribute_term}.updated` → existing `TermUpsertHandler` → `loadTerm()` → extractor → transformer → `TermAdapter` → `term_count`; the hook carries a `term_taxonomy_id` resolved through the public `get_term_by()` (no raw table read) and the payload stays `{term_id}` so the worker reloads current state (DECISION H / ADR-044). **Commerce's capture-side dedupe had to GO for term upserts, and Content had none to copy:** with the new hook the first-emit-wins guard was actively wrong — a term created and assigned in one request would emit `created` at count 0 and swallow the recount — and WordPress can move one term's count twice in a request while a concurrent cron cycle processes the collapsed first emit; duplicates are what at-least-once is for (Rule 4) and `TermAdapter` suppresses the redundant write by checksum. Terminal delete block kept. **`pre_delete_term` was NOT added — verified divergence, not omission:** `wp_delete_term()` reassigns a term's products before deleting it and so does fire a recount for the doomed term, but Content needed the guard because `CategoryUpsertHandler` **throws** on a vanished term (dead-lettering an ordinary delete) whereas `TermUpsertHandler` **no-ops**, the convention every Commerce handler follows; pinned by a test rather than a comment. **Checksum and replay needed nothing:** `count` was already inside `CanonicalTerm`'s digest (verified), so a count-only change is not write-suppressed — which is also why ordinary replay and reconciliation already repaired stale values, confirming capture coverage as the sole defect. **Live, three round trips, each restoring the site exactly as found:** `product_cat/music` 2→3→2 by membership (one `commerce.product_category.updated`, aggregate_version 2, `uncategorized` correctly silent because its relationships did not change); `pa_color/yellow` 1→2→1 by membership; publish→draft→publish moving `product_cat/music` 2→1→2. **Final read-only parity: 15/15 terms match WordPress on value AND set** — product_cat accessories 5, clothing 1, decor 1, hoodies 4, music 2, tshirts 5, uncategorized 1; pa_color blue 4, gray 3, green 3, red 4, yellow 1; pa_size large 1, medium 1, small 1. DLQ 0, queue 193/193 completed. **OpenAPI: description only.** Tests: Unit 1798 ✅ (4 pre-existing skips) · `CommerceHookWiringTest` 24 ✅ (+8) · new `CommerceTermCountIntegrationTest` 20 ✅ · full Integration 446 ✅ on `hsp_test` (1 skipped — DECISION AI) · ADR-055/AJV `HSP_REQUIRE_NODE_GATE=1` 31 ✅ · PHPStan 8 ✅ · PHPCS ✅. **ADR change: No · architecture docs: No · migration: No · new persistence: No · cross-aggregate write: No · delivery-time WordPress read: No · response shape: No · field type: No · route: No · pagination: No · module boundary change: No · new Commerce taxonomy capture signal: YES · public-data correctness: YES.** Only Commerce was touched — no `core/`, no `modules/Content/`, no shared taxonomy-hook seam created. **No new flags.** FLAG-RESTARGDRIFT-1, FLAG-COMMSOURCEID-1, FLAG-GATE-WORKTREE-1, the Commerce permalink Phase 4 work and the product-media delivery gap deliberately untouched; the media gap is next.

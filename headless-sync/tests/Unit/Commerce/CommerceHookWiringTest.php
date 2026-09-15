@@ -47,11 +47,14 @@ final class CommerceHookWiringTest extends TestCase
         // The wiring reads the product's type through wc_get_product(); the suite has no
         // WooCommerce, so the stub below is driven by this global.
         $GLOBALS['_hsp_test_product_types'] = [];
+
+        // edited_term_taxonomy carries a term_taxonomy_id, resolved through get_term_by().
+        $GLOBALS['_hsp_stub_term_by_tt_id'] = [];
     }
 
     protected function tearDown(): void
     {
-        unset($GLOBALS['_hsp_test_product_types']);
+        unset($GLOBALS['_hsp_test_product_types'], $GLOBALS['_hsp_stub_term_by_tt_id']);
     }
 
     private function givenProduct(int $id, string $type): void
@@ -390,6 +393,155 @@ final class CommerceHookWiringTest extends TestCase
         $this->hooks->onProductUpdated(-1);
 
         self::assertSame([], $this->events->emitted);
+    }
+
+    // -------------------------------------------------------------------------
+    // Term count capture — FLAG-COMMTERMCOUNT-1
+    //
+    // Assigning a term to a product does not EDIT the term: WordPress recounts it through
+    // wp_update_term_count(), which fires edited_term_taxonomy and never edited_term. Both
+    // Commerce taxonomy families reach it — pa_* through WordPress's own
+    // _update_post_term_count(), product_cat through WooCommerce's _wc_term_recount(), which
+    // delegates to exactly that function for wp_term_taxonomy.count.
+    // -------------------------------------------------------------------------
+
+    /** @param array<int, array{term_id:int, taxonomy:string}> $termsByTtId */
+    private function givenTermsByTtId(array $termsByTtId): void
+    {
+        $GLOBALS['_hsp_stub_term_by_tt_id'] = $termsByTtId;
+    }
+
+    public function testARecountOnAProductCategoryEmitsCategoryUpdated(): void
+    {
+        $this->givenTermsByTtId([91 => ['term_id' => 31, 'taxonomy' => 'product_cat']]);
+
+        $this->hooks->onEditedTermTaxonomy(91, 'product_cat');
+
+        self::assertSame(
+            [[CommerceEventTypes::CATEGORY_UPDATED, '31']],
+            $this->events->emitted,
+        );
+    }
+
+    public function testARecountOnAnAttributeTermEmitsAttributeTermUpdated(): void
+    {
+        $this->givenTermsByTtId([92 => ['term_id' => 34, 'taxonomy' => 'pa_color']]);
+
+        $this->hooks->onEditedTermTaxonomy(92, 'pa_color');
+
+        self::assertSame(
+            [[CommerceEventTypes::ATTRIBUTE_TERM_UPDATED, '34']],
+            $this->events->emitted,
+        );
+    }
+
+    /**
+     * Every taxonomy on the site fires this hook — including Content's own, and WooCommerce's
+     * unprojected ones. Ownership is resolved BEFORE the term lookup, so unowned traffic costs
+     * nothing and crosses no module boundary (Rule 5).
+     */
+    public function testARecountOnAnUnownedTaxonomyEmitsNothing(): void
+    {
+        $this->givenTermsByTtId([93 => ['term_id' => 7, 'taxonomy' => 'post_tag']]);
+
+        $this->hooks->onEditedTermTaxonomy(93, 'post_tag');
+        $this->hooks->onEditedTermTaxonomy(93, 'category');
+        $this->hooks->onEditedTermTaxonomy(93, 'product_tag');
+        $this->hooks->onEditedTermTaxonomy(93, 'product_visibility');
+        $this->hooks->onEditedTermTaxonomy(93, 'product_shipping_class');
+
+        self::assertSame([], $this->events->emitted);
+    }
+
+    /** WordPress passes `$taxonomy->name`; a third-party do_action() can pass the object. */
+    public function testARecountAcceptsATaxonomyObject(): void
+    {
+        $this->givenTermsByTtId([94 => ['term_id' => 29, 'taxonomy' => 'product_cat']]);
+
+        $this->hooks->onEditedTermTaxonomy(94, new class {
+            public string $name = 'product_cat';
+        });
+
+        self::assertSame(
+            [[CommerceEventTypes::CATEGORY_UPDATED, '29']],
+            $this->events->emitted,
+        );
+    }
+
+    public function testARecountForAnUnresolvableTermTaxonomyIdEmitsNothing(): void
+    {
+        $this->givenTermsByTtId([]);
+
+        $this->hooks->onEditedTermTaxonomy(999, 'product_cat');
+
+        self::assertSame([], $this->events->emitted);
+    }
+
+    /**
+     * NOT deduplicated per request, deliberately (FLAG-COMMTERMCOUNT-1).
+     *
+     * WordPress can move one term's count twice in one request — a product save that assigns a
+     * category and the status transition that recounts it. First-emit-wins would pin the term
+     * at the intermediate value, and a concurrent cron cycle can process that collapsed emit
+     * before the second change lands. Duplicates are what at-least-once is for; the adapter
+     * suppresses the redundant write by checksum. A lost final state never converges.
+     */
+    public function testTwoRecountsOfOneTermInOneRequestBothEmit(): void
+    {
+        $this->givenTermsByTtId([91 => ['term_id' => 31, 'taxonomy' => 'product_cat']]);
+
+        $this->hooks->onEditedTermTaxonomy(91, 'product_cat');
+        $this->hooks->onEditedTermTaxonomy(91, 'product_cat');
+
+        self::assertSame(
+            [
+                [CommerceEventTypes::CATEGORY_UPDATED, '31'],
+                [CommerceEventTypes::CATEGORY_UPDATED, '31'],
+            ],
+            $this->events->emitted,
+        );
+    }
+
+    /** A term created and then immediately assigned must not be frozen at count 0. */
+    public function testCreationFollowedByARecountEmitsBoth(): void
+    {
+        $this->givenTermsByTtId([91 => ['term_id' => 31, 'taxonomy' => 'product_cat']]);
+
+        $this->hooks->onCreatedTerm(31, 91, 'product_cat');
+        $this->hooks->onEditedTermTaxonomy(91, 'product_cat');
+
+        self::assertSame(
+            [
+                [CommerceEventTypes::CATEGORY_CREATED, '31'],
+                [CommerceEventTypes::CATEGORY_UPDATED, '31'],
+            ],
+            $this->events->emitted,
+        );
+    }
+
+    /**
+     * Deletion stays terminal. wp_delete_term() reassigns the term's products BEFORE deleting
+     * it, so a recount can fire for the doomed term; the tombstone must still be the last word
+     * for that id, and nothing may emit an upsert after it.
+     *
+     * Unlike Content, no pre_delete_term suppression is needed: TermUpsertHandler no-ops on a
+     * vanished term rather than throwing, so the stray upsert cannot dead-letter.
+     */
+    public function testDeletionRemainsTerminalForATermBeingRecounted(): void
+    {
+        $this->givenTermsByTtId([91 => ['term_id' => 31, 'taxonomy' => 'product_cat']]);
+
+        $this->hooks->onEditedTermTaxonomy(91, 'product_cat');   // reassignment recount
+        $this->hooks->onDeleteTerm(31, 91, 'product_cat');
+        $this->hooks->onEditedTermTaxonomy(91, 'product_cat');   // must not resurrect it
+
+        self::assertSame(
+            [
+                [CommerceEventTypes::CATEGORY_UPDATED, '31'],
+                [CommerceEventTypes::CATEGORY_DELETED, '31'],
+            ],
+            $this->events->emitted,
+        );
     }
 }
 

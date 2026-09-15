@@ -44,6 +44,48 @@ use HSP\Modules\Commerce\Events\CommerceEventTypes;
  * create-then-delete inside one request must not leave the projection serving a product that
  * no longer exists. This mirrors the media guard P1B-S1 established.
  *
+ * TERM COUNT CAPTURE (FLAG-COMMTERMCOUNT-1). `commerce.taxonomies.term_count` — published as
+ * `count` — is `wp_term_taxonomy.count` read back through `get_term()` and projected verbatim,
+ * so every source event that moves that number has to reach the taxonomy aggregate. Assigning a
+ * term to a product does NOT edit the term: WordPress recounts it through
+ * `wp_update_term_count()`, which fires `edited_term_taxonomy` and never `edited_term`.
+ * Subscribing to `created_term`/`edited_term` alone therefore froze `term_count` at whatever it
+ * was when the term was last *edited*.
+ *
+ * BOTH Commerce taxonomy families land on the same signal, but only one of them does so for the
+ * obvious reason — verified against WooCommerce 11.1.0 rather than assumed:
+ *
+ *   pa_*         registered with `update_count_callback => _update_post_term_count` (WordPress's
+ *                own), object type `product` only — so a variation's selected value never moves
+ *                a `pa_*` count; the PARENT product's attribute assignment does.
+ *   product_cat  registered with `update_count_callback => _wc_term_recount` (WooCommerce's
+ *                own). It computes TWO counts: it delegates to `_update_post_term_count()` for
+ *                `wp_term_taxonomy.count`, then writes a SECOND, catalog-visibility-aware count
+ *                to `wp_termmeta.product_count_product_cat`. HSP projects the FIRST — the
+ *                termmeta count reaches `get_terms()` through the `wc_change_term_counts` filter
+ *                and `loadTerm()` uses `get_term()`, which that filter does not touch.
+ *
+ * So `_update_post_term_count()` fires `edited_term_taxonomy` immediately AFTER the
+ * `wp_term_taxonomy.count` UPDATE for both families, on every path that can move the number —
+ * relationship add (`wp_set_object_terms`), relationship remove (`wp_remove_object_terms`), and
+ * every product status transition (`_update_term_count_on_transition_post_status`, which is what
+ * makes draft↔publish↔trash converge). The `$callback = false` recount paths
+ * (`_wc_recount_terms_by_product`) update only the termmeta count, which HSP does not project,
+ * so they are correctly silent here.
+ *
+ * The hook carries a term_taxonomy_id, not a term_id, so the term is resolved through the public
+ * `get_term_by()` API — no raw table read. Nothing about the count itself is captured: the
+ * payload stays `{term_id}` and the worker reloads current WordPress state at process time
+ * (DECISION H / ADR-044), so a collapsed or redelivered emit loses nothing.
+ *
+ * NO `pre_delete_term` SUPPRESSION, unlike Content — and that is a verified divergence, not an
+ * omission. `wp_delete_term()` reassigns the term's objects BEFORE deleting it, which recounts,
+ * and so fires `edited_term_taxonomy` for the term about to cease to exist. Content had to
+ * suppress that because `CategoryUpsertHandler` THROWS when the term has gone, which would
+ * dead-letter an ordinary "delete a category that has products". `TermUpsertHandler` no-ops on a
+ * vanished term — the module-wide convention every Commerce handler follows — so the stray
+ * upsert is harmless and the `.deleted` event that follows carries the truth.
+ *
  * UNSUPPORTED PRODUCT TYPES ARE FILTERED HERE (AG-13). A `grouped` or `external` product is
  * normal out-of-scope source, so it is never captured at all — it cannot retry, cannot reach
  * the DLQ, and cannot block reconciliation or bootstrap convergence. The one exception is
@@ -99,6 +141,7 @@ final class HookWiring
         // module does not own.
         add_action('created_term', [$this, 'onCreatedTerm'], 10, 3);
         add_action('edited_term', [$this, 'onEditedTerm'], 10, 3);
+        add_action('edited_term_taxonomy', [$this, 'onEditedTermTaxonomy'], 10, 2);
         add_action('delete_term', [$this, 'onDeleteTerm'], 10, 4);
 
         // Global attribute DEFINITIONS (P2-S4). These are neither posts nor terms — they live
@@ -331,6 +374,39 @@ final class HookWiring
         $this->captureTerm($termId, $taxonomy, 'updated');
     }
 
+    /**
+     * edited_term_taxonomy: the only source signal a `term_count` change ever produces
+     * (FLAG-COMMTERMCOUNT-1). See the term-count section of the class docblock.
+     *
+     * @param int           $ttId     term_taxonomy_id — NOT a term_id.
+     * @param string|object $taxonomy Taxonomy slug. `_update_post_term_count()` passes
+     *                                `$taxonomy->name`, but third-party `do_action()` callers
+     *                                can pass the WP_Taxonomy object, so both shapes are
+     *                                accepted rather than fataling a product save on a
+     *                                TypeError inside a hook.
+     */
+    public function onEditedTermTaxonomy(int $ttId, string|object $taxonomy): void
+    {
+        $taxonomyName = is_string($taxonomy)
+            ? $taxonomy
+            : (string) (get_object_vars($taxonomy)['name'] ?? '');
+
+        // Resolve ownership BEFORE touching the database: product_visibility,
+        // product_shipping_class, category, post_tag and every other registered taxonomy fire
+        // this hook on ordinary traffic.
+        if (CommerceTaxonomies::eventFor($taxonomyName, 'updated') === null) {
+            return;
+        }
+
+        $term = get_term_by('term_taxonomy_id', $ttId);
+
+        if (! $term instanceof \WP_Term) {
+            return;
+        }
+
+        $this->captureTerm((int) $term->term_id, $taxonomyName, 'updated');
+    }
+
     /** @param mixed $deletedTerm WordPress passes the term object; unused, the id suffices. */
     public function onDeleteTerm(int $termId, int $ttId, string $taxonomy, mixed $deletedTerm = null): void
     {
@@ -432,6 +508,16 @@ final class HookWiring
      *
      * Terms get their own guard key namespace so a product and a term sharing an id cannot
      * suppress one another — WordPress post ids and term ids are separate sequences.
+     *
+     * UPSERTS ARE NOT COLLAPSED, unlike every other aggregate here (FLAG-COMMTERMCOUNT-1).
+     * WordPress can move one term's count MORE THAN ONCE in a single request — a product save
+     * that adds a category and the status transition that recounts it, a bulk edit that
+     * assigns and unassigns the same attribute term — and first-emit-wins would then pin the
+     * term at an intermediate value: state-sync makes a collapsed emit safe only while nothing
+     * processes it before the request finishes, and a concurrent cron cycle can. Duplicate
+     * emits are exactly what at-least-once is for (Rule 4) and `TermAdapter` suppresses the
+     * redundant write by checksum; a lost final state never converges. The TERMINAL delete
+     * block stays: a create-then-delete in one request must not leave an upsert behind it.
      */
     private function captureTerm(int $termId, string $taxonomy, string $action): void
     {
@@ -455,12 +541,8 @@ final class HookWiring
             // Terminal, exactly as for products: block any later upsert for this term.
             $this->deletedTerms[$key] = true;
             $this->handledTerms[$key] = true;
-        } else {
-            if (isset($this->handledTerms[$key]) || isset($this->deletedTerms[$key])) {
-                return;
-            }
-
-            $this->handledTerms[$key] = true;
+        } elseif (isset($this->deletedTerms[$key])) {
+            return;
         }
 
         $this->captureEvent($eventType, (string) $termId, ['term_id' => $termId]);
