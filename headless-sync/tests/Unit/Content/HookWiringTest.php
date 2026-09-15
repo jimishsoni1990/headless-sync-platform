@@ -40,6 +40,13 @@ final class HookWiringTest extends TestCase
         $GLOBALS['_hsp_stub_get_post']    = [];
         $GLOBALS['_hsp_stub_is_revision'] = [];
         $GLOBALS['_hsp_stub_is_autosave'] = [];
+
+        // term_taxonomy_id → term, for the edited_term_taxonomy recount hook (FLAG-TAGCOUNT-1).
+        $GLOBALS['_hsp_stub_term_by_tt_id'] = [
+            201 => ['term_id' => 77, 'taxonomy' => 'post_tag'],
+            301 => ['term_id' => 8,  'taxonomy' => 'category'],
+            401 => ['term_id' => 90, 'taxonomy' => 'product_cat'],
+        ];
     }
 
     // =========================================================================
@@ -725,6 +732,122 @@ final class HookWiringTest extends TestCase
 
         self::assertSame(ContentEventTypes::CATEGORY_CREATED, $this->writer->lastWrite()['eventType']);
         self::assertSame('category', $this->writer->lastWrite()['aggregateType']);
+    }
+
+    // =========================================================================
+    // Term count recount hooks (FLAG-TAGCOUNT-1)
+    //
+    // Assigning a term to a post does not edit the term. WordPress recounts it through
+    // wp_update_term_count(), which fires edited_term_taxonomy and never edited_term — so
+    // without this hook post_count freezes at whatever the count was when the term was last
+    // genuinely edited, which for a tag created during a post save is zero, forever.
+    // =========================================================================
+
+    public function test_edited_term_taxonomy_for_a_tag_emits_tag_updated(): void
+    {
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::TAG_UPDATED, $this->writer->lastWrite()['eventType']);
+        // The hook carries a term_taxonomy_id; the aggregate id must be the TERM id.
+        self::assertSame('77', $this->writer->lastWrite()['aggregateId']);
+    }
+
+    public function test_edited_term_taxonomy_for_a_category_emits_category_updated(): void
+    {
+        // Same hook set, same column: the defect was never tag-specific.
+        $this->wiring->onEditedTermTaxonomy(301, 'category');
+
+        self::assertSame(ContentEventTypes::CATEGORY_UPDATED, $this->writer->lastWrite()['eventType']);
+        self::assertSame('8', $this->writer->lastWrite()['aggregateId']);
+    }
+
+    public function test_edited_term_taxonomy_ignores_an_unsupported_taxonomy(): void
+    {
+        $this->wiring->onEditedTermTaxonomy(401, 'product_cat');
+
+        self::assertSame(0, $this->writer->writeCount());
+    }
+
+    public function test_edited_term_taxonomy_accepts_a_taxonomy_object(): void
+    {
+        // Older cores and third-party do_action() callers pass WP_Taxonomy, not its name.
+        $taxonomy       = new \stdClass();
+        $taxonomy->name = 'post_tag';
+
+        $this->wiring->onEditedTermTaxonomy(201, $taxonomy);
+
+        self::assertSame(ContentEventTypes::TAG_UPDATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_edited_term_taxonomy_ignores_an_unresolvable_term_taxonomy_id(): void
+    {
+        $this->wiring->onEditedTermTaxonomy(9999, 'post_tag');
+
+        self::assertSame(0, $this->writer->writeCount());
+    }
+
+    public function test_every_recount_of_one_term_emits_deliberately_without_dedupe(): void
+    {
+        // A per-request first-emit-wins guard would be wrong here, unlike for media: WordPress can
+        // move one term's count twice in a request (bulk edit; add then full recount), and a
+        // concurrent cron cycle can process the first emit before the second change lands. A
+        // redundant event is checksum-suppressed downstream; a lost final state never converges.
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+
+        self::assertSame(3, $this->writer->writeCount());
+    }
+
+    public function test_recount_during_term_deletion_does_not_emit_an_upsert(): void
+    {
+        // wp_delete_term() reassigns the term's objects BEFORE deleting it, which recounts — and
+        // so fires edited_term_taxonomy for — the term that is about to cease to exist. An
+        // upsert queued there would find no term at process time and DLQ.
+        $this->wiring->onPreDeleteTerm(77, 'post_tag');
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+
+        self::assertSame(0, $this->writer->writeCount());
+    }
+
+    public function test_term_deletion_still_emits_the_tombstone_after_a_suppressed_recount(): void
+    {
+        $this->wiring->onPreDeleteTerm(77, 'post_tag');
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+        $this->wiring->onDeleteTerm(77, 201, 'post_tag', null);
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::TAG_DELETED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_deleting_one_term_does_not_suppress_the_recount_of_another(): void
+    {
+        // Reassignment moves the doomed term's posts onto the default category, which genuinely
+        // gains posts and must still be re-emitted.
+        $this->wiring->onPreDeleteTerm(77, 'post_tag');
+        $this->wiring->onEditedTermTaxonomy(301, 'category');
+
+        self::assertSame(1, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::CATEGORY_UPDATED, $this->writer->lastWrite()['eventType']);
+    }
+
+    public function test_pre_delete_term_emits_nothing_of_its_own(): void
+    {
+        $this->wiring->onPreDeleteTerm(77, 'post_tag');
+
+        self::assertSame(0, $this->writer->writeCount());
+    }
+
+    public function test_a_tag_created_during_a_post_save_is_re_emitted_after_the_recount(): void
+    {
+        // The live defect in one sequence: WordPress creates the tag (count 0), THEN assigns it
+        // and recounts. Capturing only created_term is what froze post_count at zero.
+        $this->wiring->onCreatedTerm(77, 201, 'post_tag');
+        $this->wiring->onEditedTermTaxonomy(201, 'post_tag');
+
+        self::assertSame(2, $this->writer->writeCount());
+        self::assertSame(ContentEventTypes::TAG_UPDATED, $this->writer->lastWrite()['eventType']);
     }
 
     // =========================================================================

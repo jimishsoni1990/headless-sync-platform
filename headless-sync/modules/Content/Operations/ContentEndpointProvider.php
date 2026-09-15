@@ -341,7 +341,17 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             'name'        => 'string',
             'description' => 'string',
             'parent_id'   => 'integer',
-            'post_count'  => 'integer',
+            // Stated explicitly because "number of posts" has three plausible readings and the
+            // field was published with none of them written down (FLAG-TAGCOUNT-1). This is the
+            // semantic the projection has always carried (DECISION AJ (AJ-4)) — not a new one.
+            'post_count'  => [
+                'type'        => 'integer',
+                'description' => "WordPress's own published-post count for this term "
+                    . '(`wp_term_taxonomy.count`), projected verbatim. It counts posts WordPress '
+                    . 'considers published, so drafts, pending, private, scheduled and trashed '
+                    . 'posts are excluded. It is a source fact, not a count of the rows a '
+                    . 'listing returns, and it is not a pagination total.',
+            ],
         ]);
     }
 

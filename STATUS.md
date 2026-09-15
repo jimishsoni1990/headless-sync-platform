@@ -10,6 +10,73 @@
 
 **Current phase:** **Phase 2 — WooCommerce Catalog: COMPLETE (P2-S0 … P2-S7 all shipped).** WooCommerce is the second independent HSP domain module, and the success test was never "products synchronize" — it was that this happened **without special-casing Commerce in Core**. It did: a repo-wide assertion proves there is no reference to `HSP\Modules\Commerce` anywhere under `core/`, and none to `HSP\Modules\Content` anywhere under `modules/Commerce/`. Six Commerce aggregates ship — product, product category, attribute definition, `pa_*` attribute term, product variation, inventory — each with capture, projection, delivery, replay, reconciliation and a proven create → update → delete → tombstone → replay lifecycle. The two-module system test runs both domains through one real bounded cycle on live MySQL + PostgreSQL. **Measured: mixed-domain worst-case sync latency is ≈20.1 s against the 30 s SLA — 9.9 s of margin, so Commerce did NOT consume the headroom** and DECISION AG Part 5's STOP-and-flag was not triggered. **Both flags raised in Phase 2 are now RESOLVED by architect ruling (2026-09-08): DECISION AH** closes FLAG-COMMPERMA-1 as Case B authorised with implementation scheduled into Phase 4 — architecture decided, not an open gap — and **DECISION AI** closes FLAG-PERFCYCLE-1 as Option (a), keeping the threshold unchanged and moving enforcement to a controlled CI performance gate (`HSP_PERFORMANCE_GATE=1`). **No open flags.** FLAG-LIFECYCLE-1 was raised and resolved the same day: live-site testing found AG-12's automatic activation transition built but never invoked, and AG-12 had already pre-authorised the correction, so `ModuleLifecycleRunner` now drives it from the bounded WP-Cron cycle — **proven live: a torn-down Commerce module converged its full catalog in ONE cycle with no reactivation, no manual migrate and no manual reconcile.**
 
+**Last updated:** 2026-09-15 (FLAG-TAGCOUNT-1 — **`post_count` was frozen at whatever WordPress last
+recounted BEFORE HSP heard about the term; it now tracks every source recount. Root cause A — a
+capture-event gap, and it was never a tag defect.** `post_count` already had an explicit semantic:
+DECISION AJ (AJ-4) states it is WordPress's own `wp_term_taxonomy.count`, **projected verbatim** — a
+captured source fact, not a delivery-derived count. The projection honoured that; capture did not.
+`HookWiring` subscribed to `created_term` / `edited_term` / `delete_term`, and **assigning a term to
+a post does not edit the term**: WordPress recounts it through `wp_update_term_count()` →
+`_update_post_term_count()`, which writes `wp_term_taxonomy.count` and fires **`edited_term_taxonomy`
+— never `edited_term`**. Nothing re-emitted the taxonomy aggregate, so the projected count stayed at
+its capture-time value forever. **The live split that raised the flag was incidental, and the
+evidence is exact:** the only category events this installation has ever emitted are seven
+`content.category.updated` at 07:12:06–07 on 2026-09-14 — the onboarding backfill — and no category
+membership has changed since, so the categories matched by luck, not by design. The three tags were
+created at 18:40 the same day (count 0 at `created_term`), assigned seconds later, and never
+re-emitted. **A category count change reproduces the identical defect** (proven live: trashing one
+post moved `category/stocks` 3→2 in WordPress). **Fix — one hook, inside the existing pipeline.**
+`edited_term_taxonomy` → `content.{category,tag}.updated` → existing loader → extractor →
+transformer → `CategoryAdapter` → `content.taxonomies.post_count`. It is the authoritative
+count-change signal: WordPress fires it immediately after the `count` UPDATE on every path that can
+move the number — relationship add, relationship remove, and every post status transition (via
+`_update_term_count_on_transition_post_status`, which is what makes draft↔publish↔trash converge).
+The hook carries a `term_taxonomy_id`, so the term is resolved through the public `get_term_by()`
+API — **no raw table read**; the payload stays `{term_id}` and the worker reloads current WordPress
+state at process time (DECISION H / ADR-044). **`pre_delete_term` was added as a guard that emits
+nothing:** `wp_delete_term()` reassigns a term's posts *before* deleting it, which recounts — and so
+fires `edited_term_taxonomy` for — the term about to cease to exist; emitting there would DLQ an
+ordinary "delete a category that has posts". Every *other* term the reassignment touches (the
+default category, which genuinely gains posts) still emits. **Deliberately NOT deduplicated per
+request, unlike the media hooks — and this was corrected mid-session after a live round trip caught
+it.** A first-emit-wins guard was built, and the live add-then-remove test exposed the hole: WordPress
+can move one term's count twice in a request, and a concurrent cron cycle can process the collapsed
+first emit before the second change lands, pinning the projection to an intermediate value. Duplicate
+emits are exactly what at-least-once is for (Rule 4) and the adapter suppresses the redundant write
+by checksum; a lost final state never converges. The guard was removed and the test now pins the
+non-dedupe as intentional. **`count` was already inside `CanonicalCategory`'s checksum** (verified,
+not assumed), so a count-only change is not write-suppressed — pinned by a live-PG test that asserts
+the stored checksum moves when nothing but the count does — and **that is also why replay and
+reconciliation already repaired stale counts**: the defect was capture coverage, never transform or
+projection. **Nothing architectural moved:** no `PostAdapter` cross-aggregate write, no delivery-time
+WordPress read, no repair SQL, no count materialisation table, no migration, no response-shape or
+route change, and the taxonomy aggregate keeps ownership of its own count. **Live parity, verified
+read-only after deploy: 10/10 terms match on BOTH `post_count` AND membership** (`?tag=` / `?category=`
+result counts) — `post_tag` crypto 3/3/3, gold 1/1/1, stocks 1/1/1; `category` crypto 4, etf 6, index
+3, sip 3, stocks 3, swp 1, uncategorized 7, each equal to WordPress and to its own archive. The three
+tags converged 0/0/0 → 3/1/1 through a pure `wp_update_term_count_now()` recount (no content edited).
+**Two live lifecycle round trips, each restoring the site exactly as found:** membership
+add→remove moved `post_tag/gold` 1→2→1, and status transition publish→trash→publish moved
+`category/stocks` 3→2→3. DLQ 0, queue 187/187 completed. **OpenAPI: description only.** `post_count`
+shipped with no description at all, which is the ambiguity FLAG-TAGCOUNT-1 named; it now states the
+verified existing semantic — WordPress's published-post count, source fact, not a listing result
+count and not a pagination total. No field, type, route, pagination or envelope change; **no `total`
+or `total_count` added anywhere.** Tests: **Unit 1790 ✅** (4 pre-existing skips) · new
+`TaxonomyPostCountIntegrationTest` 8 ✅ (0→1→2→1→0 on tags AND categories, count-only change not
+suppressed, identical re-emission still suppressed, redelivery idempotent, out-of-order older event
+does not regress, stale count converging through ordinary re-emission, published resource carries
+the converged value) · `HookWiringTest` 93 ✅ (+11) · **full Integration 426 ✅** on `hsp_test`
+(1 skipped — DECISION AI performance gate) · ADR-055/AJV `HSP_REQUIRE_NODE_GATE=1` ✅ · PHPStan 8 ✅ ·
+PHPCS ✅. **response shape: No · field type: No · route: No · pagination: No · migration: No · new
+persistence: No · ADR change: No · module boundary change: No · public-data correctness: YES.**
+**FLAG-TAGCOUNT-1 is RESOLVED.** **One new flag raised, not fixed: FLAG-COMMTERMCOUNT-1** — Commerce
+has the identical hook set and therefore the identical defect on `commerce.taxonomies.term_count`
+(published as `count`); its live values happen to match today for the same incidental reason
+categories did. Module isolation (Rule 5) means it is a separate module's capture layer, not a shared
+seam, so it is recorded with evidence rather than patched from a Content session.
+FLAG-RESTARGDRIFT-1, FLAG-COMMSOURCEID-1, FLAG-GATE-WORKTREE-1 and the Commerce permalink Phase 4
+work are deliberately untouched.)
+
 **Last updated:** 2026-09-15 (Finding 002 — **the related-by-tag capability was already complete;
 what was missing was two statements of fact, and both are now published.** Finding 002 asked whether
 a contract-only consumer can build a post-detail "related posts" block from HSP's taxonomy
@@ -504,11 +571,13 @@ change.**)
 current workstream is the real-world implementation findings raised against the live site, not the
 IMPLEMENTATION_PLAN.md Session Map: Phase 2 (P2-S0 … P2-S7) is COMPLETE and the Session Map has no
 row left to point at. The next session should either take a newly raised finding, or pick up one of
-the open flags below. **Open and explicitly NOT touched by Finding 002:** **FLAG-TAGCOUNT-1** (the
-tag resource publishes `post_count: 0` on the live site while WordPress reports 3/1/1 — categories
-are correct on the same site, so the likely cause is that tagging a post changes the term count in
-WordPress without emitting a taxonomy event; it affects no related-by-tag behaviour, which reads
-neither field), **FLAG-RESTARGDRIFT-1** (REST route argument metadata and EndpointDescriptor
+the open flags below. **FLAG-TAGCOUNT-1 is CLOSED** (2026-09-15) — taxonomy `post_count` now tracks
+every WordPress recount through the normal pipeline, and live parity is 10/10 terms on both count and
+membership. **Open flags:** **FLAG-COMMTERMCOUNT-1** (the same capture gap in the Commerce module's
+term hooks — `commerce.taxonomies.term_count`, published as `count`; not visibly wrong today for the
+same incidental reason the categories weren't, and a Content session cannot fix another module's
+capture layer under Rule 5 — the FLAG-TAGCOUNT-1 fix is the shape to copy),
+**FLAG-RESTARGDRIFT-1** (REST route argument metadata and EndpointDescriptor
 parameters can drift without the ADR-055 completeness guard detecting it — Finding 002 pinned the
 `/posts` case and deliberately did not redesign the guard; the dead `listingArgs(['slug', …])` entry
 for `/pages` is recorded there too), **FLAG-COMMSOURCEID-1** (Commerce publishes `id` + `source_id`
@@ -735,9 +804,51 @@ so the gate executes at full fidelity and cannot degrade to a skip. Locally, the
 
 ### FLAG-TAGCOUNT-1 — the tag resource publishes `post_count: 0` on a site whose tags have posts
 
-**Raised:** 2026-09-15 | **Session:** Finding 002 | **Status:** **OPEN — reported, not resolved. No
-production code was changed, because the fix is a capture-coverage question outside Finding 002's
-declaration-only scope.**
+**Raised:** 2026-09-15 | **Session:** Finding 002 | **Resolved:** 2026-09-15 (FLAG-TAGCOUNT-1
+session) | **Status:** **RESOLVED — root cause A (capture-event gap). Fixed inside the existing
+taxonomy pipeline; no ADR change, no migration, no contract shape change.**
+
+**Root cause, verified — and it is NOT the tag-specific story the flag was filed under.**
+`post_count` already had an explicit semantic: DECISION AJ (AJ-4) defines it as WordPress's own
+`wp_term_taxonomy.count`, **projected verbatim** — a captured source fact (model A), not a
+delivery-derived count. The projection honoured that contract; **capture never heard about the
+change.** WordPress recounts a term through `wp_update_term_count()` → `_update_post_term_count()`,
+which writes `wp_term_taxonomy.count` and fires **`edited_term_taxonomy` — never `edited_term`**, so
+the three subscribed hooks (`created_term` / `edited_term` / `delete_term`) left the aggregate
+un-emitted and the projected count frozen at its capture-time value. `count` was already inside
+`CanonicalCategory`'s checksum (verified, not assumed), which is why replay and reconciliation had
+always repaired the value — the gap was capture coverage, never transform or projection.
+
+**The hypothesis in this flag was right about the hook and wrong about the blame.** The live
+category/tag split was **incidental, not architectural**: the only category events this installation
+has ever emitted are seven `content.category.updated` at 07:12:06–07 on 2026-09-14 (the onboarding
+backfill), and no category membership has changed since — so the categories matched by luck. A
+category membership change reproduces the identical defect, proven live: trashing one post moved
+`category/stocks` from 3 to 2 in WordPress.
+
+**Fix.** `HookWiring` subscribes to `edited_term_taxonomy` → `content.{category,tag}.updated`,
+through the existing loader → extractor → transformer → `CategoryAdapter` path. It is the
+authoritative signal: WordPress fires it immediately after the `count` UPDATE on every path that can
+move the number — relationship add, relationship remove, and every post status transition (via
+`_update_term_count_on_transition_post_status`, which is what makes draft↔publish↔trash converge).
+The hook carries a `term_taxonomy_id`, resolved through the public `get_term_by()` API (no raw table
+read); the payload stays `{term_id}` and the worker reloads current WordPress state at process time.
+`pre_delete_term` was added as a guard that **emits nothing** — `wp_delete_term()` recounts a term
+before deleting it, and an upsert queued there would DLQ an ordinary "delete a category that has
+posts"; every other term the reassignment touches still emits. The emits are **deliberately not
+deduplicated per request** (unlike the media hooks): a first-emit-wins guard was built and then
+removed when a live add-then-remove round trip showed a concurrent cron cycle can process the
+collapsed emit before the second change lands, pinning the projection to an intermediate value.
+
+**Outcome.** Live parity is 10/10 terms on both `post_count` and membership; the three tags converged
+0/0/0 → 3/1/1 through an ordinary WordPress recount, and two live round trips (membership 1→2→1,
+status publish→trash→publish 3→2→3) converged and restored the site as found. Option (a) from the
+list below is what shipped; (b), (c) and (d) were not taken. No `PostAdapter` cross-write, no
+delivery-time WordPress read, no repair SQL, no count materialisation table. The OpenAPI
+`post_count` description — previously **absent**, which is the ambiguity this flag named — now states
+the verified existing semantic. **Follow-on: FLAG-COMMTERMCOUNT-1** (same defect, Commerce module).
+
+<details><summary>Original report (2026-09-15, Finding 002) — kept for the record</summary>
 
 **What was found.** Finding 002's live verification compared `GET /hsp/v1/tags` against WordPress
 source truth, as the task required. Slug and name match on all three terms. `post_count` does not:
@@ -776,6 +887,32 @@ the post handler — rejected on sight, since it makes the post pipeline write o
 means a site can serve a stale count indefinitely. (d) Stop publishing `post_count` — a removal, and
 therefore its own compatibility decision (Doc 9 §26). **Recommendation: (a)**, with the caveat that
 the event volume needs measuring against the DECISION AB cadence first.
+
+</details>
+
+---
+
+### FLAG-COMMTERMCOUNT-1 — Commerce taxonomy `count` has the identical capture gap FLAG-TAGCOUNT-1 closed
+
+**Raised:** 2026-09-15 | **Session:** FLAG-TAGCOUNT-1 | **Status:** **OPEN — reported with evidence,
+not fixed. Out of scope for a Content session, and currently correct on live data.**
+
+**What was found.** `modules/Commerce/HookWiring.php` subscribes to exactly the same three term
+hooks Content did — `created_term`, `edited_term`, `delete_term` — and `commerce.taxonomies` carries
+`term_count`, published by `TermResource` as `count`. Assigning a product to a `product_cat` or a
+`pa_*` term recounts it through the same `_update_post_term_count()` path and fires the same
+`edited_term_taxonomy` hook Commerce does not listen to, so the same freeze applies.
+
+**Why it is not visibly wrong today.** The live values match WordPress for all fifteen Commerce
+terms — for the same incidental reason the categories did: nothing has changed product membership
+since the last backfill. That is luck, not correctness.
+
+**Why it was not fixed here.** Module isolation (Rule 5): capture is module-owned, there is no shared
+hook seam between Content and Commerce, and building one would be an architecture change, not a
+defect fix. The Content fix is therefore not a patch that "also covers" Commerce, and a Commerce
+session should apply the same shape — `edited_term_taxonomy` → the module's own term `.updated`
+event, plus the `pre_delete_term` guard — with its own tests. **No ADR is required**: like
+FLAG-TAGCOUNT-1, `count` is already a captured source fact under existing ownership.
 
 ---
 
@@ -2059,6 +2196,8 @@ refuse. **AG-9 unchanged; no local/custom attribute support added.**
 ## Session Log
 
 <!-- Append one line per session: YYYY-MM-DD | session ID | what shipped | flags raised -->
+
+2026-09-15 | FLAG-TAGCOUNT-1 (taxonomy post count capture) | **`post_count` was frozen at whatever WordPress last recounted before HSP heard about the term — root cause A, a capture-event gap, and it was never a tag defect.** Investigation-first: the semantic was already explicit (DECISION AJ (AJ-4) — WordPress's own `wp_term_taxonomy.count`, **projected verbatim**, a captured source fact, model A), so no contract question was open and no ADR was needed. `HookWiring` subscribed to `created_term`/`edited_term`/`delete_term`, and **assigning a term to a post does not edit the term**: WordPress recounts through `wp_update_term_count()` → `_update_post_term_count()`, which writes the count and fires **`edited_term_taxonomy`, never `edited_term`** (verified against the installed WP 7.1 source, not assumed). **The live tag/category split was incidental, proven from the event record, not inferred:** the only category events this installation has ever emitted are seven `content.category.updated` at 07:12:06–07 on 2026-09-14 — the onboarding backfill — and no category membership has changed since; the three tags were created at 18:40 the same day with count 0 and never re-emitted. A category membership change reproduces the identical defect (proven live: trashing one post moved `category/stocks` 3→2). **Fix: one hook, inside the existing pipeline** — `edited_term_taxonomy` → `content.{category,tag}.updated` → existing loader → extractor → transformer → `CategoryAdapter`. It is the authoritative signal: WordPress fires it immediately after the `count` UPDATE on every path that moves the number — relationship add, relationship remove, and every post status transition (via `_update_term_count_on_transition_post_status`, which is what makes draft↔publish↔trash converge). The `term_taxonomy_id` is resolved with the public `get_term_by()` API (**no raw table read**); the payload stays `{term_id}` and the worker reloads current state (DECISION H / ADR-044). **`pre_delete_term` added as a guard that emits nothing** — `wp_delete_term()` recounts a term before deleting it, so emitting there would DLQ an ordinary "delete a category that has posts"; every other term the reassignment touches still emits. **A per-request dedupe guard was built and then REMOVED mid-session** when a live add-then-remove round trip caught the hole: WordPress can move one term's count twice in a request and a concurrent cron cycle can process the collapsed first emit, pinning the projection to an intermediate value — duplicates are what at-least-once is for (Rule 4, checksum-suppressed downstream), a lost final state never converges; the non-dedupe is now pinned by test as intentional. `count` was **already** inside `CanonicalCategory`'s checksum (verified, not assumed), which is both why a count-only change is not write-suppressed and why replay/reconciliation had always repaired the value — the gap was capture coverage, never transform or projection. **Live, read-only after deploy: 10/10 terms match on BOTH `post_count` AND membership** (`?tag=`/`?category=` result counts): tags crypto 3/3/3, gold 1/1/1, stocks 1/1/1; categories crypto 4, etf 6, index 3, sip 3, stocks 3, swp 1, uncategorized 7. Tags converged 0/0/0 → 3/1/1 via a pure `wp_update_term_count_now()` recount (no content edited); two round trips restored the site as found (membership 1→2→1; status publish→trash→publish 3→2→3); DLQ 0, queue 187/187 completed. Unit 1790 ✅ (4 pre-existing skips) · `HookWiringTest` 93 ✅ (+11) · new `TaxonomyPostCountIntegrationTest` 8 ✅ · **full Integration 426 ✅** on `hsp_test` (1 skipped — DECISION AI) · ADR-055/AJV `HSP_REQUIRE_NODE_GATE=1` ✅ · PHPStan 8 ✅ · PHPCS ✅. **response shape: No · field type: No · route: No · pagination: No · migration: No · new persistence: No · ADR change: No · module boundary change: No · public-data correctness: YES.** OpenAPI changed by **description only** — `post_count` shipped with none, which is the ambiguity the flag named; it now states the verified existing semantic (published-post count, source fact, not a listing result count, not a pagination total). No `PostAdapter` cross-aggregate write, no delivery-time WordPress read, no repair SQL, no count table, no `total`/`total_count`. **FLAG-TAGCOUNT-1 RESOLVED. One flag raised, not fixed: FLAG-COMMTERMCOUNT-1** — Commerce has the identical hook set and identical defect on `commerce.taxonomies.term_count`; its live values match today for the same incidental reason, and Rule 5 puts another module's capture layer out of scope here. FLAG-RESTARGDRIFT-1, FLAG-COMMSOURCEID-1, FLAG-GATE-WORKTREE-1 and the Commerce permalink Phase 4 work deliberately untouched.
 
 2026-09-14 | Finding 010 / DECISION AL (variation-selection capability) | **The selector capability is now machine-readable, closing the correctness defect the first pass could only flag.** Architect ruling: a flag is not a resting place for "a contract-only consumer can confidently resolve the WRONG variation", and the fix is **not** broadening local/custom attribute support — it is publishing whether a product's variation-defining state is representable at all. **DECISION AL** (ARCHITECTURE_DECISIONS.md v1.43→**v1.44**, plus an Implications row; IMPLEMENTATION_PLAN.md §5 Phase 2 note + P2-S4/P2-S5 amendment pointers; CLAUDE.md SETTLED entry). **AG-9 IS UNCHANGED** — no local/custom attribute definition, term, label, option string or meta key is projected or serialised anywhere, asserted. **Contract:** `variation_selection_supported` on the Product resource — true = HSP's public Product + Variation data suffices to resolve a selection safely; false = a consumer **MUST NOT** resolve from HSP data alone. Not a "product supported" flag: a false product keeps listing, addressing, media, prices, descriptive data and `woo_product_id`, and false is never an error, 500, omission or tombstone. **Source rule, verified against WooCommerce 11.1.0:** every attribute with `get_variation() === true` must satisfy `is_taxonomy()` (authoritative — the `pa_` name is corroboration only, since a local attribute can be *named* like a taxonomy and its values are raw option strings, not term slugs) and be a taxonomy the module owns; display-only attributes are irrelevant; **never inferred from the variation payloads**; and a variable product with **no** variation-defining attributes is **false** (Woo's resolver returns 0 there while every variation would publish an empty pattern matching everything). **Persistence:** one column — `commerce.products.variation_selection_supported BOOLEAN NULL`, migration `0008_add_commerce_products_variation_selection` — **no DEFAULT** (true would bless the affected products; false would erase *classified* from *never classified*), no index, no new table/matrix/graph/subsystem. NULL = unknown or not applicable; **delivery publishes false for unknown** so consumers never see migration state, and the field is **absent entirely on non-variable products** (AK-8 precedent) and therefore optional, never `required`. Inside the product checksum — mandatory, since the source transition moves no other projected value and would otherwise be write-suppressed — so convergence is **ordinary DECISION T/U re-emission with no repair path**, proven live end to end: migration applied → both variable products NULL and publishing false → full reconciliation reported `checksum_drift` and re-emitted → bounded cycle projected → 94 `true`, 95 `false`, **zero repair SQL**. **Consumer rule is two-stage** in the published OpenAPI (check capability, then the verified algorithm), and the reference matcher **refuses** when false even where the supported subset looks unique. **Live regression: v-neck 94 → true, 9/9 exact `woo_variation_id` parity, 0 wrong; hoodie 95 → false, all 6 selections refused, WRONG CONFIDENT RESOLUTIONS = 0 (was 3/6); 15 simple products carry no field; impossible selections null on both sides.** Unit 1766 ✅ · Commerce Integration 149 ✅ · full Integration 406 ✅ (1 skipped — DECISION AI perf gate) · AJV `HSP_REQUIRE_NODE_GATE=1` ✅ · PHPStan 8 ✅ · PHPCS ✅. **architecture decision amended: YES · architecture docs changed: YES · migration: YES · new persistence subsystem: NO · local/custom attribute support: NO · resolver endpoint: NO · selector matrix: NO · cart capability: NO · module boundary change: NO.** | **FLAG-COMMVARLOCAL-1 RESOLVED AS AN EXPLICIT UNSUPPORTED CAPABILITY** — consumer-safety defect closed, feature support deliberately still absent; must never be read as "local/custom variation attributes are supported". No new flags.
 

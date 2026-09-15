@@ -330,6 +330,39 @@ if (! function_exists('get_post')) {
     }
 }
 
+// WP_Term + get_term_by: HookWiring resolves a term_taxonomy_id to a term id on the
+// edited_term_taxonomy hook (FLAG-TAGCOUNT-1). Tests register terms by tt_id:
+//   $GLOBALS['_hsp_stub_term_by_tt_id'][$ttId] = ['term_id' => 5, 'taxonomy' => 'post_tag'];
+if (! class_exists('WP_Term')) {
+    class WP_Term
+    {
+        public int $term_id = 0;
+        public int $term_taxonomy_id = 0;
+        public string $taxonomy = '';
+    }
+}
+
+if (! function_exists('get_term_by')) {
+    function get_term_by(string $field, mixed $value, string $taxonomy = ''): object|false
+    {
+        if ($field !== 'term_taxonomy_id') {
+            return false;
+        }
+
+        $data = $GLOBALS['_hsp_stub_term_by_tt_id'][(int) $value] ?? null;
+        if ($data === null) {
+            return false;
+        }
+
+        $term                   = new WP_Term();
+        $term->term_id          = (int) $data['term_id'];
+        $term->term_taxonomy_id = (int) $value;
+        $term->taxonomy         = (string) ($data['taxonomy'] ?? '');
+
+        return $term;
+    }
+}
+
 if (! function_exists('wp_is_post_revision')) {
     function wp_is_post_revision(int $postId): bool
     {

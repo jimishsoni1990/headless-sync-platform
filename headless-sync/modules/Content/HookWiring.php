@@ -11,7 +11,7 @@ use HSP\Modules\Content\Events\ContentEventTypes;
 /**
  * Wires WordPress hooks to Content domain events via the EventProvider.
  *
- * Seven hooks resolve to nine event types (OPEN-1).
+ * The hooks below resolve to the fifteen ContentEventTypes constants (OPEN-1).
  *
  * Membership-based public-set capture (OPEN-10 — Resolved):
  *   Public set = {publish} only.
@@ -27,6 +27,8 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  *   after_delete_post → post/page deleted (permanent hard-delete)
  *   created_term    → category/tag created
  *   edited_term     → category/tag updated
+ *   edited_term_taxonomy → category/tag updated (term COUNT recount — FLAG-TAGCOUNT-1)
+ *   pre_delete_term → no event; suppresses the recount emit for the doomed term
  *   delete_term     → category/tag deleted
  *   add_attachment     → media created
  *   attachment_updated → media updated
@@ -39,6 +41,39 @@ use HSP\Modules\Content\Events\ContentEventTypes;
  * Term hooks are scoped to the taxonomies this module projects — 'category' and, since P1B-S3,
  * 'post_tag'. Any other taxonomy is ignored silently: other plugins register taxonomies freely
  * and their terms firing these hooks is normal traffic, not an error.
+ *
+ * Term COUNT capture (FLAG-TAGCOUNT-1). `post_count` is WordPress's own
+ * `wp_term_taxonomy.count`, projected verbatim (DECISION AJ (AJ-4)) — so every source event that
+ * moves that number has to reach the taxonomy aggregate. Assigning a term to a post does NOT edit
+ * the term: WordPress recounts it through `wp_update_term_count()`, which fires
+ * `edited_term_taxonomy` and never `edited_term`. Subscribing to `created_term`/`edited_term`
+ * alone therefore froze `post_count` at whatever it was when the term was last *edited*, which for
+ * a tag created during a post save is zero, forever. `edited_term_taxonomy` is the authoritative
+ * count-change hook: WordPress fires it from `_update_post_term_count()` immediately AFTER the
+ * `wp_term_taxonomy.count` UPDATE, on every path that can move the number — relationship add
+ * (`wp_set_object_terms`), relationship remove (`wp_remove_object_terms`), and every post status
+ * transition (`_update_term_count_on_transition_post_status`, which is what makes
+ * draft↔publish↔trash converge).
+ *
+ * It carries a term_taxonomy_id, not a term_id, so the term is resolved through the public
+ * `get_term_by()` API — no raw table read. Nothing about the count itself is captured here: the
+ * event payload stays `{term_id}` and the worker reloads current WordPress state at process time
+ * (DECISION H / ADR-044), so a collapsed or redelivered emit loses nothing.
+ *
+ * Deliberately NOT deduplicated per request, unlike the media hooks below. WordPress can move one
+ * term's count twice in a single request (a bulk edit assigning and unassigning the same tag; a
+ * `wp_set_object_terms` add followed by the status transition's full recount), and first-emit-wins
+ * would then capture the term at an intermediate value: state-sync makes a collapsed emit safe
+ * only while nothing processes it before the request finishes, and a concurrent cron cycle can.
+ * Duplicate emits are exactly what at-least-once is for (Rule 4) — the adapter suppresses the
+ * redundant write by checksum — whereas a lost final state does not converge.
+ *
+ * pre_delete_term: `wp_delete_term()` reassigns the term's objects BEFORE deleting it, which
+ * recounts — and so fires `edited_term_taxonomy` for — the term that is about to cease to exist.
+ * Emitting `.updated` there would queue an upsert whose `loadTerm()` finds nothing at process
+ * time, DLQ-ing a perfectly ordinary "delete a category that has posts". The flag suppresses the
+ * recount emit for that one term only; every other term the reassignment touches (the default
+ * category, which genuinely gains posts) still emits.
  *
  * Double-write prevention: transition_post_status sets a per-request flag for each
  * post_id it handles. Both save_post and wp_trash_post skip any post_id already
@@ -67,6 +102,9 @@ final class HookWiring
 
     /** @var array<int,true> attachment ids already emitted for this request (see onAddAttachment) */
     private array $handledMedia = [];
+
+    /** @var array<int,true> term ids inside a wp_delete_term() call this request */
+    private array $deletingTerms = [];
 
     /** True once a capture failed this request — drives the one-shot admin notice. */
     private bool $captureFailed = false;
@@ -128,7 +166,7 @@ final class HookWiring
     }
 
     /**
-     * Register all seven WordPress action hooks.
+     * Register every WordPress action hook this module captures from.
      *
      * Called during module register() — before boot(). WordPress's add_action()
      * must be available at call time.
@@ -141,6 +179,8 @@ final class HookWiring
         add_action('after_delete_post',      [$this, 'onAfterDeletePost'],       10, 2);
         add_action('created_term',           [$this, 'onCreatedTerm'],           10, 3);
         add_action('edited_term',            [$this, 'onEditedTerm'],            10, 3);
+        add_action('edited_term_taxonomy',   [$this, 'onEditedTermTaxonomy'],    10, 2);
+        add_action('pre_delete_term',        [$this, 'onPreDeleteTerm'],         10, 2);
         add_action('delete_term',            [$this, 'onDeleteTerm'],            10, 4);
         add_action('add_attachment',         [$this, 'onAddAttachment'],         10, 1);
         add_action('attachment_updated',     [$this, 'onAttachmentUpdated'],     10, 1);
@@ -288,7 +328,7 @@ final class HookWiring
     }
 
     // -------------------------------------------------------------------------
-    // Category hooks (taxonomy='category' only — MVP scope)
+    // Term hooks (taxonomy='category' and 'post_tag' — P1B-S3)
     // -------------------------------------------------------------------------
 
     /**
@@ -305,11 +345,7 @@ final class HookWiring
             return;
         }
 
-        $this->capture(
-            $eventType,
-            (string) $termId,
-            $this->categoryContext($termId),
-        );
+        $this->captureTermUpsert($eventType, $termId);
     }
 
     /**
@@ -326,11 +362,63 @@ final class HookWiring
             return;
         }
 
-        $this->capture(
-            $eventType,
-            (string) $termId,
-            $this->categoryContext($termId),
-        );
+        $this->captureTermUpsert($eventType, $termId);
+    }
+
+    /**
+     * edited_term_taxonomy: fires after a term's `wp_term_taxonomy` row is written — including
+     * the `count` UPDATE inside `_update_post_term_count()`, which is the ONLY source signal for
+     * a `post_count` change (FLAG-TAGCOUNT-1). See the class docblock for the full rationale.
+     *
+     * @param int          $ttId     term_taxonomy_id — NOT a term_id.
+     * @param string|object $taxonomy Taxonomy slug. WordPress ≥ 5.x passes `$taxonomy->name`;
+     *                                older cores and third-party `do_action()` callers pass the
+     *                                WP_Taxonomy object, so both shapes are accepted rather than
+     *                                fataling a term save on a TypeError inside a hook.
+     */
+    public function onEditedTermTaxonomy(int $ttId, string|object $taxonomy): void
+    {
+        $taxonomyName = is_string($taxonomy)
+            ? $taxonomy
+            : (string) (get_object_vars($taxonomy)['name'] ?? '');
+
+        // Resolve the taxonomy BEFORE touching the database: product_cat, pa_*, product_visibility
+        // and every other registered taxonomy fire this hook on ordinary traffic.
+        $eventType = $this->resolveTermEventType($taxonomyName, 'updated');
+        if ($eventType === null) {
+            return;
+        }
+
+        $term = get_term_by('term_taxonomy_id', $ttId);
+        if (! $term instanceof \WP_Term) {
+            return;
+        }
+
+        $termId = (int) $term->term_id;
+
+        // The term is mid-deletion; delete_term will emit the tombstone (class docblock).
+        if (isset($this->deletingTerms[$termId])) {
+            return;
+        }
+
+        $this->captureTermUpsert($eventType, $termId);
+    }
+
+    /**
+     * pre_delete_term: fires at the top of wp_delete_term(), before the term's objects are
+     * reassigned. Emits nothing; it only marks the term so the reassignment's own recount does
+     * not queue an upsert for a term that will not exist at process time.
+     *
+     * @param int    $termId
+     * @param string $taxonomy
+     */
+    public function onPreDeleteTerm(int $termId, string $taxonomy): void
+    {
+        if ($this->resolveTermEventType($taxonomy, 'deleted') === null) {
+            return;
+        }
+
+        $this->deletingTerms[$termId] = true;
     }
 
     /**
@@ -353,6 +441,12 @@ final class HookWiring
             (string) $termId,
             $this->categoryContext($termId),
         );
+    }
+
+    /** Emit one term upsert event. */
+    private function captureTermUpsert(string $eventType, int $termId): void
+    {
+        $this->capture($eventType, (string) $termId, $this->categoryContext($termId));
     }
 
     // -------------------------------------------------------------------------
