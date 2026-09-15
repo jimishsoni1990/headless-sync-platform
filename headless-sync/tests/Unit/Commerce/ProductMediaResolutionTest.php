@@ -434,6 +434,109 @@ final class ProductMediaResolutionTest extends TestCase
         self::assertSame(125, $unresolved['media']['featured_id']);
     }
 
+    /**
+     * A variation carrying no image reference at all publishes `featured_id: 0` and
+     * `featured: null`.
+     *
+     * Asserted at the RESOLUTION layer deliberately: whatever the loader decides to store — the
+     * variation's own image, or WooCommerce's view-resolved effective image — a stored 0 means
+     * there is no attachment to resolve, and the contract must say so with a null rather than an
+     * empty object. This test makes no claim about the parent-image fallback, which is a CAPTURE
+     * question and is open (see FLAG-COMMVARIMG-1).
+     */
+    public function testAVariationWithNoImageReferencePublishesNull(): void
+    {
+        $db = new FakeDbConnection();
+        $db->willReturnRows([[
+            'id'                  => 'v-uuid',
+            'source_variation_id' => 118,
+            'source_parent_id'    => 95,
+            'featured_media_id'   => 0,
+            'menu_order'          => 0,
+        ]]);
+
+        $published = (new VariationResource())->toArray(
+            (new VariationQueryProvider($db, $this->capability([])))
+                ->list(new VariationFilterSet(parentSourceId: 95))->rows[0]
+        );
+
+        self::assertSame(0, $published['media']['featured_id']);
+        self::assertNull($published['media']['featured']);
+    }
+
+    /**
+     * An explicit variation image is published as itself and is never displaced by the parent's.
+     *
+     * The resolution layer resolves the reference it is given and nothing else — it holds no
+     * parent, performs no fallback, and cannot silently substitute one image for another.
+     */
+    public function testAnExplicitVariationImageIsResolvedAsItself(): void
+    {
+        $db = new FakeDbConnection();
+        $db->willReturnRows([[
+            'id'                  => 'v-uuid',
+            'source_variation_id' => 118,
+            'source_parent_id'    => 95,
+            // 125 is the variation's own image; the parent's is 122 (live reference store).
+            'featured_media_id'   => 125,
+            'menu_order'          => 0,
+        ]]);
+
+        $published = (new VariationResource())->toArray(
+            (new VariationQueryProvider($db, $this->capability([122, 125])))
+                ->list(new VariationFilterSet(parentSourceId: 95))->rows[0]
+        );
+
+        self::assertSame(125, $published['media']['featured_id']);
+        self::assertSame('https://example.test/125.jpg', $published['media']['featured']['url']);
+    }
+
+    /**
+     * Delivery resolves variation media without touching WordPress (ADR-040 / Rule 6).
+     *
+     * A `$wpdb` that throws on contact, rather than a source scan: a scan proves no call is
+     * WRITTEN, this proves none is MADE — including from anything the path calls into.
+     */
+    public function testVariationMediaResolutionPerformsNoWordPressRead(): void
+    {
+        $db = new FakeDbConnection();
+        $db->willReturnRows([[
+            'id'                  => 'v-uuid',
+            'source_variation_id' => 118,
+            'source_parent_id'    => 95,
+            'featured_media_id'   => 125,
+            'menu_order'          => 0,
+        ]]);
+
+        $prior          = $GLOBALS['wpdb'] ?? null;
+        $GLOBALS['wpdb'] = new class {
+            public string $prefix = 'wp_';
+
+            /** @param array<int,mixed> $args */
+            public function __call(string $method, array $args): mixed
+            {
+                throw new \RuntimeException(
+                    "Delivery touched WordPress: \$wpdb->{$method}() (ADR-040 / Rule 6)."
+                );
+            }
+        };
+
+        try {
+            $published = (new VariationResource())->toArray(
+                (new VariationQueryProvider($db, $this->capability([125])))
+                    ->list(new VariationFilterSet(parentSourceId: 95))->rows[0]
+            );
+
+            self::assertSame('https://example.test/125.jpg', $published['media']['featured']['url']);
+        } finally {
+            if ($prior === null) {
+                unset($GLOBALS['wpdb']);
+            } else {
+                $GLOBALS['wpdb'] = $prior;
+            }
+        }
+    }
+
     public function testVariationResolutionIsAlsoOneCallForThePage(): void
     {
         $rows = [];

@@ -975,6 +975,93 @@ so the gate executes at full fidelity and cannot degrade to a skip. Locally, the
 
 ## Flags
 
+### FLAG-COMMVARIMG-1 — a variation's stored image reference is WooCommerce's *effective* image, and it does not converge when the parent's changes
+
+**Raised:** 2026-09-15 | **Session:** Finding 011 follow-up (Variation scope review) |
+**Status:** **OPEN — architecture ruling required. No semantic change made; no workaround
+introduced.**
+
+**Scope.** This does **not** affect Finding 011's Product media work, which stays approved and
+untouched, nor the AG-10 Core media capability, nor any variation that has an image of its own.
+It concerns one question: whether the value HSP persists in
+`commerce.product_variations.featured_media_id` is a safe, independently convergent Variation
+aggregate fact.
+
+**Verified WooCommerce 11.1.0 source fact.** `WC_Product_Variation::get_image_id()` takes a
+context, and the two contexts answer different questions
+(`includes/class-wc-product-variation.php:373-381`):
+
+```
+get_image_id('edit') → the variation's OWN explicit image (0 when it has none)
+get_image_id('view') → the EFFECTIVE image: own image, else the PARENT product's featured image
+```
+
+Measured live (read-only, in-memory, never saved) on variation 111 of product 95 with its own
+image cleared: `edit` = `0`, `view` = `122` — the parent's.
+
+**What HSP captures.** `WpCommerceLoaderImpl::loadVariation()` calls `$variation->get_image_id()`
+with the **default** context — `view`. So HSP stores the *effective* image, a value that may
+belong to a different aggregate, and it is inside `CanonicalVariation`'s checksum.
+
+**The defect.** That stored value can change without the aggregate that stores it being edited,
+and nothing emits an event when it does. **Verified live, not inferred:** changing product 95's
+featured image emitted `commerce.product.updated` + `commerce.inventory.updated` and **zero**
+`commerce.product_variation.*` events — WooCommerce saves no variation, so no variation hook
+fires, and `HookWiring::onProductUpdated()` captures the product alone. The documented fan-out
+direction is variation → parent (`WC_Product_Variable::sync()` calls `$parent->save()`), never
+parent → variations.
+
+Proven end to end in `VariationMediaConvergenceIntegrationTest`: with the parent's image moved
+`122 → 125` and the variation untouched, `loadVariation()` answers `125` while the projection
+still serves `122`.
+
+**Classification: A2 — source-defined but NOT independently convergent.** Reconciliation in a
+**checksum** mode (incremental / full) recomputes the canonical checksum from live WordPress state
+and does detect the drift, which is exactly what identifies this as a **capture gap** rather than
+a projection bug — the same shape as FLAG-TAGCOUNT-1 and FLAG-COMMTERMCOUNT-1, both of which this
+project treated as real defects and fixed at capture. The hourly `drift` mode cannot catch it: it
+compares timestamps and existence with no checksum recompute, and a parent image edit does not
+move the variation's `post_modified`. So the staleness window is the reconciliation cadence, not
+the DECISION AB sync SLA.
+
+**Live impact today: none.** All seven variations on the reference store carry their own explicit
+image (`edit` == `view` for every one), so the fallback is not currently exercised and no live
+value is wrong. The risk is latent, and Finding 011 raised its visibility: an inherited reference
+used to be an opaque integer and now renders as a complete image object, so a consumer would
+display a parent image believing it to be the variation's.
+
+**Also unresolved, and deliberately left alone:** the shipped OpenAPI description reads *"Variation
+image attachment id; 0 when the variation has none."* Under `view` semantics that is **not always
+true** — a variation with none can publish the parent's id. It was not corrected in this session,
+because the accurate wording depends on which option below is chosen, and rewriting it now would
+document the current behaviour as ratified contract.
+
+**The two narrow options, neither chosen here:**
+
+**Option 1 — persist the variation's OWN explicit image (`edit` context).**
+`featured_media_id` becomes the variation's own reference, `0` when it has none, and a consumer
+wanting WooCommerce's display fallback writes `variation.featured ?? product.media.featured` —
+which is newly possible precisely because Finding 011 made Product media consumable. The variation
+then owns only its own source state, no cross-aggregate derived value is persisted, a parent edit
+needs no variation re-emission, and public provenance is unambiguous. **This is a change to the
+meaning of an existing public field** (view-resolved → explicit-only) and therefore a contract
+change requiring review.
+
+**Option 2 — keep the effective `view` image and define an architecture-safe convergence
+mechanism** for it.
+
+**Explicitly NOT authorised as a fix without a ruling** — each trades a capture question for a
+coupling AG-7 exists to prevent: `ProductAdapter` writing variation rows; parent-product event
+fan-out to every child variation; a delivery-time WooCommerce lookup; Commerce SQL cross-writing
+variations; or a read-time parent join in `VariationQueryProvider` (`if featured_media_id === 0
+then fetch the parent's`), which would additionally erase the distinction between an explicit
+image and an inherited one.
+
+**Evidence in the tree:** `docs/notes/WOOCOMMERCE-SOURCE-VERIFICATION.md` §9.7 (verified source
+facts, HSP semantic marked unresolved) and
+`tests/Integration/Commerce/VariationMediaConvergenceIntegrationTest.php` (five tests; the
+non-convergence is pinned, not endorsed, and the pin will need updating when this is ruled on).
+
 ### FLAG-TAGCOUNT-1 — taxonomy `post_count` did not follow WordPress term recounts
 
 > **Filed as a tag defect; it was not one.** The title above is the corrected, taxonomy-generic

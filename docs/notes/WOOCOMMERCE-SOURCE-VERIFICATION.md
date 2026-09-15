@@ -319,6 +319,70 @@ Variation **stock** is deliberately out of scope for this session and belongs to
 rest of AG-14 — including how a variation signals that stock is managed at the parent instead.
 This session projects a variation's identity, pricing and selected attribute values only.
 
+### 9.7 Variation image — VERIFIED SOURCE FACT, UNRESOLVED HSP SEMANTIC (FLAG-COMMVARIMG-1)
+
+Verified 2026-09-15, after Finding 011, because P2-S5 never covered it: §9.6 below scoped that
+session to "identity, pricing and selected attribute values only", while DECISION AG's
+source-fact protocol lists **"product/variation image references"** as a fact requiring
+verification. The column shipped; the verification did not.
+
+**WooCommerce 11.1.0 fact.** `WC_Product_Variation::get_image_id( $context = 'view' )`
+(`includes/class-wc-product-variation.php:373-381`) falls back to the PARENT product's image when
+the variation has none of its own:
+
+```php
+$image_id = $this->get_prop( 'image_id', $context );
+if ( 'view' === $context && ! $image_id ) {
+    $image_id = apply_filters( $this->get_hook_prefix() . 'image_id', $this->parent_data['image_id'], $this );
+}
+```
+
+Measured on the live store (read-only, in-memory mutation of a loaded object, never saved) —
+variation 111 of product 95, with its own image cleared in memory:
+
+| context | value |
+|---|---|
+| `get_image_id('edit')` | `0` — the variation's own explicit reference |
+| `get_image_id('view')` | `122` — the PARENT product's featured image |
+
+So `edit` and `view` answer two genuinely different source questions: *the variation's own image*
+versus *the effective image WooCommerce would display for it*.
+
+**What HSP captures.** `WpCommerceLoaderImpl::loadVariation()` calls `$variation->get_image_id()`
+with the **default** context, i.e. `view`. HSP therefore persists the EFFECTIVE image — a value
+that can belong to a different aggregate — into `commerce.product_variations.featured_media_id`,
+and it is inside `CanonicalVariation`'s checksum.
+
+**Why that is not yet a ratified contract.** The stored value can change without the aggregate
+that stores it being edited, and nothing emits an event when it does:
+
+- Verified live: changing product 95's featured image emitted `commerce.product.updated` +
+  `commerce.inventory.updated` and **zero** `commerce.product_variation.*` events. WooCommerce
+  saves no variation, so no variation hook fires and `HookWiring::onProductUpdated()` captures
+  the product alone (the documented fan-out direction is variation → parent, via
+  `WC_Product_Variable::sync()`, never parent → variations).
+- Proven end to end in `VariationMediaConvergenceIntegrationTest`: with the parent's image moved
+  `122 → 125` and the variation untouched, `loadVariation()` now answers `125` while the
+  projection still serves `122`.
+
+Reconciliation in a **checksum** mode (incremental / full) recomputes the canonical checksum from
+live WordPress state and does detect the drift — which is what identifies this as a **capture
+gap**, the same shape as FLAG-TAGCOUNT-1 and FLAG-COMMTERMCOUNT-1, rather than a projection bug.
+The hourly `drift` mode cannot catch it: it compares timestamps and existence with no checksum
+recompute, and a parent image edit does not move the variation's `post_modified`.
+
+**Status: the WooCommerce facts above are verified. The HSP persistence semantic is UNRESOLVED**
+pending architecture ruling (FLAG-COMMVARIMG-1). Until it is ruled on, do not describe the
+parent-image fallback as part of the published contract, and do not "fix" the staleness with a
+parent-event fan-out to variations, a `ProductAdapter` write into variation rows, a delivery-time
+WooCommerce lookup, or a read-time parent join in `VariationQueryProvider` — each of those trades
+a capture question for a cross-aggregate coupling AG-7 exists to prevent.
+
+**Not affected.** A variation with its OWN explicit image is unaffected in every respect: its
+reference is its own source fact, it converges on its own variation events, and all seven
+variations on the live reference store are of this kind (`edit` == `view` for every one), so
+there is no live incorrectness today.
+
 ---
 
 ## 10. P2-S6 preflight — inventory ownership (the five AG-14 questions)
