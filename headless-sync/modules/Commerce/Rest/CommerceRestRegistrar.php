@@ -9,6 +9,7 @@ use HSP\Core\Contracts\ResourceInterface;
 use HSP\Core\Delivery\CursorToken;
 use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Modules\Commerce\CommerceTaxonomies;
+use HSP\Modules\Commerce\ProductScope;
 use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Queries\TermFilterSet;
 use HSP\Modules\Commerce\Queries\VariationFilterSet;
@@ -36,10 +37,54 @@ use HSP\Modules\Commerce\Support\Money;
  * sanitized here, which is the untrusted edge. The routes are public reads, so
  * `permission_callback` is `__return_true` — matching the shipped content endpoints, whose
  * data is likewise already public.
+ *
+ * WHY EVERY CONSTRAINED ARG BELOW NAMES `rest_validate_request_arg` EXPLICITLY
+ * (FLAG-RESTARGDRIFT-1). WordPress schema-validates a raw route arg through exactly one door:
+ * `WP_REST_Request::sanitize_params()` installs the validating default `rest_parse_request_arg`
+ * only when the arg has a `type` and NO `sanitize_callback` key. Declaring a sanitizer —
+ * `absint`, `sanitize_text_field`, `sanitize_key` — REPLACES that default and silently switches
+ * all schema validation off for that parameter. That is why `limit` accepted 0, -5, abc and 500
+ * alike, and why `featured`/`in_stock`, the only two args here without a sanitizer, were the only
+ * two that ever rejected anything.
+ *
+ * Naming the callback explicitly also fixes the ORDER: it runs in `has_valid_params()`, which
+ * WP_REST_Server calls BEFORE `sanitize_params()`, so the raw value is judged before `absint`
+ * can turn `abc` into 0 or `-5` into 5. And it cannot be disabled again by someone adding a
+ * sanitizer later.
+ *
+ * Page-size maxima are per-route and deliberately NOT flattened to one number: products are
+ * capped at 100, taxonomy/attribute/variation listings at 200, matching each query provider's
+ * own ceiling and each descriptor's published contract.
  */
 final class CommerceRestRegistrar
 {
     private const NAMESPACE = 'hsp/v1';
+
+    /**
+     * Published page-size ceilings, per route family (FLAG-RESTARGDRIFT-1 A-2/A-3).
+     *
+     * Each matches the MAX_LIMIT its query provider already clamps to and the maximum its
+     * EndpointDescriptor already published in prose. They are NOT flattened to one platform-wide
+     * number: a product page and a term page have different costs, and the published contracts
+     * differ accordingly.
+     */
+    private const PRODUCT_MAX_LIMIT = 100;
+
+    /** Terms, attribute definitions, attribute terms and variations all publish 200. */
+    private const TERM_MAX_LIMIT = 200;
+
+    /**
+     * The addressing grammars of the path parameters, published so the contract stops implying
+     * that any string is addressable (FLAG-RESTARGDRIFT-1 D-5).
+     *
+     * Identical to the character classes in the route regexes, which is what ENFORCES them —
+     * structurally, at dispatch — so publishing them creates no new 400. The ADR-055 parameter
+     * drift guard compares each against the live route's own capture group.
+     */
+    private const SLUG_PATTERN = '^[a-z0-9_-]+$';
+
+    /** The full taxonomy name (`pa_colour`), so `_` is part of the identifier. */
+    private const TAXONOMY_PATTERN = '^[a-z0-9_-]+$';
 
     /**
      * @param \Closure(string): QueryProviderInterface $attributeTermQueryFactory Builds a term
@@ -85,6 +130,7 @@ final class CommerceRestRegistrar
                 'slug' => [
                     'required'          => true,
                     'type'              => 'string',
+                    'pattern'           => self::SLUG_PATTERN,
                     'sanitize_callback' => 'sanitize_title',
                 ],
             ],
@@ -96,8 +142,23 @@ final class CommerceRestRegistrar
             'permission_callback' => '__return_true',
             'args'                => [
                 'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
-                'limit'  => ['type' => 'integer', 'sanitize_callback' => 'absint'],
-                'parent' => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+                'limit'  => [
+                    'type'              => 'integer',
+                    'minimum'           => 1,
+                    'maximum'           => self::TERM_MAX_LIMIT,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
+                // `0` means top-level, so the floor is 0 rather than 1. Unvalidated, `absint`
+                // made `?parent=abc` mean 0 — a request naming a category returned the TOP-LEVEL
+                // listing as though it had succeeded — and `?parent=-5` mean the children of
+                // term 5.
+                'parent' => [
+                    'type'              => 'integer',
+                    'minimum'           => 0,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
             ],
         ]);
 
@@ -109,6 +170,7 @@ final class CommerceRestRegistrar
                 'slug' => [
                     'required'          => true,
                     'type'              => 'string',
+                    'pattern'           => self::SLUG_PATTERN,
                     'sanitize_callback' => 'sanitize_title',
                 ],
             ],
@@ -120,7 +182,13 @@ final class CommerceRestRegistrar
             'permission_callback' => '__return_true',
             'args'                => [
                 'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
-                'limit'  => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+                'limit'  => [
+                    'type'              => 'integer',
+                    'minimum'           => 1,
+                    'maximum'           => self::TERM_MAX_LIMIT,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
             ],
         ]);
 
@@ -134,6 +202,7 @@ final class CommerceRestRegistrar
                 'taxonomy' => [
                     'required'          => true,
                     'type'              => 'string',
+                    'pattern'           => self::TAXONOMY_PATTERN,
                     'sanitize_callback' => 'sanitize_key',
                 ],
             ],
@@ -147,10 +216,17 @@ final class CommerceRestRegistrar
                 'taxonomy' => [
                     'required'          => true,
                     'type'              => 'string',
+                    'pattern'           => self::TAXONOMY_PATTERN,
                     'sanitize_callback' => 'sanitize_key',
                 ],
                 'cursor'   => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
-                'limit'    => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+                'limit'    => [
+                    'type'              => 'integer',
+                    'minimum'           => 1,
+                    'maximum'           => self::TERM_MAX_LIMIT,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
             ],
         ]);
 
@@ -162,10 +238,17 @@ final class CommerceRestRegistrar
                 'slug'   => [
                     'required'          => true,
                     'type'              => 'string',
+                    'pattern'           => self::SLUG_PATTERN,
                     'sanitize_callback' => 'sanitize_title',
                 ],
                 'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
-                'limit'  => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+                'limit'  => [
+                    'type'              => 'integer',
+                    'minimum'           => 1,
+                    'maximum'           => self::TERM_MAX_LIMIT,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
             ],
         ]);
     }
@@ -359,16 +442,38 @@ final class CommerceRestRegistrar
     {
         return [
             'cursor'    => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
-            'limit'     => ['type' => 'integer', 'sanitize_callback' => 'absint'],
+            'limit'     => [
+                'type'              => 'integer',
+                'minimum'           => 1,
+                'maximum'           => self::PRODUCT_MAX_LIMIT,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'absint',
+            ],
             'sku'       => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
-            'type'      => ['type' => 'string',  'sanitize_callback' => 'sanitize_key'],
-            'featured'  => ['type' => 'boolean'],
+            // Phase 2 projects `simple` and `variable` only (AG-13), and the enum comes from the
+            // module's own ProductScope rather than a second literal list. `?type=bogus` used to
+            // answer 200 with an empty listing — a filter for a type the platform does not
+            // project, reported as a successful search.
+            'type'      => [
+                'type'              => 'string',
+                'enum'              => ProductScope::SUPPORTED_TYPES,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_key',
+            ],
+            // The two args that were already validated, by accident: no sanitize_callback meant
+            // WordPress installed its validating default. Named explicitly now so adding a
+            // sanitizer here can never silently turn that off. Behaviour is unchanged.
+            'featured'  => ['type' => 'boolean', 'validate_callback' => 'rest_validate_request_arg'],
+            // Prices stay `type: string` and are validated by Money's exact-decimal contract in
+            // priceParam() — an exact-decimal grammar is not expressible as a useful public
+            // constraint, and generic validation here would replace the CCF-003 stable code
+            // `hsp_invalid_filter` (FLAG-RESTARGDRIFT-1 D-2).
             'min_price' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
             'max_price' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
             'category'  => ['type' => 'string',  'sanitize_callback' => 'sanitize_title'],
             'attribute'      => ['type' => 'string', 'sanitize_callback' => 'sanitize_key'],
             'attribute_term' => ['type' => 'string', 'sanitize_callback' => 'sanitize_title'],
-            'in_stock'       => ['type' => 'boolean'],
+            'in_stock'       => ['type' => 'boolean', 'validate_callback' => 'rest_validate_request_arg'],
         ];
     }
 

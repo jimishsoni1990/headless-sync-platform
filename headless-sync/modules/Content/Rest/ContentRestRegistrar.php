@@ -6,6 +6,7 @@ namespace HSP\Modules\Content\Rest;
 
 use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
 use HSP\Core\Delivery\CursorToken;
+use HSP\Modules\Content\PublicStatus;
 use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
@@ -35,8 +36,15 @@ final class ContentRestRegistrar
 {
     private const NAMESPACE = 'hsp/v1';
 
-    /** Values accepted by the ?status= filter (public set — OPEN-10). */
-    private const PUBLIC_STATUSES = ['publish'];
+    /**
+     * Values accepted by the ?status= filter (public set — OPEN-10).
+     *
+     * Read from the module-owned holder, so the set this class ENFORCES and the enum
+     * ContentEndpointProvider PUBLISHES cannot diverge (FLAG-RESTARGDRIFT-1).
+     *
+     * @var list<string>
+     */
+    private const PUBLIC_STATUSES = PublicStatus::SET;
 
     public function __construct(
         // Pages are hierarchical: findByPath() serves the single-page route. The intersection
@@ -68,7 +76,7 @@ final class ContentRestRegistrar
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => $this->errorBoundary->guard($this->handlePageListing(...)),
             'permission_callback' => '__return_true',
-            'args'                => $this->listingArgs(['slug', 'published_after']),
+            'args'                => $this->listingArgs(['status', 'published_after']),
         ]);
 
         // Pages are addressed by their FULL ancestor path (DECISION AD): `/pages/about/team`.
@@ -89,6 +97,12 @@ final class ContentRestRegistrar
                 'path' => [
                     'required' => true,
                     'type'     => 'string',
+                    // The HIERARCHICAL class — the single-slug one plus the `/` separator — so the
+                    // published pattern keeps admitting the multi-segment form `about/team` that is
+                    // this endpoint's whole point (DECISION AD). Publishing a single-slug pattern
+                    // here would describe an API unable to address a nested page. Structural like
+                    // the slug routes: no new 400 (FLAG-RESTARGDRIFT-1 D-5).
+                    'pattern'  => '^[a-z0-9_/-]+$',
                 ],
             ],
         ]);
@@ -98,7 +112,7 @@ final class ContentRestRegistrar
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => $this->errorBoundary->guard($this->handlePostListing(...)),
             'permission_callback' => '__return_true',
-            'args'                => $this->listingArgs(['category', 'tag', 'published_after']),
+            'args'                => $this->listingArgs(['status', 'category', 'tag', 'published_after']),
         ]);
 
         register_rest_route(self::NAMESPACE, '/posts/(?P<slug>[a-z0-9_-]+)', [
@@ -109,6 +123,11 @@ final class ContentRestRegistrar
                 'slug' => [
                     'required'          => true,
                     'type'              => 'string',
+                    // The route's own character class, published so the addressing contract stops
+                    // reading as "any string" (FLAG-RESTARGDRIFT-1 D-5). Enforced STRUCTURALLY by
+                    // route matching, so no new 400 becomes reachable: a URL outside the class
+                    // never reaches this operation, it fails WordPress dispatch.
+                    'pattern'           => '^[a-z0-9_-]+$',
                     'sanitize_callback' => 'sanitize_title',
                 ],
             ],
@@ -130,6 +149,11 @@ final class ContentRestRegistrar
                 'slug' => [
                     'required'          => true,
                     'type'              => 'string',
+                    // The route's own character class, published so the addressing contract stops
+                    // reading as "any string" (FLAG-RESTARGDRIFT-1 D-5). Enforced STRUCTURALLY by
+                    // route matching, so no new 400 becomes reachable: a URL outside the class
+                    // never reaches this operation, it fails WordPress dispatch.
+                    'pattern'           => '^[a-z0-9_-]+$',
                     'sanitize_callback' => 'sanitize_title',
                 ],
             ],
@@ -151,6 +175,11 @@ final class ContentRestRegistrar
                 'slug' => [
                     'required'          => true,
                     'type'              => 'string',
+                    // The route's own character class, published so the addressing contract stops
+                    // reading as "any string" (FLAG-RESTARGDRIFT-1 D-5). Enforced STRUCTURALLY by
+                    // route matching, so no new 400 becomes reachable: a URL outside the class
+                    // never reaches this operation, it fails WordPress dispatch.
+                    'pattern'           => '^[a-z0-9_-]+$',
                     'sanitize_callback' => 'sanitize_title',
                 ],
             ],
@@ -172,6 +201,11 @@ final class ContentRestRegistrar
                 'slug' => [
                     'required'          => true,
                     'type'              => 'string',
+                    // The route's own character class, published so the addressing contract stops
+                    // reading as "any string" (FLAG-RESTARGDRIFT-1 D-5). Enforced STRUCTURALLY by
+                    // route matching, so no new 400 becomes reachable: a URL outside the class
+                    // never reaches this operation, it fails WordPress dispatch.
+                    'pattern'           => '^[a-z0-9_-]+$',
                     'sanitize_callback' => 'sanitize_title',
                 ],
             ],
@@ -556,10 +590,17 @@ final class ContentRestRegistrar
      * and the handler sanitizes them itself), but WordPress's own published route index omits
      * it — so `/wp-json/hsp/v1` and the generated OpenAPI end up describing the same endpoint
      * differently. That is how `tag` went undeclared from P1B-S3 until Finding 002 (B1); the
-     * ADR-055 drift guard compares routes to descriptors, not route args to descriptor
-     * parameters, so nothing caught it. TagFilterContractTest now pins the two together.
+     * ADR-055 drift guard compared routes to descriptors, not route args to descriptor
+     * parameters, so nothing caught it. It now compares parameters too (FLAG-RESTARGDRIFT-1).
      *
-     * @param list<string> $extras  Names of optional extra args: 'slug', 'category', 'tag',
+     * `status` is an EXTRA rather than a common arg (FLAG-RESTARGDRIFT-1 finding B-1). It was
+     * registered on all five listings but only `/posts` and `/pages` ever read it: the category,
+     * tag and media handlers never call validateStatus() and never pass a status to the filter
+     * set, because `publish` is not a taxonomy state and attachments carry `inherit` (OPEN-10).
+     * So three routes advertised a parameter in `/wp-json/hsp/v1` that did nothing. Registration
+     * cleanup only — the parameter had no effect before and is still ignored if sent.
+     *
+     * @param list<string> $extras  Names of optional extra args: 'status', 'category', 'tag',
      *                              'published_after'
      * @return array<string,array<string,mixed>>
      */
@@ -570,17 +611,38 @@ final class ContentRestRegistrar
                 'type'              => 'string',
                 'sanitize_callback' => fn($v) => $this->sanitizeCursor($v) ?? '',
             ],
+            // 1..100 is the published contract, in the descriptor and here. It used to be
+            // declared here and enforced NOWHERE: WordPress only schema-validates an arg that
+            // has a `type` and NO `sanitize_callback`, because the default validating sanitizer
+            // `rest_parse_request_arg` is installed in WP_REST_Request::sanitize_params() only
+            // when the key is absent. `absint` displaced it, so `minimum`/`maximum` were inert
+            // metadata and ?per_page=500 / =0 / =abc all returned 200 (FLAG-RESTARGDRIFT-1).
+            //
+            // The callback is named EXPLICITLY rather than left to that implicit default: it
+            // runs in has_valid_params(), which WP_REST_Server calls BEFORE sanitize_params(),
+            // so the raw value is judged before absint('abc') can turn it into 0 — and a future
+            // sanitizer added here cannot silently switch validation off again.
             'per_page' => [
                 'type'              => 'integer',
                 'minimum'           => 1,
                 'maximum'           => 100,
+                'validate_callback' => 'rest_validate_request_arg',
                 'sanitize_callback' => 'absint',
             ],
-            'status'   => [
-                'type'              => 'string',
-                'sanitize_callback' => 'sanitize_text_field',
-            ],
         ];
+
+        // The allowed set is declared, so WordPress's route index and the generated OpenAPI both
+        // publish it. Enforcement deliberately stays with validateStatus() below and NOT with
+        // rest_validate_request_arg: the module validator emits the CCF-003 stable code
+        // `hsp_invalid_status`, and it treats an empty value as absent — both of which are the
+        // verified shipped contract, and generic validation would change both.
+        if (in_array('status', $extras, strict: true)) {
+            $args['status'] = [
+                'type'              => 'string',
+                'enum'              => PublicStatus::SET,
+                'sanitize_callback' => 'sanitize_text_field',
+            ];
+        }
 
         if (in_array('category', $extras, strict: true)) {
             $args['category'] = [
@@ -601,10 +663,69 @@ final class ContentRestRegistrar
         if (in_array('published_after', $extras, strict: true)) {
             $args['published_after'] = [
                 'type'              => 'string',
+                'format'            => 'date-time',
+                'validate_callback' => $this->validatePublishedAfter(...),
                 'sanitize_callback' => 'sanitize_text_field',
             ];
         }
 
         return $args;
+    }
+
+    /**
+     * Validate `?published_after=` as an absolute instant.
+     *
+     * A lower bound on `published_at` is an INSTANT, and the column is `TIMESTAMPTZ`, so a
+     * value without a timezone is ambiguous by construction. The published contract is therefore
+     * an RFC3339 date-time WITH an explicit offset: `2026-01-01T00:00:00Z` or
+     * `2026-01-01T05:30:00+05:30`.
+     *
+     * Two layers, because neither alone is the contract:
+     *
+     *   1. WordPress's own `format: date-time` validator (rest_validate_value_from_schema →
+     *      rest_parse_date) supplies the grammar. Verified against WP 7.1: its regex is
+     *      `^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}(:\d{2})?)?$`, so it
+     *      rejects `garbage`, `next tuesday`, an empty value and date-only `2026-01-01` — and
+     *      WP core's own `/wp/v2/posts?after=2026-01-01` returns 400 for exactly this reason.
+     *      No hand-written ISO-8601 regex is invented when the platform already has the grammar.
+     *   2. That regex makes the offset OPTIONAL, so `2026-01-01T00:00:00` passes it while being
+     *      precisely the timezone-ambiguous form the contract excludes. This narrow module check
+     *      adds the one missing semantic and nothing else.
+     *
+     * Previously this parameter had no validation at all: `sanitizeDate()` returned null for
+     * anything unparseable and the filter was silently DROPPED, so `?published_after=garbage`
+     * answered 200 with an unfiltered listing that looked like a successful filter.
+     *
+     * DateTimeImmutable is not used as the validator — it accepts `next tuesday` — it only
+     * parses the already-validated value in sanitizeDate().
+     *
+     * @param mixed            $value   the raw request value
+     * @param \WP_REST_Request $request the current request
+     * @param string           $param   the parameter name
+     */
+    private function validatePublishedAfter(
+        mixed $value,
+        \WP_REST_Request $request,
+        string $param
+    ): bool|\WP_Error
+    {
+        $native = rest_validate_request_arg($value, $request, $param);
+        if ($native instanceof \WP_Error) {
+            return $native;
+        }
+
+        // Offset or `Z` required — the half WordPress's grammar leaves optional.
+        if (preg_match('/([Zz]|[+-]\d{2}:?\d{2})$/', (string) $value) !== 1) {
+            return new \WP_Error(
+                'hsp_invalid_filter',
+                __(
+                    'published_after must carry an explicit UTC offset or Z (e.g. 2026-01-01T00:00:00Z).',
+                    'headless-sync'
+                ),
+                ['status' => 400]
+            );
+        }
+
+        return true;
     }
 }

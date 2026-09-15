@@ -144,6 +144,17 @@ final class OpenApiGenerator
     }
 
     /**
+     * Build the OpenAPI Parameter Objects.
+     *
+     * The schema carries the parameter's DECLARED constraints as well as its type
+     * (FLAG-RESTARGDRIFT-1). Before that, every parameter published a bare `type`, so
+     * `per_page`'s real 1..100 contract reached consumers only as English in the description
+     * while the runtime enforced nothing — documented one contract, executed another.
+     *
+     * Undeclared keywords are absent rather than emitted as neutral values: `minimum: 0` and
+     * "no minimum" are different published contracts, and a generated client must not be told
+     * the platform promises a bound it does not.
+     *
      * @param EndpointParameter[] $params
      * @return array<int,array<string,mixed>>
      */
@@ -156,7 +167,7 @@ final class OpenApiGenerator
                 'in'          => $param->in,
                 'required'    => $param->required,
                 'description' => $param->description,
-                'schema'      => ['type' => $param->type],
+                'schema'      => ['type' => $param->type] + $param->schemaConstraints(),
             ];
         }
 

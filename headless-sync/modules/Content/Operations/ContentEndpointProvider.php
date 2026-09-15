@@ -8,6 +8,7 @@ use HSP\Core\Contracts\Operations\EndpointAuth;
 use HSP\Core\Contracts\Operations\EndpointDescriptor;
 use HSP\Core\Contracts\Operations\EndpointParameter;
 use HSP\Core\Contracts\Operations\EndpointProviderInterface;
+use HSP\Modules\Content\PublicStatus;
 use HSP\Core\Contracts\Operations\SchemaObject;
 
 /**
@@ -33,6 +34,20 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     private const NAMESPACE = 'hsp/v1';
 
     private const MODULE = 'content';
+
+    /**
+     * The addressing grammar of the flat single-resource routes, published so the contract stops
+     * implying that any string is addressable (FLAG-RESTARGDRIFT-1 D-5).
+     *
+     * Identical to the character class in the WordPress route regexes, which is what ENFORCES it —
+     * structurally, at dispatch, so publishing it creates no new 400. The ADR-055 parameter drift
+     * guard compares this string against the live route's own capture group, so a route widened
+     * without the contract following cannot stay green.
+     */
+    private const SLUG_PATTERN = '^[a-z0-9_-]+$';
+
+    /** As SLUG_PATTERN, plus the `/` hierarchy separator pages are addressed by (DECISION AD). */
+    private const PATH_PATTERN = '^[a-z0-9_/-]+$';
 
     public function key(): string
     {
@@ -67,8 +82,8 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             description: 'List published pages (cursor-paginated).',
             itemSchema: $this->pageSchema(),
             filters: [
-                EndpointParameter::query('status', 'string', 'Filter by post status (public set: publish).'),
-                EndpointParameter::query('published_after', 'string', 'ISO-8601 UTC lower bound on published_at.'),
+                self::statusFilter(),
+                self::publishedAfterFilter(),
             ],
         );
     }
@@ -87,6 +102,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             paramName: 'path',
             paramDescription: 'Full ancestor path, `/`-separated (e.g. about/team). '
                 . 'A one-segment path addresses a top-level page.',
+            paramPattern: self::PATH_PATTERN,
             // The only single-resource route that can 400: a malformed path (an empty internal
             // segment, or a segment that sanitises away) is rejected before the lookup runs.
             errorStatuses: [400, 404, 500],
@@ -124,7 +140,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
                 . 'filtered listing is ordinary post-list order, not a relevance ranking.',
             itemSchema: $this->postSchema(),
             filters: [
-                EndpointParameter::query('status', 'string', 'Filter by post status (public set: publish).'),
+                self::statusFilter(),
                 EndpointParameter::query('category', 'string', 'Filter by category slug.'),
                 EndpointParameter::query(
                     'tag',
@@ -132,7 +148,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
                     'Filter by tag slug. Matches tags only: a category sharing the slug never '
                     . 'matches, and neither does a deleted tag.'
                 ),
-                EndpointParameter::query('published_after', 'string', 'ISO-8601 UTC lower bound on published_at.'),
+                self::publishedAfterFilter(),
             ],
         );
     }
@@ -174,7 +190,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             // No status filter: attachments carry post_status='inherit', outside the
             // {publish} public set (OPEN-10) — membership is "not soft-deleted".
             filters: [
-                EndpointParameter::query('published_after', 'string', 'ISO-8601 UTC lower bound on published_at.'),
+                self::publishedAfterFilter(),
             ],
         );
     }
@@ -221,7 +237,17 @@ final class ContentEndpointProvider implements EndpointProviderInterface
     ): EndpointDescriptor {
         $parameters = array_merge($filters, [
             EndpointParameter::query('cursor', 'string', 'Opaque pagination cursor (Doc 9 §13).'),
-            EndpointParameter::query('per_page', 'integer', 'Page size (1–100).'),
+            // 1..100 as MACHINE-READABLE bounds, not prose. The description said "(1-100)" from
+            // the day this descriptor shipped while the schema published a bare `integer`, so no
+            // generated client could see the bound and nothing could compare it against the route
+            // args that declared it and never enforced it (FLAG-RESTARGDRIFT-1 A-1).
+            EndpointParameter::query(
+                'per_page',
+                'integer',
+                'Page size. A value outside 1-100 is rejected with 400.',
+                minimum: 1,
+                maximum: 100
+            ),
         ]);
 
         return new EndpointDescriptor(
@@ -264,7 +290,8 @@ final class ContentEndpointProvider implements EndpointProviderInterface
         SchemaObject $itemSchema,
         string $paramName = 'slug',
         string $paramDescription = 'Resource slug.',
-        array $errorStatuses = [404, 500]
+        array $errorStatuses = [404, 500],
+        string $paramPattern = self::SLUG_PATTERN
     ): EndpointDescriptor {
         return new EndpointDescriptor(
             method: 'GET',
@@ -272,7 +299,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             namespace: self::NAMESPACE,
             displayGroup: 'Content',
             description: $description,
-            parameters: [EndpointParameter::path($paramName, 'string', $paramDescription)],
+            parameters: [EndpointParameter::path($paramName, 'string', $paramDescription, $paramPattern)],
             responseSchema: $itemSchema,
             requestSchema: null,
             auth: EndpointAuth::Public,
@@ -281,6 +308,57 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             version: 'v1',
             moduleOwner: self::MODULE,
             errorStatuses: $errorStatuses,
+        );
+    }
+
+    /**
+     * The `?status=` filter, with its allowed set published as an `enum`.
+     *
+     * The values come from PublicStatus — the SAME constant ContentRestRegistrar enforces
+     * against — so the published contract and the runtime rejection cannot name different
+     * sets (FLAG-RESTARGDRIFT-1 C-4). It used to appear only as prose, so a consumer had to
+     * read English to learn that `draft` is refused.
+     *
+     * Enforcement stays with the module's own validator rather than generic schema
+     * validation, because that validator emits the CCF-003 stable code `hsp_invalid_status`
+     * and treats an empty value as absent — the verified shipped contract, which generic
+     * validation would change on both counts (FLAG-RESTARGDRIFT-1 D-1).
+     */
+    private static function statusFilter(): EndpointParameter
+    {
+        return EndpointParameter::query(
+            'status',
+            'string',
+            'Filter by post status. Only the public set is accepted; any other value is '
+            . 'rejected with 400. Omitting it returns the default public listing.',
+            enum: PublicStatus::SET
+        );
+    }
+
+    /**
+     * The `?published_after=` lower bound: an ABSOLUTE instant.
+     *
+     * `format: date-time` replaces a prose-only "ISO-8601 UTC" claim that nothing enforced —
+     * an unparseable value used to be dropped silently, so `?published_after=garbage`
+     * answered 200 with an unfiltered listing that looked like a successful filter
+     * (FLAG-RESTARGDRIFT-1 C-5).
+     *
+     * The bound is compared against a TIMESTAMPTZ column, so a value carrying no timezone is
+     * ambiguous by construction and a date-only value is not sufficient. The published
+     * contract is therefore RFC3339 WITH an explicit offset — narrower than WordPress's own
+     * `date-time` grammar, which leaves the offset optional, so the registrar adds exactly
+     * that one missing semantic on top of the native validator.
+     */
+    private static function publishedAfterFilter(): EndpointParameter
+    {
+        return EndpointParameter::query(
+            'published_after',
+            'string',
+            'Lower bound on published_at, as an RFC3339/ISO-8601 date-time with an explicit '
+            . 'timezone (e.g. 2026-01-01T00:00:00Z or 2026-01-01T05:30:00+05:30). A date-only '
+            . 'value is not accepted: the bound is an instant, and a bare date has no '
+            . 'timezone.',
+            format: 'date-time'
         );
     }
 

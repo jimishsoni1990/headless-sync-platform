@@ -8,6 +8,7 @@ use HSP\Core\Contracts\Operations\EndpointAuth;
 use HSP\Core\Contracts\Operations\EndpointDescriptor;
 use HSP\Core\Contracts\Operations\EndpointParameter;
 use HSP\Core\Contracts\Operations\EndpointProviderInterface;
+use HSP\Modules\Commerce\ProductScope;
 use HSP\Core\Contracts\Operations\SchemaObject;
 
 /**
@@ -37,6 +38,29 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private const NAMESPACE = 'hsp/v1';
 
     private const MODULE = 'commerce';
+
+    /**
+     * The published page-size ceilings (FLAG-RESTARGDRIFT-1 A-2/A-3).
+     *
+     * They were already published — as prose, "Page size (max 100)" / "(max 200)" — while the
+     * schema carried a bare `integer` and the route args enforced nothing, so `?limit=500` and
+     * `?limit=0` both answered 200. Machine-readable now, and identical to the numbers
+     * CommerceRestRegistrar enforces and each query provider clamps to. Per route family, never
+     * flattened to one platform-wide number.
+     */
+    private const PRODUCT_MAX_LIMIT = 100;
+
+    /** Terms, attribute definitions, attribute terms and variations. */
+    private const TERM_MAX_LIMIT = 200;
+
+    /**
+     * Path-parameter addressing grammars, mirroring the route regexes that ENFORCE them
+     * structurally at dispatch (FLAG-RESTARGDRIFT-1 D-5) — so publishing them creates no new 400.
+     */
+    private const SLUG_PATTERN = '^[a-z0-9_-]+$';
+
+    /** The full taxonomy name (`pa_colour`) — `_` is part of the identifier. */
+    private const TAXONOMY_PATTERN = '^[a-z0-9_-]+$';
 
     public function key(): string
     {
@@ -69,9 +93,21 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 . 'catalog, which is NOT the same as unpublished.',
             parameters: [
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
-                self::query('limit', 'integer', 'Page size (max 100).'),
+                self::pageSize(self::PRODUCT_MAX_LIMIT),
                 self::query('sku', 'string', 'Exact SKU match.'),
-                self::query('type', 'string', "Product type: 'simple' or 'variable'."),
+                // The enum comes from ProductScope — the SAME constant the REST registrar
+                // enforces against (AG-13), never a second literal list. Published as prose
+                // only until now, so `?type=bogus` was a successful empty listing rather than a
+                // rejected request (FLAG-RESTARGDRIFT-1 C-3).
+                new EndpointParameter(
+                    'type',
+                    EndpointParameter::IN_QUERY,
+                    'string',
+                    false,
+                    'Product type. Phase 2 projects simple and variable products only; any '
+                    . 'other value is rejected with 400.',
+                    enum: ProductScope::SUPPORTED_TYPES
+                ),
                 self::query('featured', 'boolean', 'Featured products only.'),
                 self::query('min_price', 'string', 'Inclusive lower price bound, exact decimal string.'),
                 self::query('max_price', 'string', 'Inclusive upper price bound, exact decimal string.'),
@@ -106,7 +142,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             description: 'Fetch one product by slug. Unlike the listing, a product hidden from '
                 . 'the catalog remains reachable at its direct address, matching WooCommerce.',
             parameters: [
-                EndpointParameter::path('slug', 'string', 'Product slug.'),
+                EndpointParameter::path('slug', 'string', 'Product slug.', self::SLUG_PATTERN),
             ],
             responseSchema: $this->productSchema(),
             requestSchema: null,
@@ -130,8 +166,19 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 . "Content module's /categories, which serves WordPress post categories.",
             parameters: [
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
-                self::query('limit', 'integer', 'Page size (max 200).'),
-                self::query('parent', 'integer', 'Only terms directly under this parent term id.'),
+                self::pageSize(self::TERM_MAX_LIMIT),
+                // `0` is a real value — the top-level listing — so the floor is 0, not 1. It was
+                // unenforced, and `absint` turned `?parent=abc` into 0, answering 200 with the
+                // top-level listing as though the request had succeeded (FLAG-RESTARGDRIFT-1 C-2).
+                new EndpointParameter(
+                    'parent',
+                    EndpointParameter::IN_QUERY,
+                    'integer',
+                    false,
+                    'Only terms directly under this parent term id. 0 returns the top-level '
+                    . 'terms. A negative or non-integer value is rejected with 400.',
+                    minimum: 0
+                ),
             ],
             responseSchema: $this->termSchema()->asCursorPage(),
             requestSchema: null,
@@ -152,7 +199,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             namespace: self::NAMESPACE,
             displayGroup: 'Commerce',
             description: 'Fetch one product category by slug.',
-            parameters: [EndpointParameter::path('slug', 'string', 'Category slug.')],
+            parameters: [EndpointParameter::path('slug', 'string', 'Category slug.', self::SLUG_PATTERN)],
             responseSchema: $this->termSchema(),
             requestSchema: null,
             auth: EndpointAuth::Public,
@@ -176,7 +223,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 . '/product-attributes/{taxonomy}/terms.',
             parameters: [
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
-                self::query('limit', 'integer', 'Page size (max 200).'),
+                self::pageSize(self::TERM_MAX_LIMIT),
             ],
             responseSchema: $this->attributeSchema()->asCursorPage(),
             requestSchema: null,
@@ -198,7 +245,12 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             displayGroup: 'Commerce',
             description: 'Fetch one global attribute definition by its full taxonomy name.',
             parameters: [
-                EndpointParameter::path('taxonomy', 'string', 'Full taxonomy name, e.g. pa_colour.'),
+                EndpointParameter::path(
+                    'taxonomy',
+                    'string',
+                    'Full taxonomy name, e.g. pa_colour.',
+                    self::TAXONOMY_PATTERN
+                ),
             ],
             responseSchema: $this->attributeSchema(),
             requestSchema: null,
@@ -222,9 +274,14 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 . 'resolve here; anything else returns 404 rather than reaching across into '
                 . 'another taxonomy sharing the same projection.',
             parameters: [
-                EndpointParameter::path('taxonomy', 'string', 'Full taxonomy name, e.g. pa_colour.'),
+                EndpointParameter::path(
+                    'taxonomy',
+                    'string',
+                    'Full taxonomy name, e.g. pa_colour.',
+                    self::TAXONOMY_PATTERN
+                ),
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
-                self::query('limit', 'integer', 'Page size (max 200).'),
+                self::pageSize(self::TERM_MAX_LIMIT),
             ],
             responseSchema: $this->termSchema()->asCursorPage(),
             requestSchema: null,
@@ -303,9 +360,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 . 'this contract identifies WHICH variation a selection means, not whether it can '
                 . 'currently be bought.',
             parameters: [
-                EndpointParameter::path('slug', 'string', 'Parent product slug.'),
+                EndpointParameter::path('slug', 'string', 'Parent product slug.', self::SLUG_PATTERN),
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
-                self::query('limit', 'integer', 'Page size (max 200).'),
+                self::pageSize(self::TERM_MAX_LIMIT),
             ],
             responseSchema: $this->variationSchema()->asCursorPage(),
             requestSchema: null,
@@ -439,6 +496,29 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private static function query(string $name, string $type, string $description): EndpointParameter
     {
         return new EndpointParameter($name, EndpointParameter::IN_QUERY, $type, false, $description);
+    }
+
+    /**
+     * The `?limit=` page size, with its published bounds MACHINE-READABLE.
+     *
+     * The maximum is passed per route rather than baked in: products publish 100, the taxonomy,
+     * attribute and variation listings publish 200, and flattening them would misdescribe four
+     * endpoints to fix one. The minimum is 1 on all of them — a page size of zero or negative is
+     * not a page size, and unvalidated, `?limit=0` produced `LIMIT 0` and answered 200 with an
+     * empty page while `?limit=-5` was silently turned into 5 by `absint`
+     * (FLAG-RESTARGDRIFT-1 A-2/A-3/C-1).
+     */
+    private static function pageSize(int $maximum): EndpointParameter
+    {
+        return new EndpointParameter(
+            'limit',
+            EndpointParameter::IN_QUERY,
+            'integer',
+            false,
+            "Page size. A value outside 1-{$maximum} is rejected with 400.",
+            minimum: 1,
+            maximum: $maximum
+        );
     }
 
     private function productSchema(): SchemaObject
