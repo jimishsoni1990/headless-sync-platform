@@ -60,6 +60,11 @@ final class OpenApiEndpointProvider implements EndpointProviderInterface
                 deprecated: false,
                 version: 'v1',
                 moduleOwner: 'core',
+                // Takes no parameters, so there is nothing to reject as 400, and it addresses no
+                // resource, so it cannot 404. Generation is a pure array transformation, but it
+                // reads the aggregated registry, so the route is wrapped by the Core delivery error
+                // boundary and can answer 500 like every other delivery callback (CCF-003).
+                errorStatuses: [500],
             ),
         ];
     }

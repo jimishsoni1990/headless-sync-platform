@@ -521,6 +521,48 @@ final class OpenApiDriftGuardTest extends TestCase
         return $this->container = $container;
     }
 
+    // -------------------------------------------------------------------------
+    // (6) Error metadata cannot silently disappear (CCF-003)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Every guarded route declares at least one non-2xx status, and the generated document gives
+     * each one a JSON body schema.
+     *
+     * This is the drift class CCF-003 leaves behind. Every delivery callback is wrapped by the Core
+     * error boundary, so every one of them can answer 500; a descriptor that declares nothing is
+     * therefore not "an endpoint with no errors", it is an endpoint whose error metadata was
+     * dropped. Reading the LIVE registry means a future module inherits the check with no edit
+     * here — the same property the completeness assertion above relies on (AG-1).
+     */
+    public function test_every_described_route_declares_its_error_responses(): void
+    {
+        $descriptors = $this->registryDescriptors();
+        $document    = (new OpenApiGenerator())->generate($descriptors);
+
+        foreach ($descriptors as $descriptor) {
+            self::assertNotSame(
+                [],
+                $descriptor->errorStatuses,
+                "Descriptor {$descriptor->route} declares no error responses. Every delivery "
+                . 'callback runs through the Core error boundary and can answer 500 (CCF-003).',
+            );
+
+            $path      = '/' . trim($descriptor->namespace, '/') . $descriptor->route;
+            $responses = $document['paths'][$path][strtolower($descriptor->method)]['responses'];
+
+            foreach ($descriptor->errorStatuses as $status) {
+                self::assertArrayHasKey($status, $responses, "{$path} is missing its {$status}.");
+                self::assertArrayHasKey(
+                    'schema',
+                    $responses[$status]['content']['application/json'] ?? [],
+                    "{$path} documents {$status} with a description but no body schema — the "
+                    . 'runtime returns JSON there (CCF-003 §22).',
+                );
+            }
+        }
+    }
+
     public function test_openapi_endpoint_provider_is_registered_so_the_route_self_describes(): void
     {
         // The openapi.json route both appears in the live index AND carries a descriptor (ADR-055 (4)).

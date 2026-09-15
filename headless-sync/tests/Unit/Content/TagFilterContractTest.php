@@ -347,6 +347,10 @@ final class TagFilterContractTest extends TestCase
             categoryResource:      new \HSP\Modules\Content\Resources\CategoryResource(),
             mediaResource:         new \HSP\Modules\Content\Resources\MediaResource(),
             tagResource:           new \HSP\Modules\Content\Resources\CategoryResource(),
+            errorBoundary:         new \HSP\Core\Rest\DeliveryErrorBoundary(
+                new \HSP\Core\Observability\StructuredLogger(static function (string $line): void {
+                }),
+            ),
         );
     }
 

@@ -90,6 +90,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            // Request validation (cursor, price bounds) is 400; a contained internal
+            // failure is 500. A listing never 404s — an empty page is a success (CCF-003).
+            errorStatuses: [400, 500],
         );
     }
 
@@ -112,6 +115,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            errorStatuses: [404, 500],
         );
     }
 
@@ -136,6 +140,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            errorStatuses: [400, 500],
         );
     }
 
@@ -155,6 +160,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            errorStatuses: [404, 500],
         );
     }
 
@@ -179,6 +185,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            errorStatuses: [400, 500],
         );
     }
 
@@ -200,6 +207,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            errorStatuses: [404, 500],
         );
     }
 
@@ -225,6 +233,8 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            // Invalid cursor is 400; a taxonomy that is not a pa_* attribute is 404 (CCF-003).
+            errorStatuses: [400, 404, 500],
         );
     }
 
@@ -304,6 +314,8 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            // Invalid cursor is 400; an unknown parent product slug is 404 (CCF-003).
+            errorStatuses: [400, 404, 500],
         );
     }
 

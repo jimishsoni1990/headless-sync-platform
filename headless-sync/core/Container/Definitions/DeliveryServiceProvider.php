@@ -9,14 +9,21 @@ use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Database\PostgresDatabaseConnection;
+use HSP\Core\Observability\StructuredLogger;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 
 /**
- * Registers the dedicated delivery PostgreSQL connection.
+ * Registers the dedicated delivery PostgreSQL connection and the delivery error boundary.
  *
  * Bindings:
  *   DatabaseConnectionInterface — PostgresDatabaseConnection opened with
  *                                 PGSQL_CONNECT_FORCE_NEW (guaranteed distinct
  *                                 physical link from relay and queue handles).
+ *   DeliveryErrorBoundary       — CCF-003: converts a Throwable escaping a delivery
+ *                                 REST callback into the public error envelope. Bound
+ *                                 here because it belongs to the delivery transport, and
+ *                                 constructor-injected into each REST registrar — never
+ *                                 reached statically or through the container (ADR-012).
  *
  * Authority:
  *   DECISION K (v1.11) — delivery reads (REST query providers), Resolve-stage
@@ -67,5 +74,13 @@ final class DeliveryServiceProvider extends ServiceProvider
 
             return new PostgresDatabaseConnection($connector);
         });
+
+        // CCF-003. StructuredLogger is bound by WorkerServiceProvider, which registers later in
+        // ContainerBuilder; bindings resolve lazily, so reading it inside this factory is resolved
+        // at first get() — long after every provider has registered.
+        $container->singleton(
+            DeliveryErrorBoundary::class,
+            fn (Container $c) => new DeliveryErrorBoundary($c->get(StructuredLogger::class)),
+        );
     }
 }

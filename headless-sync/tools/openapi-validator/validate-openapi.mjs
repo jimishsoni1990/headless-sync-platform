@@ -21,6 +21,9 @@
  * USAGE:
  *   node validate-openapi.mjs <document.json>     # validate a document at a path
  *   node validate-openapi.mjs                     # or read the document from stdin
+ *   node validate-openapi.mjs --schema <schema.json> <instance.json>
+ *                                                 # CCF-003: validate ONE response body against a
+ *                                                 # schema taken from the generated document
  * EXIT:
  *   0 = document is VALID.
  *   1 = document is INVALID (ajv errors printed as JSON to stdout).
@@ -53,22 +56,25 @@ function readStdin() {
   }
 }
 
-function loadDocument() {
-  const argPath = process.argv[2];
+function loadJson(path, label) {
   let raw;
   try {
-    raw = argPath ? readFileSync(argPath, 'utf8') : readStdin();
+    raw = path ? readFileSync(path, 'utf8') : readStdin();
   } catch (err) {
-    throw new InfraError('cannot read document: ' + err.message);
+    throw new InfraError('cannot read ' + label + ': ' + err.message);
   }
   if (!raw.trim()) {
-    throw new InfraError('no document provided (pass a path or pipe JSON on stdin)');
+    throw new InfraError('no ' + label + ' provided (pass a path or pipe JSON on stdin)');
   }
   try {
     return JSON.parse(raw);
   } catch (err) {
-    throw new InfraError('document is not valid JSON: ' + err.message);
+    throw new InfraError(label + ' is not valid JSON: ' + err.message);
   }
+}
+
+function loadDocument() {
+  return loadJson(process.argv[2], 'document');
 }
 
 async function loadAjv() {
@@ -85,7 +91,47 @@ async function loadAjv() {
   }
 }
 
+/**
+ * INSTANCE MODE (CCF-003) — `--schema <schema.json> <instance.json>`.
+ *
+ * A SEPARATE question from the meta-schema gate, and deliberately kept so. The meta-schema gate
+ * asks "is openapi.json a valid OpenAPI 3.1 document?"; this asks "does this actual response body
+ * conform to the schema that document publishes for that operation and status?". Documenting an
+ * idealised error envelope the runtime does not emit is precisely the failure CCF-003 forbids, so
+ * the runtime payload is validated against the GENERATED schema rather than against a fixture.
+ *
+ * Same ajv, same exit codes; the meta-schema path is untouched and neither weakens the other.
+ */
+async function validateInstance() {
+  const schemaPath = process.argv[3];
+  const instancePath = process.argv[4];
+
+  if (!schemaPath) {
+    throw new InfraError('--schema requires a schema path');
+  }
+
+  const schema = loadJson(schemaPath, 'schema');
+  const instance = loadJson(instancePath, 'instance');
+  const { Ajv2020, addFormats } = await loadAjv();
+
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  addFormats(ajv);
+
+  const validate = ajv.compile(schema);
+
+  if (validate(instance)) {
+    process.exit(EXIT_VALID);
+  }
+
+  process.stdout.write(JSON.stringify(validate.errors ?? [], null, 2) + '\n');
+  process.exit(EXIT_INVALID);
+}
+
 async function main() {
+  if (process.argv[2] === '--schema') {
+    return validateInstance();
+  }
+
   let metaSchema;
   try {
     metaSchema = JSON.parse(readFileSync(METASCHEMA_PATH, 'utf8'));

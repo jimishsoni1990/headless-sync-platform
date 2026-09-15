@@ -62,6 +62,7 @@ use HSP\Modules\Content\Resources\MediaResource;
 use HSP\Modules\Content\Resources\PageResource;
 use HSP\Modules\Content\Resources\PostResource;
 use HSP\Modules\Content\Rest\ContentRestRegistrar;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Modules\Content\Rest\ContentRestRegistrarFactory;
 use HSP\Modules\Content\Subscribers\ContentSubscriber;
 use HSP\Modules\Content\Subscribers\ContentSubscriberRegistrar;
@@ -149,6 +150,8 @@ final class ContentServiceProvider extends ServiceProvider
                 $c->get(CategoryResource::class),
                 $c->get(MediaResource::class),
                 $c->get(CategoryResource::class),
+                // CCF-003: Core delivery error boundary (bound by DeliveryServiceProvider).
+                $c->get(DeliveryErrorBoundary::class),
             )
         );
 
@@ -187,6 +190,9 @@ final class ContentServiceProvider extends ServiceProvider
                     fn () => $c->get(CategoryResource::class),
                     fn () => $c->get(MediaResource::class),
                     fn () => $c->get(CategoryResource::class),
+                    // CCF-003: the Core delivery error boundary, resolved lazily like every other
+                    // registrar dependency (bound by DeliveryServiceProvider).
+                    fn () => $c->get(DeliveryErrorBoundary::class),
                 ),
                 new ContentSubscriberRegistrar(
                     fn () => $c->get(EventRegistry::class),

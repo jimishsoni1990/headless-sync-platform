@@ -48,6 +48,17 @@ final class ContentModuleBootTest extends TestCase
             }
         );
 
+        // The Core delivery error boundary (CCF-003) — bound by DeliveryServiceProvider in the
+        // real composition root; this test builds a minimal container, so it is registered here
+        // exactly as the other core collaborators above are.
+        $container->singleton(
+            \HSP\Core\Rest\DeliveryErrorBoundary::class,
+            fn () => new \HSP\Core\Rest\DeliveryErrorBoundary(
+                new \HSP\Core\Observability\StructuredLogger(static function (string $line): void {
+                }),
+            ),
+        );
+
         // Register all Content module bindings.
         (new ContentServiceProvider())->register($container);
 
@@ -188,6 +199,16 @@ final class ContentModuleBootTest extends TestCase
                     public function rollback(): void {}
                 };
             }
+        );
+
+        // CCF-003 boundary — the registrar's one non-query dependency. Bound here for the same
+        // reason the outbox writer above is: this container is minimal, not the real root.
+        $container->singleton(
+            \HSP\Core\Rest\DeliveryErrorBoundary::class,
+            fn () => new \HSP\Core\Rest\DeliveryErrorBoundary(
+                new \HSP\Core\Observability\StructuredLogger(static function (string $line): void {
+                }),
+            ),
         );
 
         (new ContentServiceProvider())->register($container);

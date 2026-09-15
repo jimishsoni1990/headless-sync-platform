@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HSP\Core\Operations\OpenApi;
 
+use HSP\Core\Rest\DeliveryErrorBoundary;
+
 /**
  * Registers `GET /hsp/v1/openapi.json` with WordPress (ADR-055 (d); DECISION N).
  *
@@ -26,6 +28,11 @@ final class OpenApiRestRegistrar
 
     public function __construct(
         private readonly OpenApiRestController $controller,
+        // CCF-003: the contract endpoint is held to the contract it publishes. Generation is a pure
+        // array transformation, but it reads the aggregated registry, so a provider that throws
+        // would otherwise fatal this route. Guarded like every other delivery callback, and the
+        // descriptor declares 500 accordingly.
+        private readonly DeliveryErrorBoundary $errorBoundary,
     ) {
     }
 
@@ -37,7 +44,7 @@ final class OpenApiRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/openapi.json', [
             'methods'             => 'GET',
-            'callback'            => $this->controller->handle(...),
+            'callback'            => $this->errorBoundary->guard($this->controller->handle(...)),
             // Public delivery contract (ADR-055 (d)/(e)) — no capability check inside generation.
             'permission_callback' => '__return_true',
         ]);

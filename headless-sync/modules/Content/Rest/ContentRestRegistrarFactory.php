@@ -12,6 +12,7 @@ use HSP\Modules\Content\Resources\CategoryResource;
 use HSP\Modules\Content\Resources\MediaResource;
 use HSP\Modules\Content\Resources\PageResource;
 use HSP\Modules\Content\Resources\PostResource;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 
 /**
  * Lazy factory for ContentRestRegistrar — defined and owned by the composition root
@@ -42,6 +43,7 @@ final class ContentRestRegistrarFactory
      * @param \Closure(): CategoryResource      $categoryResourceFactory
      * @param \Closure(): MediaResource         $mediaResourceFactory
      * @param \Closure(): CategoryResource      $tagResourceFactory
+     * @param \Closure(): DeliveryErrorBoundary $errorBoundaryFactory CCF-003 delivery error boundary
      */
     public function __construct(
         private readonly \Closure $pageQueryProviderFactory,
@@ -54,6 +56,7 @@ final class ContentRestRegistrarFactory
         private readonly \Closure $categoryResourceFactory,
         private readonly \Closure $mediaResourceFactory,
         private readonly \Closure $tagResourceFactory,
+        private readonly \Closure $errorBoundaryFactory,
     ) {}
 
     /**
@@ -75,6 +78,7 @@ final class ContentRestRegistrarFactory
             ($this->categoryResourceFactory)(),
             ($this->mediaResourceFactory)(),
             ($this->tagResourceFactory)(),
+            ($this->errorBoundaryFactory)(),
         );
     }
 }

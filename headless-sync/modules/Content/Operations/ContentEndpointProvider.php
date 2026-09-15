@@ -87,6 +87,9 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             paramName: 'path',
             paramDescription: 'Full ancestor path, `/`-separated (e.g. about/team). '
                 . 'A one-segment path addresses a top-level page.',
+            // The only single-resource route that can 400: a malformed path (an empty internal
+            // segment, or a segment that sanitises away) is rejected before the lookup runs.
+            errorStatuses: [400, 404, 500],
         );
     }
 
@@ -235,6 +238,11 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            // Every listing validates its request (status where offered, and the cursor) and can
+            // therefore answer 400; every listing runs a query and is wrapped by the Core delivery
+            // error boundary, so it can answer 500. A listing never 404s — an empty page is a
+            // successful result, not a missing resource (CCF-003).
+            errorStatuses: [400, 500],
         );
     }
 
@@ -244,12 +252,19 @@ final class ContentEndpointProvider implements EndpointProviderInterface
      *                                 `path` for hierarchical pages (DECISION AD).
      * @param string $paramDescription Its published description.
      */
+    /**
+     * @param list<int> $errorStatuses Defaults to the flat-slug case: the slug is constrained by
+     *        the route regex and sanitised, so the only application errors are a miss (404) and a
+     *        contained internal failure (500). Pages override it — their path parameter has a
+     *        validity rule of its own and can be rejected as 400 (CCF-003).
+     */
     private function single(
         string $route,
         string $description,
         SchemaObject $itemSchema,
         string $paramName = 'slug',
-        string $paramDescription = 'Resource slug.'
+        string $paramDescription = 'Resource slug.',
+        array $errorStatuses = [404, 500]
     ): EndpointDescriptor {
         return new EndpointDescriptor(
             method: 'GET',
@@ -265,6 +280,7 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             deprecated: false,
             version: 'v1',
             moduleOwner: self::MODULE,
+            errorStatuses: $errorStatuses,
         );
     }
 

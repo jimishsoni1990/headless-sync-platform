@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace HSP\Modules\Content\Rest;
 
 use HSP\Core\Contracts\HierarchicalQueryProviderInterface;
+use HSP\Core\Delivery\CursorToken;
 use HSP\Modules\Content\Queries\ContentFilterSet;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 
 /**
  * Registers all ten Content REST endpoints with WordPress.
@@ -52,6 +54,10 @@ final class ContentRestRegistrar
         private readonly ResourceInterface      $categoryResource,
         private readonly ResourceInterface      $mediaResource,
         private readonly ResourceInterface      $tagResource,
+        // CCF-003: every callback below is registered through this boundary, so a Throwable that
+        // escapes a handler becomes the documented 500 envelope instead of an HTML fatal page.
+        // Injected, not reached statically (ADR-012 / Rule 7).
+        private readonly DeliveryErrorBoundary  $errorBoundary,
     ) {}
 
     /** Called from ContentModule::register() via add_action('rest_api_init'). */
@@ -60,7 +66,7 @@ final class ContentRestRegistrar
         // Pages
         register_rest_route(self::NAMESPACE, '/pages', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handlePageListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handlePageListing(...)),
             'permission_callback' => '__return_true',
             'args'                => $this->listingArgs(['slug', 'published_after']),
         ]);
@@ -77,7 +83,7 @@ final class ContentRestRegistrar
         // entry point, just one layer in, where it can reject rather than silently mangle.
         register_rest_route(self::NAMESPACE, '/pages/(?P<path>[a-z0-9_/-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handlePageSingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handlePageSingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'path' => [
@@ -90,14 +96,14 @@ final class ContentRestRegistrar
         // Posts
         register_rest_route(self::NAMESPACE, '/posts', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handlePostListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handlePostListing(...)),
             'permission_callback' => '__return_true',
             'args'                => $this->listingArgs(['category', 'tag', 'published_after']),
         ]);
 
         register_rest_route(self::NAMESPACE, '/posts/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handlePostSingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handlePostSingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -111,14 +117,14 @@ final class ContentRestRegistrar
         // Categories
         register_rest_route(self::NAMESPACE, '/categories', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleCategoryListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleCategoryListing(...)),
             'permission_callback' => '__return_true',
             'args'                => $this->listingArgs([]),
         ]);
 
         register_rest_route(self::NAMESPACE, '/categories/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleCategorySingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handleCategorySingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -132,14 +138,14 @@ final class ContentRestRegistrar
         // Media
         register_rest_route(self::NAMESPACE, '/media', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleMediaListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleMediaListing(...)),
             'permission_callback' => '__return_true',
             'args'                => $this->listingArgs(['published_after']),
         ]);
 
         register_rest_route(self::NAMESPACE, '/media/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleMediaSingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handleMediaSingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -153,14 +159,14 @@ final class ContentRestRegistrar
         // Tags
         register_rest_route(self::NAMESPACE, '/tags', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleTagListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleTagListing(...)),
             'permission_callback' => '__return_true',
             'args'                => $this->listingArgs([]),
         ]);
 
         register_rest_route(self::NAMESPACE, '/tags/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleTagSingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handleTagSingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -183,7 +189,7 @@ final class ContentRestRegistrar
             return $statusError;
         }
 
-        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        $cursorError = $this->validateCursor($request->get_param('cursor'), CursorToken::SORT_TEMPORAL);
         if ($cursorError !== null) {
             return $cursorError;
         }
@@ -246,7 +252,7 @@ final class ContentRestRegistrar
             return $statusError;
         }
 
-        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        $cursorError = $this->validateCursor($request->get_param('cursor'), CursorToken::SORT_TEMPORAL);
         if ($cursorError !== null) {
             return $cursorError;
         }
@@ -284,7 +290,7 @@ final class ContentRestRegistrar
 
     public function handleCategoryListing(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        $cursorError = $this->validateCursor($request->get_param('cursor'), CursorToken::SORT_TEXT);
         if ($cursorError !== null) {
             return $cursorError;
         }
@@ -318,7 +324,7 @@ final class ContentRestRegistrar
 
     public function handleMediaListing(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        $cursorError = $this->validateCursor($request->get_param('cursor'), CursorToken::SORT_TEMPORAL);
         if ($cursorError !== null) {
             return $cursorError;
         }
@@ -355,7 +361,7 @@ final class ContentRestRegistrar
 
     public function handleTagListing(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        $cursorError = $this->validateCursor($request->get_param('cursor'));
+        $cursorError = $this->validateCursor($request->get_param('cursor'), CursorToken::SORT_TEXT);
         if ($cursorError !== null) {
             return $cursorError;
         }
@@ -416,47 +422,41 @@ final class ContentRestRegistrar
     }
 
     /**
-     * Validate that ?cursor= is either absent or a structurally valid base64url-encoded
-     * JSON object with 's' and 'id' keys. Returns WP_Error 400 if present but invalid.
+     * Validate ?cursor= against THIS endpoint's cursor contract. Returns WP_Error 400 if present
+     * but invalid; null if valid or absent.
      *
-     * A cursor that passes character-level sanitization but fails structural decode is
-     * rejected here rather than silently ignored, so callers get an actionable error
-     * instead of unexpectedly receiving page 1.
+     * This used to check only that the decoded payload HAD keys `s` and `id`, which let
+     * `{"s":"notadate","id":"x"}` through to `$n::timestamptz` in SQL — an uncaught
+     * DatabaseException and an unauthenticated HTML 500 carrying a stack trace and filesystem
+     * paths. The payload is now checked against the shape this endpoint actually mints: the
+     * UUID tiebreaker, and a sort value of the right TYPE for the endpoint's primary sort, so
+     * nothing malformed can reach a PostgreSQL cast capable of throwing (CCF-003).
+     *
+     * The sort kind is passed by the caller rather than assumed: posts, pages and media sort on
+     * published_at, while categories and tags sort on name. Demanding a timestamp everywhere
+     * would reject perfectly valid taxonomy cursors.
+     *
+     * @param string $sortKind one of the CursorToken::SORT_* constants
      */
-    private function validateCursor(mixed $raw): ?\WP_Error
+    private function validateCursor(mixed $raw, string $sortKind): ?\WP_Error
     {
         if ($raw === null || $raw === '') {
             return null;
         }
-        // Strip non-base64url chars first (same as sanitizeCursor).
-        $sanitized = preg_replace('/[^A-Za-z0-9\-_]/', '', (string) $raw);
-        if ($sanitized === '') {
-            return new \WP_Error(
-                'hsp_invalid_cursor',
-                __('Invalid cursor token.', 'headless-sync'),
-                ['status' => 400]
-            );
+
+        // Strip non-base64url chars first (same as sanitizeCursor), so a token that only differs
+        // by stray characters is judged on the same string the query layer would have used.
+        $sanitized = preg_replace('/[^A-Za-z0-9\-_]/', '', (string) $raw) ?? '';
+
+        if (CursorToken::isValid($sanitized, $sortKind)) {
+            return null;
         }
-        // Attempt decode: must be valid base64url wrapping a JSON object with 's' and 'id'.
-        $padded  = strtr($sanitized, '-_', '+/');
-        $padded .= str_repeat('=', (4 - strlen($padded) % 4) % 4);
-        $json    = base64_decode($padded, strict: true);
-        if ($json === false) {
-            return new \WP_Error(
-                'hsp_invalid_cursor',
-                __('Invalid cursor token.', 'headless-sync'),
-                ['status' => 400]
-            );
-        }
-        $data = json_decode($json, associative: true);
-        if (! is_array($data) || ! isset($data['s'], $data['id'])) {
-            return new \WP_Error(
-                'hsp_invalid_cursor',
-                __('Invalid cursor token.', 'headless-sync'),
-                ['status' => 400]
-            );
-        }
-        return null;
+
+        return new \WP_Error(
+            'hsp_invalid_cursor',
+            __('Invalid cursor token.', 'headless-sync'),
+            ['status' => 400]
+        );
     }
 
     /**

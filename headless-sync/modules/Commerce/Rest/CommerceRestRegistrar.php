@@ -6,10 +6,13 @@ namespace HSP\Modules\Commerce\Rest;
 
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Contracts\ResourceInterface;
+use HSP\Core\Delivery\CursorToken;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Modules\Commerce\CommerceTaxonomies;
 use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Queries\TermFilterSet;
 use HSP\Modules\Commerce\Queries\VariationFilterSet;
+use HSP\Modules\Commerce\Support\Money;
 
 /**
  * Registers the Commerce delivery routes on the `hsp/v1` namespace (DECISION N, Doc 9 §7).
@@ -54,6 +57,10 @@ final class CommerceRestRegistrar
         private readonly \Closure $attributeTermQueryFactory,
         private readonly QueryProviderInterface $variationQueryProvider,
         private readonly ResourceInterface $variationResource,
+        // CCF-003: every callback is registered through this boundary, so a Throwable escaping a
+        // handler becomes the documented 500 envelope rather than an HTML fatal page. Injected,
+        // never reached statically (ADR-012 / Rule 7).
+        private readonly DeliveryErrorBoundary $errorBoundary,
     ) {
     }
 
@@ -65,14 +72,14 @@ final class CommerceRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/products', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleProductListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleProductListing(...)),
             'permission_callback' => '__return_true',
             'args'                => $this->listingArgs(),
         ]);
 
         register_rest_route(self::NAMESPACE, '/products/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleProductSingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handleProductSingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -85,7 +92,7 @@ final class CommerceRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/product-categories', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleCategoryListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleCategoryListing(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
@@ -96,7 +103,7 @@ final class CommerceRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/product-categories/(?P<slug>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleCategorySingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handleCategorySingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug' => [
@@ -109,7 +116,7 @@ final class CommerceRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/product-attributes', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleAttributeListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleAttributeListing(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'cursor' => ['type' => 'string',  'sanitize_callback' => 'sanitize_text_field'],
@@ -121,7 +128,7 @@ final class CommerceRestRegistrar
         // the identifier and `sanitize_key` — not `sanitize_title` — is the matching sanitizer.
         register_rest_route(self::NAMESPACE, '/product-attributes/(?P<taxonomy>[a-z0-9_-]+)', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleAttributeSingle(...),
+            'callback'            => $this->errorBoundary->guard($this->handleAttributeSingle(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'taxonomy' => [
@@ -134,7 +141,7 @@ final class CommerceRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/product-attributes/(?P<taxonomy>[a-z0-9_-]+)/terms', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleAttributeTermListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleAttributeTermListing(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'taxonomy' => [
@@ -149,7 +156,7 @@ final class CommerceRestRegistrar
 
         register_rest_route(self::NAMESPACE, '/products/(?P<slug>[a-z0-9_-]+)/variations', [
             'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => $this->handleVariationListing(...),
+            'callback'            => $this->errorBoundary->guard($this->handleVariationListing(...)),
             'permission_callback' => '__return_true',
             'args'                => [
                 'slug'   => [
@@ -176,6 +183,12 @@ final class CommerceRestRegistrar
      */
     public function handleVariationListing(object $request): mixed
     {
+        // Variations sort on menu_order, so their cursor carries `o`, not `s`.
+        $cursorError = $this->validateCursor($request, CursorToken::SORT_INTEGER, 'o');
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
         $product = $this->productQueryProvider->findBySlug(
             (string) ($this->param($request, 'slug') ?? '')
         );
@@ -196,6 +209,11 @@ final class CommerceRestRegistrar
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */
     public function handleAttributeListing(object $request): mixed
     {
+        $cursorError = $this->validateCursor($request, CursorToken::SORT_TEXT);
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
         $page = $this->attributeQueryProvider->list(new TermFilterSet(
             cursor: $this->param($request, 'cursor'),
             limit:  $this->intParam($request, 'limit'),
@@ -230,6 +248,11 @@ final class CommerceRestRegistrar
      */
     public function handleAttributeTermListing(object $request): mixed
     {
+        $cursorError = $this->validateCursor($request, CursorToken::SORT_TEXT);
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
         $taxonomy = (string) ($this->param($request, 'taxonomy') ?? '');
 
         if (! CommerceTaxonomies::isAttributeTaxonomy($taxonomy)) {
@@ -249,6 +272,11 @@ final class CommerceRestRegistrar
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */
     public function handleCategoryListing(object $request): mixed
     {
+        $cursorError = $this->validateCursor($request, CursorToken::SORT_TEXT);
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
         $parent = $this->param($request, 'parent');
 
         $page = $this->categoryQueryProvider->list(new TermFilterSet(
@@ -275,12 +303,27 @@ final class CommerceRestRegistrar
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */
     public function handleProductListing(object $request): mixed
     {
+        $cursorError = $this->validateCursor($request, CursorToken::SORT_TEMPORAL);
+        if ($cursorError !== null) {
+            return $cursorError;
+        }
+
+        $minPrice = $this->priceParam($request, 'min_price');
+        if ($minPrice instanceof \WP_Error) {
+            return $minPrice;
+        }
+
+        $maxPrice = $this->priceParam($request, 'max_price');
+        if ($maxPrice instanceof \WP_Error) {
+            return $maxPrice;
+        }
+
         $filters = new ProductFilterSet(
             sku:         $this->param($request, 'sku'),
             productType: $this->param($request, 'type'),
             featured:    $this->boolParam($request, 'featured'),
-            minPrice:    $this->param($request, 'min_price'),
-            maxPrice:    $this->param($request, 'max_price'),
+            minPrice:    $minPrice,
+            maxPrice:    $maxPrice,
             // Always catalog-scoped: a public listing must not expose a product WooCommerce
             // excludes from the catalog, and that must not be defeatable by a query parameter
             // (Requirement B).
@@ -347,6 +390,75 @@ final class CommerceRestRegistrar
         return $taxonomy;
     }
 
+    /**
+     * Validate ?cursor= against THIS endpoint's cursor contract (CCF-003).
+     *
+     * Two defects closed at once. An invalid cursor used to be dropped silently and the listing
+     * restarted at page 1 — an opaque token that fails validation must never quietly mean "start
+     * from the beginning", because the consumer then sees rows it has already paged past. And a
+     * payload that decoded but was semantically wrong (`{"s":"notadate",…}`) reached
+     * `$n::timestamptz` in SQL, raising an uncaught DatabaseException that WordPress rendered as an
+     * HTML 500 with a stack trace and filesystem paths.
+     *
+     * Content already returned 400 here; Commerce now matches it, using the same code and the same
+     * envelope. The sort kind and key are supplied per endpoint: products sort on published_at,
+     * taxonomies and attributes on name, variations on menu_order under the key `o`.
+     *
+     * @param \WP_REST_Request<array<string,mixed>>|object $request
+     * @param string $sortKind one of the CursorToken::SORT_* constants
+     * @param string $sortKey  the payload key holding the primary sort value
+     */
+    private function validateCursor(object $request, string $sortKind, string $sortKey = 's'): mixed
+    {
+        $raw = $this->param($request, 'cursor');
+
+        if ($raw === null || CursorToken::isValid($raw, $sortKind, $sortKey)) {
+            return null;
+        }
+
+        return $this->error('hsp_invalid_cursor', 'Invalid cursor token.', 400);
+    }
+
+    /**
+     * A price-bound query parameter, as an EXACT decimal string (CCF-003).
+     *
+     * `?min_price=abc` used to be handed straight to PostgreSQL, where the NUMERIC cast threw and
+     * the request ended as an HTML 500 disclosing the SQL, the stack and the plugin path. It is
+     * now rejected as a 400 before any query runs.
+     *
+     * Validation and normalisation both go through Money — the SAME exact-decimal contract the
+     * projection and checksum use (DECISION AG Requirement C). Nothing here parses the value as a
+     * PHP float: `(float) '0.1'` is not 0.1, and a price bound that silently shifts is worse than
+     * one that is refused. `NaN`, `INF`, `1e5` and every other non-decimal representation fail the
+     * same way, because Money cannot represent them exactly.
+     *
+     * No new filter semantics are introduced — in particular min ≤ max is NOT asserted, since the
+     * approved Commerce filter contract does not contain that rule.
+     *
+     * @param \WP_REST_Request<array<string,mixed>>|object $request
+     * @return string|\WP_Error|null the exact decimal string, a 400, or null when absent
+     */
+    private function priceParam(object $request, string $key): mixed
+    {
+        $raw = $this->param($request, $key);
+
+        if ($raw === null) {
+            return null;
+        }
+
+        $normalized = Money::normalize($raw);
+
+        if ($normalized === null) {
+            return $this->error(
+                'hsp_invalid_filter',
+                sprintf('Invalid %s: expected an exact decimal value.', $key),
+                400
+            );
+        }
+
+        return $normalized;
+    }
+
     private function param(object $request, string $key): ?string
     {
         if (! method_exists($request, 'get_param')) {
@@ -383,8 +495,19 @@ final class CommerceRestRegistrar
 
     private function notFound(): mixed
     {
+        return $this->error('hsp_not_found', 'Resource not found.', 404);
+    }
+
+    /**
+     * One WP_Error factory for every Commerce application error, so the envelope
+     * (`{code, message, data.status}`) is produced in exactly one place in this module.
+     * The 500 representation is NOT here — that belongs to the Core DeliveryErrorBoundary,
+     * so no module invents its own (CCF-003).
+     */
+    private function error(string $code, string $message, int $status): mixed
+    {
         if (class_exists(\WP_Error::class)) {
-            return new \WP_Error('hsp_not_found', 'Resource not found.', ['status' => 404]);
+            return new \WP_Error($code, $message, ['status' => $status]);
         }
 
         return null;

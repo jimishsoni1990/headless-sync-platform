@@ -32,6 +32,20 @@ final class OpenApiGenerator
 {
     private const OPENAPI_VERSION = '3.1.0';
 
+    /**
+     * Response descriptions for the documented error statuses (CCF-003).
+     *
+     * Cross-cutting REPRESENTATION only — it says what an HTTP status means on this API, never what
+     * counts as a missing product or a legal page path. Those remain module decisions (Rule 5).
+     *
+     * @var array<int,string>
+     */
+    private const ERROR_DESCRIPTIONS = [
+        400 => 'Invalid request — a parameter, filter, cursor or path was rejected.',
+        404 => 'The requested resource does not exist, or is not part of the public set.',
+        500 => 'An internal error prevented the request from completing.',
+    ];
+
     public function __construct(
         private readonly string $title = 'Headless Sync Platform — Delivery API',
         private readonly string $apiVersion = '1.0.0',
@@ -150,8 +164,14 @@ final class OpenApiGenerator
     }
 
     /**
-     * Build the responses map. A 200 with the published response schema (cursor envelope already
-     * baked into the descriptor's responseSchema for list operations — ADR-055 (c)).
+     * Build the responses map: a 200 with the published response schema (cursor envelope already
+     * baked into the descriptor's responseSchema for list operations — ADR-055 (c)), plus one
+     * entry per non-2xx status the descriptor declares (CCF-003).
+     *
+     * Every error response carries the SAME schema, because every HSP application error already
+     * carries the same runtime envelope. Documenting them with one shared builder is what keeps a
+     * platform-wide error contract from becoming a few hundred lines of copy-pasted schema, while
+     * each descriptor still names only the statuses its own route can emit.
      *
      * Note: PHP coerces the numeric-string key '200' to int(200); json_encode restores it to the
      * string "200" the OpenAPI Responses Object requires, so the on-the-wire document is correct.
@@ -170,7 +190,77 @@ final class OpenApiGenerator
             ];
         }
 
-        return ['200' => $ok];
+        $responses = ['200' => $ok];
+
+        foreach ($descriptor->errorStatuses as $status) {
+            $responses[(string) $status] = [
+                'description' => self::ERROR_DESCRIPTIONS[$status] ?? 'Error response.',
+                'content'     => [
+                    'application/json' => ['schema' => self::errorSchema()],
+                ],
+            ];
+        }
+
+        return $responses;
+    }
+
+    /**
+     * The ONE published delivery-API error schema (CCF-003).
+     *
+     * It describes what the runtime already emits — WordPress's native `WP_Error` REST
+     * representation — rather than a new HSP shape. Consumers branch on the HTTP status and on
+     * `code`; `message` is for humans and logs and may be reworded or localised without that being
+     * a contract change.
+     *
+     * The top level is CLOSED (`additionalProperties: false`): three fields, all guaranteed.
+     * `data` is OPEN, because WordPress may attach safe diagnostic keys alongside `status` and a
+     * closed object would make the published contract disagree with the wire. Those extensions are
+     * permitted, not promised — `params`, `details`, `additional_errors` and `additional_data` are
+     * deliberately NOT documented as guaranteed, since no HSP route currently produces them.
+     *
+     * `code` is an open string, not an enum: a future code must not be a breaking schema change,
+     * and WordPress's own dispatch-level codes (e.g. `rest_no_route`) must stay structurally valid.
+     *
+     * @return array<string,mixed>
+     */
+    private static function errorSchema(): array
+    {
+        return [
+            'type'        => 'object',
+            'title'       => 'ErrorResponse',
+            'description' => 'The delivery API error envelope. `code` is the stable machine-readable '
+                . 'discriminator; `message` is human-readable and MUST NOT be used for control flow; '
+                . '`data.status` mirrors the HTTP status.',
+            'required'    => ['code', 'message', 'data'],
+            'properties'  => [
+                'code'    => [
+                    'type'        => 'string',
+                    'description' => 'Machine-readable error code (e.g. hsp_not_found, '
+                        . 'hsp_invalid_cursor, hsp_invalid_status, hsp_invalid_path, '
+                        . 'hsp_invalid_filter, hsp_internal_error). Not an enum — new codes may be '
+                        . 'added, and WordPress-level codes use the same envelope.',
+                ],
+                'message' => [
+                    'type'        => 'string',
+                    'description' => 'Human-readable description, for display fallback and logs. '
+                        . 'Wording may change without notice; branch on `code` instead.',
+                ],
+                'data'    => [
+                    'type'                 => 'object',
+                    'description'          => 'Error metadata. `status` is guaranteed; any other key '
+                        . 'is an optional diagnostic extension and is not part of the contract.',
+                    'required'             => ['status'],
+                    'properties'           => [
+                        'status' => [
+                            'type'        => 'integer',
+                            'description' => 'The HTTP status of this response.',
+                        ],
+                    ],
+                    'additionalProperties' => true,
+                ],
+            ],
+            'additionalProperties' => false,
+        ];
     }
 
     /**

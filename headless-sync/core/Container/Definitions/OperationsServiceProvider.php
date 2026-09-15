@@ -32,6 +32,7 @@ use HSP\Core\Operations\OpenApi\OpenApiEndpointProvider;
 use HSP\Core\Operations\OpenApi\OpenApiGenerator;
 use HSP\Core\Operations\OpenApi\OpenApiRestController;
 use HSP\Core\Operations\OpenApi\OpenApiRestRegistrar;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Core\Operations\Providers\HealthProvider;
 use HSP\Core\Operations\Providers\MetricsProvider;
 use HSP\Core\Operations\Providers\QueueStatusProvider;
@@ -295,6 +296,7 @@ final class OperationsServiceProvider extends ServiceProvider
             OpenApiRestRegistrar::class,
             fn (Container $c) => new OpenApiRestRegistrar(
                 $c->get(OpenApiRestController::class),
+                $c->get(DeliveryErrorBoundary::class),
             ),
         );
     }

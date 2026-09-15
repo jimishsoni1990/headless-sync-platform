@@ -50,6 +50,10 @@ final class AttributeDeliveryTest extends TestCase
             $factory(...),
             new \HSP\Modules\Commerce\Queries\VariationQueryProvider($this->db),
             new \HSP\Modules\Commerce\Resources\VariationResource(),
+            new \HSP\Core\Rest\DeliveryErrorBoundary(
+                new \HSP\Core\Observability\StructuredLogger(static function (string $line): void {
+                }),
+            ),
         );
     }
 

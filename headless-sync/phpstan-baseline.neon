@@ -450,11 +450,6 @@ parameters:
 			count: 4
 			path: modules/Content/Reconciliation/WpReconciliationSource.php
 
-		-
-			message: '#^Parameter \#1 \$str of function strtr expects string, string\|null given\.$#'
-			identifier: argument.type
-			count: 1
-			path: modules/Content/Rest/ContentRestRegistrar.php
 
 		-
 			message: '#^Call to function is_wp_error\(\) with WP_Term will always evaluate to false\.$#'

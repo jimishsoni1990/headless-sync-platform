@@ -9,6 +9,7 @@ use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\MediaReferenceProviderInterface;
 use HSP\Core\Contracts\ModuleAvailabilityInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
+use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\ProjectionDescriptor;
 use HSP\Core\Contracts\ProjectionRegistryInterface;
@@ -310,6 +311,8 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get('commerce.attribute_term_query_factory'),
                 $c->get(VariationQueryProvider::class),
                 $c->get(VariationResource::class),
+                // CCF-003: Core-owned delivery error boundary (bound by DeliveryServiceProvider).
+                $c->get(DeliveryErrorBoundary::class),
             ));
 
         // --- Repair ----------------------------------------------------------

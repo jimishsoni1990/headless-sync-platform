@@ -35,13 +35,24 @@ namespace HSP\Core\Contracts\Operations;
  *   $deprecated   — Doc 9 §26 lifecycle → OpenAPI `deprecated: true`.
  *   $version      — the contract version the operation belongs to (Doc 9 §7).
  *   $moduleOwner  — the module that registered the endpoint (Doc 9 §6).
+ *   --- CCF-003 additive enrichment ---
+ *   $errorStatuses — the non-2xx HTTP statuses THIS operation can actually emit. The generator
+ *                   documents each with the ONE shared delivery error schema, which is possible
+ *                   only because every HSP application error already uses the same envelope
+ *                   (`{code, message, data.status}`) — so a list of statuses is the whole of the
+ *                   extra metadata required, and no per-status schema field is introduced.
+ *                   Declared TRUTHFULLY per route: a status no code path on that route can
+ *                   produce must not appear. WordPress's `rest_no_route` is deliberately NOT
+ *                   represented — it is emitted when NO operation matched, so it belongs to no
+ *                   operation, even though it happens to use the same envelope.
  *
  * @psalm-immutable
  */
 final class EndpointDescriptor
 {
     /**
-     * @param EndpointParameter[] $parameters ADR-055 (c) path + query parameters
+     * @param EndpointParameter[] $parameters    ADR-055 (c) path + query parameters
+     * @param list<int>           $errorStatuses CCF-003 non-2xx statuses this operation can emit
      */
     public function __construct(
         public readonly string $method,
@@ -57,5 +68,6 @@ final class EndpointDescriptor
         public readonly bool $deprecated = false,
         public readonly string $version = 'v1',
         public readonly string $moduleOwner = '',
+        public readonly array $errorStatuses = [],
     ) {}
 }

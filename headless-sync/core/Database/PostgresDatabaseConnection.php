@@ -93,9 +93,18 @@ class PostgresDatabaseConnection implements DatabaseConnectionInterface
     {
         $conn = $this->connection();
 
+        // @-suppressed deliberately (CCF-003). On failure pg_query*() ALSO raises a PHP warning
+        // carrying the PostgreSQL diagnostic, the SQL and this file's absolute path. Under
+        // display_errors those bytes are written to the response BEFORE this method can throw, so
+        // a caller's try/catch cannot unsend them — a REST callback boundary contained the
+        // exception yet the response still began with a warning and was no longer JSON. The
+        // diagnostic is not lost: pg_last_error() still carries it and it still becomes a
+        // DatabaseException, which is the single failure signal this layer has always published
+        // (DECISION E v1.6). Error semantics, SQL, retry behaviour and the connection topology are
+        // all unchanged; only the duplicate, uncatchable copy of the message is suppressed.
         $result = empty($params)
-            ? pg_query($conn, $sql)
-            : pg_query_params($conn, $sql, $params);
+            ? @pg_query($conn, $sql)
+            : @pg_query_params($conn, $sql, $params);
 
         if ($result === false) {
             throw new DatabaseException(
@@ -113,9 +122,12 @@ class PostgresDatabaseConnection implements DatabaseConnectionInterface
     {
         $conn = $this->connection();
 
+        // @-suppressed for the same reason as execute() above (CCF-003): the PHP warning is a
+        // second, uncatchable copy of a diagnostic that already reaches callers as a
+        // DatabaseException, and it is the one that leaks into an HTTP response body.
         $result = empty($params)
-            ? pg_query($conn, $sql)
-            : pg_query_params($conn, $sql, $params);
+            ? @pg_query($conn, $sql)
+            : @pg_query_params($conn, $sql, $params);
 
         if ($result === false) {
             throw new DatabaseException(

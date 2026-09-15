@@ -161,6 +161,71 @@ final class OpenApiMetaSchemaValidator
         return self::GATE_INVALID;
     }
 
+    /**
+     * Validate ONE response body against ONE schema taken out of the generated document (CCF-003).
+     *
+     * Deliberately a different question from gateStatus(): that one asks whether `openapi.json` is
+     * a valid OpenAPI 3.1 document, this one asks whether a body the runtime actually produced
+     * conforms to the schema that document publishes for it. Both use the same ajv and the same
+     * exit-code contract; neither weakens the other.
+     *
+     * @param array<string,mixed> $schema   the schema as generated (never a fixture copy)
+     * @param array<string,mixed> $instance the runtime payload, decoded from its real JSON
+     */
+    public function instanceStatus(array $schema, array $instance, ?string &$error = null): string
+    {
+        if (! $this->nodeAvailable()) {
+            $error = 'node runtime not found on PATH';
+
+            return self::GATE_SKIPPED;
+        }
+
+        $schemaFile   = (string) tempnam(sys_get_temp_dir(), 'hsp_schema_');
+        $instanceFile = (string) tempnam(sys_get_temp_dir(), 'hsp_payload_');
+
+        try {
+            file_put_contents($schemaFile, json_encode($schema, JSON_THROW_ON_ERROR));
+            file_put_contents($instanceFile, json_encode($instance, JSON_THROW_ON_ERROR));
+
+            $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+            $process     = proc_open(
+                ['node', $this->validatorScript, '--schema', $schemaFile, $instanceFile],
+                $descriptors,
+                $pipes,
+            );
+
+            if (! is_resource($process)) {
+                $error = 'failed to launch the node validator process';
+
+                return self::GATE_SKIPPED;
+            }
+
+            $stdout = (string) stream_get_contents($pipes[1]);
+            $stderr = (string) stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            $exit = proc_close($process);
+
+            if ($exit === 0) {
+                return self::GATE_VALID;
+            }
+
+            if ($exit === 2) {
+                $error = trim($stderr) !== '' ? trim($stderr) : 'instance gate infrastructure error';
+
+                return self::GATE_SKIPPED;
+            }
+
+            $error = trim($stdout . "\n" . $stderr);
+
+            return self::GATE_INVALID;
+        } finally {
+            @unlink($schemaFile);
+            @unlink($instanceFile);
+        }
+    }
+
     /** True when a `node` runtime is invocable (the meta-schema gate can run). */
     public function nodeAvailable(): bool
     {

@@ -102,7 +102,10 @@ final class ContentRestRegistrarTest extends TestCase
 
     public function test_valid_cursor_is_accepted(): void
     {
-        $cursorJson = json_encode(['s' => '2024-06-01 00:00:00+00', 'id' => 'uuid-xyz']);
+        // A cursor of the shape this platform actually mints: PostgreSQL's TIMESTAMPTZ text form
+        // plus the projection's UUID tiebreaker. A placeholder id no longer passes, which is the
+        // point of the CCF-003 tightening — the token must be one HSP could have issued.
+        $cursorJson = json_encode(['s' => '2024-06-01 00:00:00+00', 'id' => '01a09ec2-5241-7f5f-9c54-bf145f4e8bc7']);
         $cursor     = rtrim(strtr(base64_encode($cursorJson), '+/', '-_'), '=');
 
         $registrar = $this->makeRegistrar(pageRows: []);
@@ -256,13 +259,20 @@ final class ContentRestRegistrarTest extends TestCase
     // Cursor keyset values are bound params, not string interpolation
     // -------------------------------------------------------------------------
 
-    public function test_cursor_keyset_values_are_passed_as_bound_params_not_interpolated(): void
+    /**
+     * A cursor carrying an SQL-injection payload in its sort value never reaches the provider.
+     *
+     * This used to assert the opposite — that such a token was accepted, on the grounds that the
+     * provider binds rather than interpolates. Binding is still true and still tested below, but
+     * CCF-003 added an OUTER defence: a payload that is not a timestamp is refused at the REST
+     * boundary, so it cannot reach `$n::timestamptz` at all. That matters beyond injection, because
+     * a non-timestamp reaching the cast is exactly what produced an unauthenticated HTML 500 with a
+     * stack trace and filesystem paths.
+     */
+    public function test_cursor_with_a_non_temporal_sort_value_is_refused_before_the_provider(): void
     {
-        // A cursor whose "s" value contains SQL injection payload.
-        // If the provider interpolates rather than binds, the SQL would be malformed/dangerous.
-        // We verify via the FakeQueryProvider that the value appears as a param, not in the SQL.
         $maliciousTs = "2024-01-01'; DROP TABLE content.pages; --";
-        $cursorJson  = json_encode(['s' => $maliciousTs, 'id' => 'uuid-x']);
+        $cursorJson  = json_encode(['s' => $maliciousTs, 'id' => '01a09ec2-5241-7f5f-9c54-bf145f4e8bc7']);
         $cursor      = rtrim(strtr(base64_encode($cursorJson), '+/', '-_'), '=');
 
         $fakePageProvider = new FakeQueryProvider(listResult: new CursorPage([], null));
@@ -270,7 +280,27 @@ final class ContentRestRegistrarTest extends TestCase
 
         $result = $registrar->handlePageListing(new \WP_REST_Request(['cursor' => $cursor]));
 
-        // Must succeed (not 400) — a valid structurally-correct cursor.
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('hsp_invalid_cursor', $result->code);
+        self::assertSame(400, $result->data['status']);
+        // And the provider was never called, so nothing was ever handed to SQL.
+        self::assertNull($fakePageProvider->lastFilters);
+    }
+
+    /**
+     * The keyset values of a WELL-FORMED cursor still travel as an opaque token that the provider
+     * decodes and binds — the registrar passes the raw token, never the decoded payload.
+     */
+    public function test_cursor_keyset_values_are_passed_as_bound_params_not_interpolated(): void
+    {
+        $cursorJson = json_encode(['s' => '2024-01-01 00:00:00+00', 'id' => '01a09ec2-5241-7f5f-9c54-bf145f4e8bc7']);
+        $cursor     = rtrim(strtr(base64_encode($cursorJson), '+/', '-_'), '=');
+
+        $fakePageProvider = new FakeQueryProvider(listResult: new CursorPage([], null));
+        $registrar        = $this->makeRegistrarWithProviders(pageProvider: $fakePageProvider);
+
+        $result = $registrar->handlePageListing(new \WP_REST_Request(['cursor' => $cursor]));
+
         self::assertInstanceOf(\WP_REST_Response::class, $result);
         // The ContentFilterSet passed to the provider must carry the raw cursor token, not the
         // decoded payload — the provider receives an opaque cursor and decodes internally.
@@ -445,6 +475,7 @@ final class ContentRestRegistrarTest extends TestCase
             mediaResource:         new \HSP\Modules\Content\Resources\MediaResource(),
             // Tags publish the same shape as categories — same Resource, different taxonomy.
             tagResource:           new \HSP\Modules\Content\Resources\CategoryResource(),
+            errorBoundary:         self::boundary(),
         );
     }
 
@@ -465,5 +496,14 @@ final class ContentRestRegistrarTest extends TestCase
     private function sampleCategoryRow(): array
     {
         return ['slug' => 'tech', 'name' => 'Tech', 'description' => '', 'parent_id' => '0', 'post_count' => '0'];
+    }
+
+    /** The real Core boundary with a silent sink — the handlers under test are the subject. */
+    private static function boundary(): \HSP\Core\Rest\DeliveryErrorBoundary
+    {
+        return new \HSP\Core\Rest\DeliveryErrorBoundary(
+            new \HSP\Core\Observability\StructuredLogger(static function (string $line): void {
+            }),
+        );
     }
 }
