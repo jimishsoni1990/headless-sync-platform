@@ -61,7 +61,17 @@ final class VariationResource implements ResourceInterface
                 'sale_price'    => $this->nullableString($row['sale_price'] ?? null),
             ],
             'attributes'       => JsonMap::decode($row['attributes'] ?? '{}'),
-            'media'            => ['featured_id' => (int) ($row['featured_media_id'] ?? 0)],
+            // Reference plus resolved object (Finding 011), the same contract the product
+            // carries minus the gallery WooCommerce does not give a variation. `featured` is
+            // null when there is no image, when it has not projected, when it was tombstoned,
+            // or when the media capability is unavailable — one value for every case a consumer
+            // cannot act differently on.
+            'media'            => [
+                'featured_id' => (int) ($row['featured_media_id'] ?? 0),
+                'featured'    => is_array($row['media_featured'] ?? null) && $row['media_featured'] !== []
+                    ? $row['media_featured']
+                    : null,
+            ],
             'menu_order'       => (int) ($row['menu_order'] ?? 0),
         ];
     }

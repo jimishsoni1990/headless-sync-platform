@@ -17,10 +17,18 @@ use HSP\Core\Delivery\JsonMap;
  * in a cart total. The exact decimal string is what the projection stores and what the
  * checksum was computed over (Requirement C).
  *
- * Media appears as REFERENCES ONLY (AG-10): Commerce stores WordPress attachment ids and
- * `content.media` remains the single attachment projection. Expanding them into full media
- * objects would need the Core capability contract AG-10 describes, and Phase 2 deliberately
- * does not build that early — the contract ships references and defers expansion.
+ * MEDIA (AG-10, completed by Finding 011). Commerce stores WordPress attachment REFERENCES and
+ * `content.media` remains the single attachment projection — no duplicate Commerce copy, and no
+ * attachment metadata persisted here. The references are expanded at READ time through the Core
+ * media capability, so `media.featured` and `media.gallery` are directly renderable without the
+ * consumer resolving ids, knowing they are WordPress attachments, or reading another module's
+ * contract. The expansion is optional by design: with the capability absent they publish null
+ * and `[]`, and everything else about the product is unchanged.
+ *
+ * Because the metadata lives in `content.media` rather than being copied here, editing an
+ * image's alt text or replacing its file shows up in the next product response with no product
+ * re-save and no change to the product's checksum. That is the property duplicating the media
+ * onto `commerce.products` would have destroyed.
  *
  * WOO HANDOFF IDENTITY (DECISION AK). `woo_product_id` is the authoritative WooCommerce product
  * id for the connected store — the value `WC_Cart::add_to_cart()`, the `?add-to-cart=` form
@@ -79,9 +87,22 @@ final class ProductResource implements ResourceInterface
                 'regular_price' => $this->nullableString($row['regular_price'] ?? null),
                 'sale_price'    => $this->nullableString($row['sale_price'] ?? null),
             ],
+            // References AND resolved objects (Finding 011). The ids stay because they were
+            // already public and removing them would break consumers for no gain; `featured` and
+            // `gallery` are the additive fields a contract-only frontend renders from, so nobody
+            // has to know these ids are WordPress attachment posts or where they resolve.
             'media'              => [
                 'featured_id' => (int) ($row['featured_media_id'] ?? 0),
                 'gallery_ids' => $this->intList($row['gallery_media_ids'] ?? '[]'),
+                // Null covers every unresolved case with one value, deliberately: no image set,
+                // the attachment not yet projected, the attachment tombstoned, or the media
+                // capability unavailable. A consumer can do nothing different about any of them
+                // — there is no image to show — so the contract does not publish which one it
+                // was. Infrastructure state is not a delivery field.
+                'featured'    => $this->resolvedMedia($row['media_featured'] ?? null),
+                // Gallery order is the store's own (see ProductQueryProvider). Always a list,
+                // never null, so a consumer can iterate without a guard.
+                'gallery'     => $this->resolvedGallery($row['media_gallery'] ?? null),
             ],
             // NULL when no inventory row has projected — UNKNOWN, deliberately distinguishable
             // from out of stock (AG-8 / Part 4b). A consumer that chooses to treat null as false
@@ -152,6 +173,26 @@ final class ProductResource implements ResourceInterface
     private function bool(mixed $value): bool
     {
         return $value === true || $value === 't' || $value === '1' || $value === 1;
+    }
+
+    /**
+     * One resolved media object, or null.
+     *
+     * Published verbatim — the object was shaped by whoever implements the Core media capability
+     * and Commerce does not reshape it. That is the point: a product image and a post's featured
+     * image are the same attachment representation, not two that happen to look alike today.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function resolvedMedia(mixed $value): ?array
+    {
+        return is_array($value) && $value !== [] ? $value : null;
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function resolvedGallery(mixed $value): array
+    {
+        return is_array($value) ? array_values(array_filter($value, 'is_array')) : [];
     }
 
     /** @return list<int> */

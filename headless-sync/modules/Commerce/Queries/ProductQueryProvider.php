@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce\Queries;
 
 use HSP\Core\Contracts\CursorPage;
+use HSP\Core\Contracts\MediaReferenceProviderInterface;
 use HSP\Core\Contracts\QueryFilterInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -109,8 +110,20 @@ final class ProductQueryProvider implements QueryProviderInterface
                    AND i.owner_id = p.source_product_id
                    AND i.deleted_at IS NULL";
 
-    public function __construct(private readonly DatabaseConnectionInterface $db)
-    {
+    /**
+     * The media capability is NULLABLE, and that is the AG-10 independence clause written into a
+     * signature: Commerce must synchronise and serve with the Content module absent. When it is
+     * null, products still list, still address, still price and still carry their attachment
+     * REFERENCES — one field resolves to null and one to an empty list, and nothing fails.
+     *
+     * The CORE contract, never a Content class. Commerce cannot name `MediaReferenceProvider`,
+     * `content.media` or the Content module at all (AG-10 / Rule 5); it knows an interface and
+     * whether something implements it.
+     */
+    public function __construct(
+        private readonly DatabaseConnectionInterface $db,
+        private readonly ?MediaReferenceProviderInterface $media = null,
+    ) {
     }
 
     /** @return CursorPage<array<string,mixed>> */
@@ -224,7 +237,7 @@ final class ProductQueryProvider implements QueryProviderInterface
             $nextCursor = $this->encodeCursor((string) $last['published_at'], (string) $last['id']);
         }
 
-        return new CursorPage($rows, $nextCursor);
+        return new CursorPage($this->withResolvedMedia($rows), $nextCursor);
     }
 
     /**
@@ -244,7 +257,96 @@ final class ProductQueryProvider implements QueryProviderInterface
             [$slug],
         );
 
-        return $rows[0] ?? null;
+        if ($rows === []) {
+            return null;
+        }
+
+        return $this->withResolvedMedia($rows)[0];
+    }
+
+    /**
+     * Resolve every attachment reference on this page of products in ONE capability call.
+     *
+     * THE WHOLE PAGE AT ONCE, not one call per product. A page of twenty products each carrying
+     * a featured image and a three-image gallery holds eighty references; resolving them per
+     * product would be twenty calls and per image eighty — the N+1 AG-10 prohibits by name. Every
+     * reference on the page is collected first, asked once, then mapped back, so the query count
+     * for a one-row page and for a full page is the same number.
+     *
+     * GALLERY ORDER IS THE PRODUCT'S, never the database's. The capability answers with a map
+     * keyed by attachment id precisely so a caller can walk its own stored sequence: a gallery
+     * stored as [124, 126, 125] publishes in that order however PostgreSQL returned the rows.
+     *
+     * An unresolvable reference is DROPPED from the resolved gallery rather than published as a
+     * hole — a consumer rendering a carousel should not have to skip nulls — and the surviving
+     * images keep their order relative to each other. None of this touches the stored references:
+     * they are the product's own state, and only a WooCommerce edit changes them.
+     *
+     * Hydrated into the row rather than resolved inside the Resource, deliberately. A Resource
+     * shapes data it is handed; injecting the capability there would make serialization perform
+     * database I/O, which is exactly how an N+1 gets reintroduced by accident later.
+     *
+     * @param  array<int, array<string,mixed>> $rows
+     * @return array<int, array<string,mixed>>
+     */
+    private function withResolvedMedia(array $rows): array
+    {
+        // Capability absent: the rows go out unhydrated and the Resource publishes the safe
+        // answer. No probing for a Content class, no fallback SQL, no second code path.
+        if ($this->media === null) {
+            return $rows;
+        }
+
+        $galleries = [];
+        $wanted    = [];
+
+        foreach ($rows as $i => $row) {
+            $galleries[$i] = $this->galleryIds($row['gallery_media_ids'] ?? '[]');
+
+            $wanted[] = (int) ($row['featured_media_id'] ?? 0);
+
+            foreach ($galleries[$i] as $id) {
+                $wanted[] = $id;
+            }
+        }
+
+        $resolved = $this->media->resolveMany($wanted);
+
+        foreach ($rows as $i => $row) {
+            $featuredId = (int) ($row['featured_media_id'] ?? 0);
+
+            $rows[$i]['media_featured'] = $resolved[$featuredId] ?? null;
+            $rows[$i]['media_gallery']  = array_values(array_filter(array_map(
+                static fn (int $id): ?array => $resolved[$id] ?? null,
+                $galleries[$i],
+            )));
+        }
+
+        return $rows;
+    }
+
+    /**
+     * The stored gallery reference list, in stored order.
+     *
+     * `gallery_media_ids` is jsonb, which the driver hands back as a JSON string.
+     *
+     * No sorting and no de-duplication. WooCommerce's own `set_gallery_image_ids()` runs
+     * `wp_parse_id_list()`, which de-duplicates while preserving order, so the stored list IS the
+     * source list — reshaping it here would be Commerce inventing a rule WooCommerce did not make.
+     *
+     * @return list<int>
+     */
+    private function galleryIds(mixed $value): array
+    {
+        if (is_string($value)) {
+            $value = json_decode($value, associative: true);
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_map('intval', array_filter($value, 'is_scalar')));
     }
 
     /**

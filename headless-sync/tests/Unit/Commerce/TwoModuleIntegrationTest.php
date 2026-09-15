@@ -80,6 +80,81 @@ final class TwoModuleIntegrationTest extends TestCase
         );
     }
 
+    /**
+     * The AG-10 media capability is registered under the CORE contract key and reaches Commerce
+     * (Finding 011).
+     *
+     * Asserted through the real composition root because that is where the boundary either holds
+     * or quietly does not: Content binds an implementation, Commerce resolves an interface, and
+     * neither manifest mentions the other. The only shared name is the Core contract.
+     */
+    public function testTheMediaCapabilityIsRegisteredUnderTheCoreContractAndReachesCommerce(): void
+    {
+        $container = $this->build();
+
+        self::assertTrue($container->has(\HSP\Core\Contracts\MediaReferenceProviderInterface::class));
+        self::assertInstanceOf(
+            \HSP\Core\Contracts\MediaReferenceProviderInterface::class,
+            $container->get(\HSP\Core\Contracts\MediaReferenceProviderInterface::class),
+        );
+
+        // The product query provider composes with it — resolution is a constructor dependency,
+        // never a lookup from inside the read path.
+        $provider   = $container->get(\HSP\Modules\Commerce\Queries\ProductQueryProvider::class);
+        $reflection = new \ReflectionProperty($provider, 'media');
+
+        self::assertInstanceOf(
+            \HSP\Core\Contracts\MediaReferenceProviderInterface::class,
+            $reflection->getValue($provider),
+        );
+    }
+
+    /**
+     * COMMERCE WITHOUT CONTENT (AG-10 independence clause). Composed from a manifest directory
+     * holding Commerce alone, so the media capability is genuinely never registered — not
+     * mocked away.
+     *
+     * Commerce still becomes available, its delivery surface still composes, and the product
+     * query provider simply holds null. The failure this guards against is a module that boots
+     * fine in the combination its author tested and fatals in the one nobody did.
+     */
+    public function testCommerceComposesWithNoMediaCapabilityRegistered(): void
+    {
+        $solo = sys_get_temp_dir() . '/hsp-commerce-only-' . bin2hex(random_bytes(6));
+        mkdir($solo . '/commerce', 0o777, true);
+        copy(
+            \dirname(__DIR__, 3) . '/modules/Commerce/module.json',
+            $solo . '/commerce/module.json',
+        );
+
+        try {
+            $container = (new ContainerBuilder())->build(
+                ['worker' => ['reconciliation' => ['page_size' => 500]]],
+                $solo . '/',
+            );
+
+            self::assertSame(['commerce'], $container->get('module.available_names'));
+            self::assertFalse(
+                $container->has(\HSP\Core\Contracts\MediaReferenceProviderInterface::class),
+                'the capability must genuinely be absent for this test to mean anything',
+            );
+
+            $provider = $container->get(\HSP\Modules\Commerce\Queries\ProductQueryProvider::class);
+
+            self::assertNull((new \ReflectionProperty($provider, 'media'))->getValue($provider));
+            self::assertNull(
+                (new \ReflectionProperty(
+                    $container->get(\HSP\Modules\Commerce\Queries\VariationQueryProvider::class),
+                    'media',
+                ))->getValue($container->get(\HSP\Modules\Commerce\Queries\VariationQueryProvider::class)),
+            );
+        } finally {
+            @unlink($solo . '/commerce/module.json');
+            @rmdir($solo . '/commerce');
+            @rmdir($solo);
+        }
+    }
+
     public function testBothModulesComposeSimultaneously(): void
     {
         $available = $this->build()->get('module.available_names');

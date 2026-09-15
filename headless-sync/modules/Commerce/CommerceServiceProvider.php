@@ -6,6 +6,7 @@ namespace HSP\Modules\Commerce;
 
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
+use HSP\Core\Contracts\MediaReferenceProviderInterface;
 use HSP\Core\Contracts\ModuleAvailabilityInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
 use HSP\Core\Contracts\PartitionRouterInterface;
@@ -106,6 +107,32 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
     public function isAvailable(): bool
     {
         return class_exists(\WooCommerce::class, false);
+    }
+
+    /**
+     * The AG-10 media capability if some module registered one, null otherwise.
+     *
+     * OPTIONAL, and this is the only place in Commerce that is allowed to notice. Resolution
+     * happens in the composition root — inside a lazy factory, not in business logic — which is
+     * where ADR-012 permits touching the container at all; the query providers receive the
+     * result through their constructors and never ask for anything.
+     *
+     * A CONTAINER KEY, never a class probe. `class_exists(ContentModule::class)` would couple
+     * Commerce to a sibling module's internals by name, which AG-10 and Rule 5 both forbid, and
+     * would answer "the class is loadable" rather than "the capability is registered" — those
+     * differ exactly when a module is installed but unavailable. Both providers are registered
+     * before anything is resolved (the container's register → boot phases), so a lazy lookup
+     * here sees Content's binding regardless of module order.
+     */
+    private static function mediaCapability(Container $container): ?MediaReferenceProviderInterface
+    {
+        if (! $container->has(MediaReferenceProviderInterface::class)) {
+            return null;
+        }
+
+        $capability = $container->get(MediaReferenceProviderInterface::class);
+
+        return $capability instanceof MediaReferenceProviderInterface ? $capability : null;
     }
 
     public function register(object $container): void
@@ -238,12 +265,18 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
 
         // --- Delivery --------------------------------------------------------
         $container->singleton(ProductQueryProvider::class, fn (Container $c) =>
-            new ProductQueryProvider($c->get(DatabaseConnectionInterface::class)));
+            new ProductQueryProvider(
+                $c->get(DatabaseConnectionInterface::class),
+                self::mediaCapability($c),
+            ));
         $container->singleton(ProductResource::class, fn () => new ProductResource());
         $container->singleton(TermResource::class, fn () => new TermResource());
 
         $container->singleton(VariationQueryProvider::class, fn (Container $c) =>
-            new VariationQueryProvider($c->get(DatabaseConnectionInterface::class)));
+            new VariationQueryProvider(
+                $c->get(DatabaseConnectionInterface::class),
+                self::mediaCapability($c),
+            ));
         $container->singleton(VariationResource::class, fn () => new VariationResource());
 
         $container->singleton(AttributeQueryProvider::class, fn (Container $c) =>

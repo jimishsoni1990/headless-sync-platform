@@ -22,9 +22,12 @@ use PHPUnit\Framework\TestCase;
  *   - a query reaching into `content.media`, which would fail at runtime on a database where
  *     the content schema was never migrated — the "hidden required dependency" AG-10 names.
  *
- * If Phase 2 later needs expanded media objects rather than references, AG-10 routes that
- * through a narrow Core-owned capability contract with BULK resolution, designed to tolerate
- * the capability being absent. Nothing here forbids that; it forbids reaching directly.
+ * Expanded media objects ARRIVED in Finding 011, through exactly the route AG-10 prescribes: a
+ * narrow Core-owned capability contract with BULK resolution, implemented by Content, consumed
+ * as a NULLABLE dependency. That is why these two scans still pass with resolved product images
+ * in the contract — Commerce gained an image, not a dependency. The resolution behaviour itself
+ * lives in ProductMediaResolutionTest; what is asserted here is that it changed nothing about
+ * the boundary.
  */
 final class ModuleIndependenceTest extends TestCase
 {

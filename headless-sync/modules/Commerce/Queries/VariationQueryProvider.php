@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HSP\Modules\Commerce\Queries;
 
 use HSP\Core\Contracts\CursorPage;
+use HSP\Core\Contracts\MediaReferenceProviderInterface;
 use HSP\Core\Contracts\QueryFilterInterface;
 use HSP\Core\Contracts\QueryProviderInterface;
 use HSP\Core\Database\DatabaseConnectionInterface;
@@ -26,8 +27,18 @@ final class VariationQueryProvider implements QueryProviderInterface
                     status, price, regular_price, sale_price, attributes, featured_media_id,
                     menu_order';
 
-    public function __construct(private readonly DatabaseConnectionInterface $db)
-    {
+    /**
+     * Nullable media capability, for the reason `ProductQueryProvider` records: Commerce serves
+     * with the Content module absent (AG-10 independence clause).
+     *
+     * A variation has ONE image and no gallery — WooCommerce gives it no gallery — so there is no
+     * ordering question here, only the same N+1 one: every variation on the page is resolved in
+     * one call, not one call each.
+     */
+    public function __construct(
+        private readonly DatabaseConnectionInterface $db,
+        private readonly ?MediaReferenceProviderInterface $media = null,
+    ) {
     }
 
     /** @return CursorPage<array<string,mixed>> */
@@ -89,7 +100,36 @@ final class VariationQueryProvider implements QueryProviderInterface
             $nextCursor = $this->encodeCursor((int) $last['menu_order'], (string) $last['id']);
         }
 
-        return new CursorPage($rows, $nextCursor);
+        return new CursorPage($this->withResolvedMedia($rows), $nextCursor);
+    }
+
+    /**
+     * Resolve every variation image on this page in ONE capability call.
+     *
+     * The stored reference is `WC_Product_Variation::get_image_id()` in view context, which is
+     * the variation's own image or — when it has none — the parent product's. That fallback is
+     * WooCommerce's, decided at capture and already in the shipped contract; resolving the
+     * reference does not change which image it names.
+     *
+     * @param  array<int, array<string,mixed>> $rows
+     * @return array<int, array<string,mixed>>
+     */
+    private function withResolvedMedia(array $rows): array
+    {
+        if ($this->media === null) {
+            return $rows;
+        }
+
+        $resolved = $this->media->resolveMany(array_map(
+            static fn (array $row): int => (int) ($row['featured_media_id'] ?? 0),
+            array_values($rows),
+        ));
+
+        foreach ($rows as $i => $row) {
+            $rows[$i]['media_featured'] = $resolved[(int) ($row['featured_media_id'] ?? 0)] ?? null;
+        }
+
+        return $rows;
     }
 
     /**
@@ -113,7 +153,11 @@ final class VariationQueryProvider implements QueryProviderInterface
             [(int) $slug],
         );
 
-        return $rows[0] ?? null;
+        if ($rows === []) {
+            return null;
+        }
+
+        return $this->withResolvedMedia($rows)[0];
     }
 
     private function encodeCursor(int $menuOrder, string $id): string

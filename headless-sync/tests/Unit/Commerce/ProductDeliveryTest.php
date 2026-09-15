@@ -213,8 +213,15 @@ final class ProductDeliveryTest extends TestCase
         self::assertSame(['colour' => 'blue'], $out['meta']);
     }
 
-    /** AG-10: references only. content.media owns attachment state. */
-    public function testTheResourcePublishesMediaAsReferencesNotExpandedObjects(): void
+    /**
+     * AG-10: Commerce stores REFERENCES and `content.media` owns attachment state — the Resource
+     * publishes what it is handed and composes nothing itself.
+     *
+     * A row that was never hydrated (no media capability registered) publishes the ids it stores
+     * plus the safe resolved values. Resolution is proven in ProductMediaResolutionTest; what
+     * matters here is that the Resource performs no I/O of its own to fill those fields in.
+     */
+    public function testTheResourceComposesNoMediaOfItsOwn(): void
     {
         $out = (new ProductResource())->toArray([
             'id' => 'u', 'source_product_id' => 1, 'slug' => 's', 'name' => 'n',
@@ -222,6 +229,8 @@ final class ProductDeliveryTest extends TestCase
         ]);
 
         self::assertSame(7, $out['media']['featured_id']);
+        self::assertNull($out['media']['featured']);
+        self::assertSame([], $out['media']['gallery']);
         self::assertArrayNotHasKey('url', $out['media']);
     }
 

@@ -89,19 +89,83 @@ final class CommerceEndpointProviderTest extends TestCase
         self::assertStringContainsString('NOT the same as out of stock', $stock['description']);
     }
 
-    /** Media stays an ID REFERENCE (AG-10) — but the reference shape itself is now described. */
-    public function test_media_publishes_its_id_reference_shape(): void
+    /**
+     * Media publishes the source id references AND the resolved image objects (Finding 011).
+     *
+     * The ids alone were not a usable contract: nothing in the document told a consumer how to
+     * turn 123 into a URL without knowing it was a WordPress attachment and reading another
+     * module's endpoint. They stay for compatibility; `featured` and `gallery` are what a
+     * generated client renders from.
+     */
+    public function test_media_publishes_resolved_objects_alongside_its_id_references(): void
     {
         $productMedia = $this->itemProperties('/products/{slug}')['media'];
 
-        self::assertSame(['featured_id', 'gallery_ids'], array_keys($productMedia['properties']));
+        self::assertSame(
+            ['featured_id', 'gallery_ids', 'featured', 'gallery'],
+            array_keys($productMedia['properties']),
+        );
         self::assertSame('integer', $productMedia['properties']['featured_id']['type']);
         self::assertSame('array', $productMedia['properties']['gallery_ids']['type']);
         self::assertSame('integer', $productMedia['properties']['gallery_ids']['items']['type']);
 
+        // Nullable object, not "object" — the four unresolved cases all publish null.
+        self::assertSame(['object', 'null'], $productMedia['properties']['featured']['type']);
+
+        // A CONCRETE nested schema, not array<object>: a generated client can render from this
+        // without reading PHP.
+        $gallery = $productMedia['properties']['gallery'];
+        self::assertSame('array', $gallery['type']);
+        self::assertSame('object', $gallery['items']['type']);
+        self::assertSame(
+            ['slug', 'url', 'alt_text', 'mime_type', 'width', 'height', 'sizes'],
+            array_keys($gallery['items']['properties']),
+        );
+
+        // Ordering and omission semantics are documented, not folklore.
+        self::assertStringContainsString('in the order the store', $gallery['description']);
+        self::assertStringContainsString('OMITTED', $gallery['description']);
+
         // A variation carries one image and no gallery — a different shape, described separately.
         $variationMedia = $this->itemProperties('/products/{slug}/variations')['media'];
-        self::assertSame(['featured_id'], array_keys($variationMedia['properties']));
+        self::assertSame(['featured_id', 'featured'], array_keys($variationMedia['properties']));
+        self::assertSame(['object', 'null'], $variationMedia['properties']['featured']['type']);
+    }
+
+    /**
+     * Commerce's resolved image object is the SAME shape Content publishes as `featured_media`.
+     *
+     * One platform representation of an attachment, not a Commerce dialect of it — they are the
+     * same rows resolved through the same capability. Asserted across the two descriptors because
+     * the fragments are inline by ADR-055 convention: this is what stops them drifting.
+     */
+    public function test_the_resolved_image_shape_matches_the_content_featured_media_contract(): void
+    {
+        $commerce = $this->itemProperties('/products/{slug}')['media']['properties']['featured'];
+
+        $contentFeatured = null;
+        foreach ((new \HSP\Modules\Content\Operations\ContentEndpointProvider())->endpoints() as $descriptor) {
+            if ($descriptor->route === '/posts/(?P<slug>[a-z0-9-]+)' || $descriptor->route === '/posts/{slug}') {
+                $contentFeatured = $descriptor->responseSchema->schema['properties']['featured_media'];
+            }
+        }
+
+        self::assertNotNull(
+            $contentFeatured,
+            'expected the Content provider to describe a single post with featured_media',
+        );
+
+        self::assertSame(
+            array_keys($contentFeatured['properties']),
+            array_keys($commerce['properties']),
+            'Commerce must publish the same media fields Content does, in the same order.',
+        );
+        self::assertSame($contentFeatured['required'], $commerce['required']);
+        self::assertSame($contentFeatured['type'], $commerce['type']);
+        self::assertSame(
+            $contentFeatured['properties']['sizes']['additionalProperties'],
+            $commerce['properties']['sizes']['additionalProperties'],
+        );
     }
 
     /**

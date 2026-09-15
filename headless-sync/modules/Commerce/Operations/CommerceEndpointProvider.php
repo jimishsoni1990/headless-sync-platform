@@ -557,12 +557,17 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     }
 
     /**
-     * Product media: attachment id REFERENCES only (AG-10). `content.media` remains the single
-     * attachment projection, so a consumer resolves these against `/hsp/v1/media` — Commerce
-     * does not duplicate attachment state and does not require the Content module to be active.
+     * Product media: resolved image objects, plus the attachment ids that were already public.
      *
-     * `featured_id` is 0 when the product has no featured image (the Resource casts a missing id
-     * to 0 rather than null), and `gallery_ids` is an empty list when there is no gallery.
+     * `featured` and `gallery` are what a consumer renders from — they carry a URL and its
+     * dimensions, so no id lookup, no second request and no knowledge of WordPress attachments
+     * is needed to show a product image (Finding 011). `featured_id` / `gallery_ids` remain
+     * because they were already published; they are the stored source references, not the
+     * rendering contract.
+     *
+     * `content.media` is still the single attachment projection (AG-10) — the objects here are
+     * composed at read time through the Core media capability, never copied into Commerce. That
+     * is why an image edited in WordPress appears here without the product being re-saved.
      *
      * @return array<string,mixed>
      */
@@ -570,27 +575,49 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     {
         return [
             'type'        => 'object',
-            'description' => 'WordPress attachment id references. Resolve them against the '
-                . 'media endpoint, which owns attachment delivery; Commerce publishes the '
-                . 'reference only.',
+            'description' => "The product's images. `featured` and `gallery` are resolved and "
+                . 'directly renderable. `featured_id` and `gallery_ids` are the underlying '
+                . 'WordPress attachment ids, kept for compatibility — a consumer does not need '
+                . 'them to display an image.',
+            // Order matches ProductResource's published key order — the drift guard compares the
+            // two exactly, so the descriptor is the response's shape and not merely its vocabulary.
             'properties'  => [
                 'featured_id' => [
                     'type'        => 'integer',
-                    'description' => 'Featured attachment id; 0 when the product has none.',
+                    'description' => 'WordPress attachment id of the main image; 0 when the '
+                        . 'product has none. A source reference, not required for rendering.',
                 ],
                 'gallery_ids' => [
                     'type'        => 'array',
                     'items'       => ['type' => 'integer'],
-                    'description' => 'Gallery attachment ids in store order; empty when there is no gallery.',
+                    'description' => 'WordPress attachment ids of the gallery, in store order; '
+                        . 'empty when there is no gallery. Source references, not required for '
+                        . 'rendering.',
+                ],
+                'featured'    => self::resolvedMediaSchema(
+                    "The product's main image, or null. Null when no image is set, when the "
+                    . 'attachment has not been projected yet, when it has been deleted, or when '
+                    . 'the media resolution capability is unavailable — a consumer treats all '
+                    . 'four the same way, by rendering no image.'
+                ),
+                'gallery'     => [
+                    'type'        => 'array',
+                    'items'       => self::resolvedMediaSchema(null),
+                    'description' => 'The gallery images, resolved, in the order the store '
+                        . 'arranged them. Always an array — empty when the product has no '
+                        . 'gallery, never null. A reference that cannot currently be resolved '
+                        . '(not yet projected, or deleted) is OMITTED rather than published as '
+                        . 'null, and the remaining images keep their relative order, so this '
+                        . 'list can be shorter than `gallery_ids`.',
                 ],
             ],
-            'required'    => ['featured_id', 'gallery_ids'],
+            'required'    => ['featured_id', 'gallery_ids', 'featured', 'gallery'],
         ];
     }
 
     /**
-     * Variation media: a single attachment id reference, with no gallery — WooCommerce gives a
-     * variation one image, not a gallery (AG-10 as above).
+     * Variation media: one resolved image and its reference, with no gallery — WooCommerce gives
+     * a variation a single image, not a gallery (AG-10 as above).
      *
      * @return array<string,mixed>
      */
@@ -598,15 +625,99 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     {
         return [
             'type'        => 'object',
-            'description' => 'WordPress attachment id reference. Resolve it against the media '
-                . 'endpoint, which owns attachment delivery.',
+            'description' => "The variation's image. `featured` is resolved and directly "
+                . 'renderable; `featured_id` is the underlying WordPress attachment id, kept '
+                . 'for compatibility.',
             'properties'  => [
                 'featured_id' => [
                     'type'        => 'integer',
-                    'description' => 'Variation image attachment id; 0 when the variation has none.',
+                    'description' => 'WordPress attachment id of the image; 0 when neither the '
+                        . 'variation nor its parent has one. A source reference, not required '
+                        . 'for rendering.',
                 ],
+                'featured'    => self::resolvedMediaSchema(
+                    "The variation's image, or null. WooCommerce falls back to the parent "
+                    . "product's image when a variation has none of its own, so this is "
+                    . 'populated for most variations of a product that has an image. Null when '
+                    . 'neither has one, when the attachment has not been projected or has been '
+                    . 'deleted, or when the media resolution capability is unavailable.'
+                ),
             ],
-            'required'    => ['featured_id'],
+            'required'    => ['featured_id', 'featured'],
+        ];
+    }
+
+    /**
+     * ONE resolved-image shape, published wherever Commerce publishes an image.
+     *
+     * The same seven fields the Content module publishes as a post's `featured_media`, because
+     * they are the same attachment resolved through the same capability — one platform
+     * representation of an image rather than a Commerce dialect of it. Pinned by a test against
+     * the Content descriptor so the two cannot drift apart silently.
+     *
+     * Inline rather than a `$ref`: ADR-055 builds schemas inline throughout, and introducing a
+     * components/$ref framework for one shared fragment is a larger change than the fragment.
+     *
+     * @return array<string,mixed>
+     */
+    private static function resolvedMediaSchema(?string $description): array
+    {
+        $schema = [
+            'type'       => $description === null ? 'object' : ['object', 'null'],
+            'properties' => [
+                'slug'      => ['type' => 'string'],
+                'url'       => [
+                    'type'        => 'string',
+                    'description' => 'Absolute URL of the full-size image.',
+                ],
+                'alt_text'  => [
+                    'type'        => 'string',
+                    'description' => 'Alternative text as entered in WordPress. Empty when none '
+                        . 'was entered — HSP does not substitute the product name; supplying a '
+                        . 'fallback is a presentation decision for the consumer.',
+                ],
+                'mime_type' => ['type' => 'string'],
+                'width'     => ['type' => 'integer', 'description' => 'Pixel width of the full-size image.'],
+                'height'    => ['type' => 'integer', 'description' => 'Pixel height of the full-size image.'],
+                'sizes'     => self::mediaSizesSchema(),
+            ],
+            'required'   => ['slug', 'url', 'alt_text', 'mime_type', 'width', 'height', 'sizes'],
+        ];
+
+        if ($description !== null) {
+            $schema['description'] = $description;
+        }
+
+        return $schema;
+    }
+
+    /**
+     * The generated thumbnail set, keyed by WordPress size name.
+     *
+     * Deliberately OPEN: the registered sizes belong to the site's theme and plugins — a store
+     * with WooCommerce adds `woocommerce_thumbnail` and friends — so the key set is not part of
+     * the published contract, while each value's shape is.
+     *
+     * @return array<string,mixed>
+     */
+    private static function mediaSizesSchema(): array
+    {
+        return [
+            'type'                 => 'object',
+            'description'          => 'Generated image sizes keyed by WordPress size name '
+                . '(`thumbnail`, `medium`, `woocommerce_thumbnail`, …). The key set belongs to '
+                . 'the site, not to the contract; an image with no generated sizes is an empty '
+                . 'object.',
+            'additionalProperties' => [
+                'type'       => 'object',
+                'properties' => [
+                    'url'       => ['type' => 'string'],
+                    'width'     => ['type' => 'integer'],
+                    'height'    => ['type' => 'integer'],
+                    'mime_type' => ['type' => 'string'],
+                ],
+                'required'   => ['url', 'width', 'height', 'mime_type'],
+            ],
         ];
     }
 
