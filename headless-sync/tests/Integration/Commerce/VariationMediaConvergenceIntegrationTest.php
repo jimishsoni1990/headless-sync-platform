@@ -29,14 +29,20 @@ use PHPUnit\Framework\TestCase;
  *      the same id. This must reach the variation's response with no variation rewrite — the
  *      Product equivalent is already proven, and this is its variation twin.
  *
- *   2. The variation's effective REFERENCE changes because its PARENT's image changed, while
- *      the variation itself was never edited. That is only possible because
- *      `WC_Product_Variation::get_image_id()` resolves to the parent's image in `view` context
- *      when the variation has none of its own — so a parent edit silently moves a value stored
- *      on the variation aggregate.
+ *   2. Whether the variation's stored REFERENCE can change because its PARENT changed. Under
+ *      WooCommerce's `view` context it could: `get_image_id()` falls back to the parent's image
+ *      when the variation has none of its own, so a parent edit silently moved a value stored on
+ *      the variation aggregate — and a parent image edit emits no variation event, so the
+ *      projection went stale (verified live: `commerce.product.updated` +
+ *      `commerce.inventory.updated`, zero variation events).
  *
- * The second is the reason this file exists. It is a CAPTURE question, not a delivery one, and
- * the test below records the answer rather than asserting a preferred one: see FLAG-COMMVARIMG-1.
+ * FLAG-COMMVARIMG-1 resolved that by removing the dependency rather than compensating for it:
+ * the loader captures `get_image_id('edit')`, the variation's own explicit assignment, so there
+ * is no inherited value left to go stale. The tests below are the invariant, not a workaround —
+ * no fan-out, no cross-aggregate write, no reconciliation dependency appears anywhere.
+ *
+ * WooCommerce's display fallback remains valid and reproducible by a consumer, from the public
+ * contract alone: `variation.media.featured ?? product.media.featured`.
  *
  * Self-skips without PostgreSQL, per the suite convention.
  */
@@ -44,13 +50,13 @@ final class VariationMediaConvergenceIntegrationTest extends TestCase
 {
     private mixed $pgConn = null;
     private PostgresDatabaseConnection $db;
-    private ViewResolvingCommerceLoader $loader;
+    private ExplicitImageCommerceLoader $loader;
 
     protected function setUp(): void
     {
         $this->pgConn = $this->connectPgsql();
         $this->db     = new PostgresDatabaseConnection($this->pgConn);
-        $this->loader = new ViewResolvingCommerceLoader();
+        $this->loader = new ExplicitImageCommerceLoader();
 
         CommerceSchema::applySystemTables($this->pgConn);
         CommerceSchema::applyAll($this->pgConn);
@@ -130,7 +136,8 @@ final class VariationMediaConvergenceIntegrationTest extends TestCase
             'price'              => '20.00',
             'regular_price'      => '20.00',
             'sale_price'         => null,
-            // The variation's OWN image; 0 means it has none and Woo falls back in view context.
+            // The variation's OWN explicit image; 0 means it has none. Kept separate from the
+            // parent's so a test can move either one independently.
             'own_image_id'       => $ownImage,
             'menu_order'         => 0,
             'attributes'         => ['pa_color' => 'blue'],
@@ -269,15 +276,14 @@ final class VariationMediaConvergenceIntegrationTest extends TestCase
     // =========================================================================
 
     /**
-     * A variation with no image of its own inherits the parent's, exactly as
-     * `WC_Product_Variation::get_image_id()` does in `view` context.
+     * A variation with no image of its own publishes NOTHING, even when its parent has one.
      *
-     * Verified against WooCommerce 11.1.0 on the live store (read-only, in-memory): clearing a
-     * variation's image gives `get_image_id('edit') === 0` and `get_image_id('view') === 122`,
-     * the parent's featured image. `WpCommerceLoaderImpl` calls `get_image_id()` with the
-     * default context, so it is the VIEW value that HSP captures and stores.
+     * This is the ruling (FLAG-COMMVARIMG-1, Option 1). WooCommerce's `view` context would
+     * answer 122 here — the parent's featured image — and that answer is correct for DISPLAY and
+     * wrong to persist: it is derived from two aggregates. The loader passes `'edit'`, so what
+     * reaches this projection is the variation's own explicit assignment and nothing else.
      */
-    public function test_a_variation_without_its_own_image_captures_the_parents(): void
+    public function test_a_variation_without_its_own_image_does_not_inherit_the_parents(): void
     {
         $this->givenCatalog(parentId: 95, parentImage: 122, variationId: 118, ownImage: 0);
         $this->seedMedia(122);
@@ -286,56 +292,170 @@ final class VariationMediaConvergenceIntegrationTest extends TestCase
 
         $media = $this->publishedVariation(95, 118)['media'];
 
-        self::assertSame(122, $media['featured_id'], "Woo's view-context fallback is what HSP stores");
-        self::assertSame('https://example.test/uploads/122.jpg', $media['featured']['url']);
+        self::assertSame(0, $media['featured_id'], "the parent's image is not variation state");
+        self::assertNull($media['featured']);
     }
 
     /**
-     * THE DECIDING TEST. The parent's featured image changes; the variation is never edited.
+     * THE INVARIANT the ruling buys. The parent's featured image changes; the variation is never
+     * edited; the variation's state does not move at all.
      *
-     * Its effective source value has moved — `get_image_id('view')` now answers 125 where it
-     * answered 122 — but the value lives on the VARIATION aggregate, and nothing emits a
-     * variation event. Verified live against WooCommerce 11.1.0: changing product 95's featured
-     * image emitted `commerce.product.updated` + `commerce.inventory.updated` and **zero**
-     * `commerce.product_variation.*` events.
+     * This replaces the regression that used to prove the opposite. Under the old `view`
+     * semantics the variation stored the parent's image, so a parent edit silently changed a
+     * value on this aggregate — and, verified live, a parent image change emits
+     * `commerce.product.updated` + `commerce.inventory.updated` and ZERO variation events, so
+     * the projection simply went stale. Storing only the variation's own assignment removes the
+     * dependency rather than compensating for it: there is no inherited value left to go stale,
+     * and so no fan-out, no cross-aggregate write and no reconciliation dependency is needed.
      *
-     * So the variation projection keeps the old inherited image. This test PINS that fact rather
-     * than endorsing it — it is the evidence behind FLAG-COMMVARIMG-1, and it will need updating
-     * if the architecture ruling changes the capture or the stored semantic.
+     * `checksum`, `synced_at` and `updated_at` are asserted byte-identical: the variation is not
+     * merely serving the same image, it was not touched.
      */
-    public function test_a_parent_image_change_does_not_converge_an_inherited_variation_image(): void
+    public function test_a_parent_image_change_leaves_the_variation_untouched(): void
     {
         $this->givenCatalog(parentId: 95, parentImage: 122, variationId: 118, ownImage: 0);
         $this->seedMedia(122);
         $this->seedMedia(125);
 
         $this->handler()->handle($this->event(118, 1));
-        self::assertSame(122, (int) $this->variationRow(118)['featured_media_id']);
 
-        // Only the parent's image changes. The variation is NOT edited, so WooCommerce emits no
-        // variation hook and HSP writes no variation outbox row.
+        $rowBefore = $this->variationRow(118);
+        self::assertSame(0, (int) $rowBefore['featured_media_id']);
+
+        // Only the parent's image changes; the variation is NOT edited.
         $this->loader->products[95]['featured_media_id'] = 125;
 
-        // Woo's effective answer for the variation has moved with it.
+        // The variation's own source fact has not moved, because it never depended on the parent.
         self::assertSame(
-            125,
+            0,
             (int) $this->loader->loadVariation(118)['featured_media_id'],
-            'the source value this aggregate stores has changed without the aggregate being edited',
+            'the variation aggregate owns its image outright',
         );
 
-        // But no variation event exists to carry it, so the projection is unchanged...
-        $stale = $this->publishedVariation(95, 118)['media'];
-        self::assertSame(122, $stale['featured_id'], 'STALE: the projection still serves the old image');
-        self::assertSame('https://example.test/uploads/122.jpg', $stale['featured']['url']);
-
-        // ...and it stays that way until something re-emits the variation. Reconciliation in a
-        // checksum mode is what eventually does: recomputing the canonical checksum from live
-        // WordPress state sees the drift, which is precisely why this is a CAPTURE gap and not a
-        // projection bug — the repair path already works, nothing tells it to run in time.
+        // Even re-emitting the variation changes nothing — there is no inherited value to drift.
         $this->handler()->handle($this->event(118, 2));
 
-        $repaired = $this->publishedVariation(95, 118)['media'];
-        self::assertSame(125, $repaired['featured_id'], 're-emission converges it');
+        $rowAfter = $this->variationRow(118);
+        self::assertSame($rowBefore, $rowAfter, 'no parent dependency, so nothing to converge');
+
+        $media = $this->publishedVariation(95, 118)['media'];
+        self::assertSame(0, $media['featured_id']);
+        self::assertNull($media['featured']);
+    }
+
+    /** An explicit variation image is unaffected by the parent's image changing. */
+    public function test_an_explicit_variation_image_is_unaffected_by_parent_image_changes(): void
+    {
+        $this->givenCatalog(parentId: 95, parentImage: 122, variationId: 118, ownImage: 125);
+        $this->seedMedia(122);
+        $this->seedMedia(125);
+        $this->seedMedia(126);
+
+        $this->handler()->handle($this->event(118, 1));
+        $rowBefore = $this->variationRow(118);
+
+        $this->loader->products[95]['featured_media_id'] = 126;
+        $this->handler()->handle($this->event(118, 2));
+
+        self::assertSame($rowBefore, $this->variationRow(118));
+        self::assertSame(125, $this->publishedVariation(95, 118)['media']['featured_id']);
+    }
+
+    // =========================================================================
+    // 3. Checksum — the variation's own image still drives its state
+    // =========================================================================
+
+    /** Swapping the variation's explicit image moves its checksum and its projection. */
+    public function test_changing_the_explicit_variation_image_converges_normally(): void
+    {
+        $this->givenCatalog(parentId: 95, parentImage: 122, variationId: 118, ownImage: 125);
+        $this->seedMedia(125);
+        $this->seedMedia(126);
+
+        $this->handler()->handle($this->event(118, 1));
+        $before = $this->variationRow(118);
+
+        $this->loader->variations[118]['own_image_id'] = 126;
+        $this->handler()->handle($this->event(118, 2));
+
+        $after = $this->variationRow(118);
+
+        self::assertNotSame($before['checksum'], $after['checksum'], '125 -> 126 must move the checksum');
+        self::assertSame(126, (int) $after['featured_media_id']);
+        self::assertSame(126, $this->publishedVariation(95, 118)['media']['featured_id']);
+    }
+
+    /** Clearing the variation's explicit image converges to 0 / null, not to the parent's. */
+    public function test_clearing_the_explicit_variation_image_converges_to_zero(): void
+    {
+        $this->givenCatalog(parentId: 95, parentImage: 122, variationId: 118, ownImage: 125);
+        $this->seedMedia(122);
+        $this->seedMedia(125);
+
+        $this->handler()->handle($this->event(118, 1));
+        $before = $this->variationRow(118);
+
+        $this->loader->variations[118]['own_image_id'] = 0;
+        $this->handler()->handle($this->event(118, 2));
+
+        $after = $this->variationRow(118);
+
+        self::assertNotSame($before['checksum'], $after['checksum']);
+        self::assertSame(0, (int) $after['featured_media_id']);
+
+        $media = $this->publishedVariation(95, 118)['media'];
+        self::assertSame(0, $media['featured_id']);
+        self::assertNull($media['featured'], 'cleared means none — not the parent image');
+    }
+
+    // =========================================================================
+    // 4. Historical rows repair through the ORDINARY pipeline
+    // =========================================================================
+
+    /**
+     * A row projected under the OLD `view` semantics carries the parent's inherited image. It
+     * repairs to 0 through ordinary re-emission — the DECISION T/U path reconciliation already
+     * drives — with no repair SQL, no migration UPDATE and no repair worker.
+     *
+     * The historical row is produced by RUNNING the old semantic, not by patching the column:
+     * the fixture first reports the inherited parent image as the variation's image — which is
+     * exactly what the view-context loader used to return — so the row lands with 122 AND a
+     * checksum computed over 122, the way a real pre-ruling projection did.
+     *
+     * That distinction is load-bearing. Patching only the column leaves a row whose checksum
+     * says 0 while its column says 122; re-emission then recomputes 0, matches the stored
+     * checksum, and DECISION 3 correctly suppresses the write — a state no pipeline ever
+     * produces, failing for a reason that has nothing to do with the repair.
+     */
+    public function test_a_historical_inherited_row_repairs_to_zero_through_ordinary_re_emission(): void
+    {
+        $this->givenCatalog(parentId: 95, parentImage: 122, variationId: 118, ownImage: 0);
+        $this->seedMedia(122);
+
+        // The OLD view-context loader: no explicit image, so it returned the parent's.
+        $this->loader->variations[118]['own_image_id'] = 122;
+        $this->handler()->handle($this->event(118, 1));
+
+        self::assertSame(122, (int) $this->variationRow(118)['featured_media_id']);
+
+        // The corrected loader reads the variation's own assignment — which is none.
+        $this->loader->variations[118]['own_image_id'] = 0;
+
+        self::assertSame(
+            122,
+            $this->publishedVariation(95, 118)['media']['featured_id'],
+            'precondition: the historical row serves the inherited parent image',
+        );
+
+        // Ordinary re-emission — exactly what replay (DECISION T) and reconciliation
+        // (DECISION U) put through the queue. Nothing bespoke.
+        $this->handler()->handle($this->event(118, 2));
+
+        self::assertSame(0, (int) $this->variationRow(118)['featured_media_id']);
+
+        $media = $this->publishedVariation(95, 118)['media'];
+        self::assertSame(0, $media['featured_id']);
+        self::assertNull($media['featured']);
     }
 
     private function connectPgsql(): mixed
@@ -360,14 +480,18 @@ final class VariationMediaConvergenceIntegrationTest extends TestCase
 }
 
 /**
- * A loader that reproduces `WC_Product_Variation::get_image_id()` in VIEW context.
+ * A loader that reproduces `WC_Product_Variation::get_image_id('edit')` — the variation's OWN
+ * explicit image, 0 when it has none.
  *
- * The fixture stores a variation's own image as `own_image_id` and resolves `featured_media_id`
- * the way WooCommerce does — own image when set, otherwise the parent product's featured image.
- * Without this, a test loader returning a flat stored id would model a source HSP does not read
- * and the convergence question could never surface.
+ * The fixture holds the variation's own assignment as `own_image_id` and the parent's featured
+ * image separately, so a test can move either one independently. That separation is the point:
+ * a fixture that stored a single flat id could not express "the parent changed and the variation
+ * did not", which is the case this file exists to pin.
+ *
+ * It deliberately does NOT reproduce the view-context fallback. Modelling a source the loader no
+ * longer reads would let a test pass against semantics production abandoned.
  */
-final class ViewResolvingCommerceLoader extends InMemoryCommerceLoader
+final class ExplicitImageCommerceLoader extends InMemoryCommerceLoader
 {
     /** @return array<string,mixed>|null */
     public function loadVariation(int $variationId): ?array
@@ -378,11 +502,7 @@ final class ViewResolvingCommerceLoader extends InMemoryCommerceLoader
             return null;
         }
 
-        $own = (int) ($variation['own_image_id'] ?? 0);
-
-        $variation['featured_media_id'] = $own > 0
-            ? $own
-            : (int) ($this->products[(int) $variation['parent_id']]['featured_media_id'] ?? 0);
+        $variation['featured_media_id'] = (int) ($variation['own_image_id'] ?? 0);
 
         return $variation;
     }

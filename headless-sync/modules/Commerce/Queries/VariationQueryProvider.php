@@ -106,10 +106,12 @@ final class VariationQueryProvider implements QueryProviderInterface
     /**
      * Resolve every variation image on this page in ONE capability call.
      *
-     * The stored reference is `WC_Product_Variation::get_image_id()` in view context, which is
-     * the variation's own image or — when it has none — the parent product's. That fallback is
-     * WooCommerce's, decided at capture and already in the shipped contract; resolving the
-     * reference does not change which image it names.
+     * The stored reference is the variation's OWN explicitly assigned image
+     * (`WC_Product_Variation::get_image_id('edit')`), or 0 when it has none. WooCommerce's
+     * view-context fallback to the parent's image is deliberately not persisted — it is derived
+     * from two aggregates, so it could go stale here when the PARENT changed (FLAG-COMMVARIMG-1).
+     * A consumer that wants that display behaviour composes it:
+     * `variation.media.featured ?? product.media.featured`.
      *
      * @param  array<int, array<string,mixed>> $rows
      * @return array<int, array<string,mixed>>

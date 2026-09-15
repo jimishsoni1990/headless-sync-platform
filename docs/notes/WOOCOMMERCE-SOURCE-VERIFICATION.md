@@ -319,16 +319,15 @@ Variation **stock** is deliberately out of scope for this session and belongs to
 rest of AG-14 — including how a variation signals that stock is managed at the parent instead.
 This session projects a variation's identity, pricing and selected attribute values only.
 
-### 9.7 Variation image — VERIFIED SOURCE FACT, UNRESOLVED HSP SEMANTIC (FLAG-COMMVARIMG-1)
+### 9.7 Variation image — `edit` versus `view` context (FLAG-COMMVARIMG-1, RESOLVED)
 
-Verified 2026-09-15, after Finding 011, because P2-S5 never covered it: §9.6 below scoped that
+Verified 2026-09-15, after Finding 011, because P2-S5 never covered it: §9.6 above scoped that
 session to "identity, pricing and selected attribute values only", while DECISION AG's
 source-fact protocol lists **"product/variation image references"** as a fact requiring
 verification. The column shipped; the verification did not.
 
-**WooCommerce 11.1.0 fact.** `WC_Product_Variation::get_image_id( $context = 'view' )`
-(`includes/class-wc-product-variation.php:373-381`) falls back to the PARENT product's image when
-the variation has none of its own:
+**The two WooCommerce 11.1.0 facts.** `WC_Product_Variation::get_image_id( $context = 'view' )`
+answers a different question per context (`includes/class-wc-product-variation.php:373-381`):
 
 ```php
 $image_id = $this->get_prop( 'image_id', $context );
@@ -337,51 +336,58 @@ if ( 'view' === $context && ! $image_id ) {
 }
 ```
 
+```
+get_image_id('edit')  → the variation's explicit image id; 0 when absent
+get_image_id('view')  → the effective Woo display image; may fall back to the parent product's
+```
+
 Measured on the live store (read-only, in-memory mutation of a loaded object, never saved) —
-variation 111 of product 95, with its own image cleared in memory:
+variation 111 of product 95, with its own image cleared in memory: `edit` = `0`, `view` = `122`,
+the parent's featured image. `WC_Product` itself has no such fallback, so the context makes no
+difference on a product and the product loader omits it.
 
-| context | value |
-|---|---|
-| `get_image_id('edit')` | `0` — the variation's own explicit reference |
-| `get_image_id('view')` | `122` — the PARENT product's featured image |
+**The HSP decision.**
 
-So `edit` and `view` answer two genuinely different source questions: *the variation's own image*
-versus *the effective image WooCommerce would display for it*.
+> HSP's Variation projection intentionally captures **edit-context explicit image state**.
+>
+> WooCommerce's view-context parent fallback is **not persisted**, because it is derived
+> cross-aggregate presentation state and is not independently convergent.
 
-**What HSP captures.** `WpCommerceLoaderImpl::loadVariation()` calls `$variation->get_image_id()`
-with the **default** context, i.e. `view`. HSP therefore persists the EFFECTIVE image — a value
-that can belong to a different aggregate — into `commerce.product_variations.featured_media_id`,
-and it is inside `CanonicalVariation`'s checksum.
+`WpCommerceLoaderImpl::loadVariation()` therefore calls `$variation->get_image_id('edit')`.
 
-**Why that is not yet a ratified contract.** The stored value can change without the aggregate
-that stores it being edited, and nothing emits an event when it does:
+**Why the fallback cannot be a Variation source fact.** The value would be derived from two
+aggregates, so it can change because the PARENT was edited — and a parent image edit emits no
+variation event. Verified live rather than inferred: changing product 95's featured image emitted
+`commerce.product.updated` + `commerce.inventory.updated` and **zero**
+`commerce.product_variation.*` events. WooCommerce saves no variation, so no variation hook fires,
+and the documented fan-out direction is variation → parent (`WC_Product_Variable::sync()` calls
+`$parent->save()`), never the reverse. A `view`-derived reference therefore sat stale in the
+projection until something unrelated re-emitted the variation.
 
-- Verified live: changing product 95's featured image emitted `commerce.product.updated` +
-  `commerce.inventory.updated` and **zero** `commerce.product_variation.*` events. WooCommerce
-  saves no variation, so no variation hook fires and `HookWiring::onProductUpdated()` captures
-  the product alone (the documented fan-out direction is variation → parent, via
-  `WC_Product_Variable::sync()`, never parent → variations).
-- Proven end to end in `VariationMediaConvergenceIntegrationTest`: with the parent's image moved
-  `122 → 125` and the variation untouched, `loadVariation()` now answers `125` while the
-  projection still serves `122`.
+The fix removes the dependency rather than compensating for it, which is why no parent → variation
+fan-out, cross-aggregate write, synthetic event, delivery-time WooCommerce read, read-time parent
+join or special reconciliation dependency exists anywhere in the module.
 
-Reconciliation in a **checksum** mode (incremental / full) recomputes the canonical checksum from
-live WordPress state and does detect the drift — which is what identifies this as a **capture
-gap**, the same shape as FLAG-TAGCOUNT-1 and FLAG-COMMTERMCOUNT-1, rather than a projection bug.
-The hourly `drift` mode cannot catch it: it compares timestamps and existence with no checksum
-recompute, and a parent image edit does not move the variation's `post_modified`.
+**Woo's fallback is not unsupported, and is not wrong.** It is display behaviour, and it belongs at
+presentation/composition time rather than in Variation persistence. A consumer reproduces it
+exactly from the published contract, which is possible precisely because Finding 011 made Product
+media directly renderable:
 
-**Status: the WooCommerce facts above are verified. The HSP persistence semantic is UNRESOLVED**
-pending architecture ruling (FLAG-COMMVARIMG-1). Until it is ruled on, do not describe the
-parent-image fallback as part of the published contract, and do not "fix" the staleness with a
-parent-event fan-out to variations, a `ProductAdapter` write into variation rows, a delivery-time
-WooCommerce lookup, or a read-time parent join in `VariationQueryProvider` — each of those trades
-a capture question for a cross-aggregate coupling AG-7 exists to prevent.
+```
+variation.media.featured ?? product.media.featured
+```
 
-**Not affected.** A variation with its OWN explicit image is unaffected in every respect: its
-reference is its own source fact, it converges on its own variation events, and all seven
-variations on the live reference store are of this kind (`edit` == `view` for every one), so
-there is no live incorrectness today.
+HSP publishes no `effective_featured` / `inherited_featured` / `display_image` field. Exposing
+composed effective media would be a separate, deliberate composition capability.
+
+**Historical rows.** No migration and no repair SQL: a row projected under the old `view` semantic
+carries the parent's id together with a checksum computed over it, so ordinary re-emission
+(DECISION T replay / DECISION U reconciliation) recomputes a different checksum, escapes DECISION
+3 write suppression and repairs the row to 0. Proven in
+`tests/Integration/Commerce/VariationMediaConvergenceIntegrationTest.php`.
+
+**Live reference store.** All seven variations carry their own explicit image (`edit` == `view`
+for every one), so no live value changed when the semantic was corrected.
 
 ---
 

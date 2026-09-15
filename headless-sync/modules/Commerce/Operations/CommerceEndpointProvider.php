@@ -625,22 +625,22 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     {
         return [
             'type'        => 'object',
-            'description' => "The variation's image. `featured` is resolved and directly "
-                . 'renderable; `featured_id` is the underlying WordPress attachment id, kept '
-                . 'for compatibility.',
+            'description' => "The image explicitly assigned to this variation. Does NOT include "
+                . "the parent product's image: a variation with no image of its own publishes "
+                . 'nothing here rather than inheriting.',
             'properties'  => [
                 'featured_id' => [
                     'type'        => 'integer',
-                    'description' => 'WordPress attachment id of the image; 0 when neither the '
-                        . 'variation nor its parent has one. A source reference, not required '
-                        . 'for rendering.',
+                    'description' => 'WooCommerce attachment id explicitly assigned to this '
+                        . 'variation. Zero when the variation has no variation-specific image. '
+                        . 'Parent-product image fallback is not included. A source reference, '
+                        . 'not required for rendering.',
                 ],
                 'featured'    => self::resolvedMediaSchema(
-                    "The variation's image, or null. WooCommerce falls back to the parent "
-                    . "product's image when a variation has none of its own, so this is "
-                    . 'populated for most variations of a product that has an image. Null when '
-                    . 'neither has one, when the attachment has not been projected or has been '
-                    . 'deleted, or when the media resolution capability is unavailable.'
+                    'Resolved media for the image explicitly assigned to this variation. Null '
+                    . 'when no variation-specific image is assigned, when the attachment has '
+                    . 'not been projected or has been deleted, or when the media resolution '
+                    . 'capability is unavailable.'
                 ),
             ],
             'required'    => ['featured_id', 'featured'],

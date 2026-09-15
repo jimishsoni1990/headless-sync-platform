@@ -66,6 +66,13 @@ final class VariationResource implements ResourceInterface
             // null when there is no image, when it has not projected, when it was tombstoned,
             // or when the media capability is unavailable — one value for every case a consumer
             // cannot act differently on.
+            //
+            // The variation's OWN image only. WooCommerce's display fallback to the parent's
+            // image is not persisted or published here (FLAG-COMMVARIMG-1): it is derived from
+            // two aggregates, and a value that changes when a DIFFERENT aggregate is edited
+            // cannot converge on this one's events. A consumer that wants that behaviour writes
+            // `variation.media.featured ?? product.media.featured` — both are now directly
+            // renderable, which is exactly what makes the composition safe on the consumer side.
             'media'            => [
                 'featured_id' => (int) ($row['featured_media_id'] ?? 0),
                 'featured'    => is_array($row['media_featured'] ?? null) && $row['media_featured'] !== []

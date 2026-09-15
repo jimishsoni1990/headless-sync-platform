@@ -50,7 +50,21 @@ interface WooProductAccess
 
     public function get_sale_price(): mixed;
 
-    public function get_image_id(): mixed;
+    /**
+     * The attachment id of the image, and THE CONTEXT IS LOAD-BEARING on a variation.
+     *
+     * `WC_Product_Variation::get_image_id()` answers two different questions depending on it
+     * (verified, WooCommerce 11.1.0, `class-wc-product-variation.php:373-381`):
+     *
+     *   'edit' → the variation's OWN explicitly assigned image; 0 when it has none.
+     *   'view' → the EFFECTIVE display image, falling back to the parent product's when the
+     *            variation has none of its own.
+     *
+     * The variation loader passes 'edit' deliberately (FLAG-COMMVARIMG-1). On `WC_Product`
+     * itself there is no fallback and the argument makes no difference, so the product loader
+     * omits it.
+     */
+    public function get_image_id(string $context = 'view'): mixed;
 
     public function get_gallery_image_ids(): mixed;
 

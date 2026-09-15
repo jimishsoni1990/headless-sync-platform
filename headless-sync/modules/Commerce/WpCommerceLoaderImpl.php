@@ -384,7 +384,21 @@ final class WpCommerceLoaderImpl implements WpCommerceLoader
             'price'              => $this->priceString($variation->get_price()),
             'regular_price'      => $this->priceString($variation->get_regular_price()),
             'sale_price'         => $this->priceString($variation->get_sale_price()),
-            'featured_media_id'  => (int) $variation->get_image_id(),
+            // 'edit', NOT the default 'view' — and the argument is the whole of FLAG-COMMVARIMG-1.
+            //
+            // In view context WooCommerce answers with the parent product's image when the
+            // variation has none of its own. That is a correct DISPLAY answer and a wrong thing
+            // to persist here: it is derived from two aggregates, so the value stored on the
+            // variation could change because the PARENT was edited — and a parent image edit
+            // emits no variation event (verified live: `commerce.product.updated` +
+            // `commerce.inventory.updated`, zero variation events), leaving this projection
+            // stale until something unrelated re-emitted the variation.
+            //
+            // The edit context is the variation's own explicit assignment — a fact this
+            // aggregate owns outright, which converges on its own events and depends on nothing
+            // else. Consumers that want WooCommerce's display behaviour compose it from the
+            // published contract: `variation.media.featured ?? product.media.featured`.
+            'featured_media_id'  => (int) $variation->get_image_id('edit'),
             'menu_order'         => (int) ($post->menu_order ?? 0),
             'attributes'         => $attributes,
             // Resolved HERE, in the read boundary, rather than in the transformer: turning a

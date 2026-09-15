@@ -697,6 +697,35 @@ final class ProductMediaResolutionTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
+     * The variation loader captures the variation's OWN image — `get_image_id('edit')`.
+     *
+     * A source assertion, because the whole of FLAG-COMMVARIMG-1's ruling is that one argument
+     * and the real loader cannot be unit-tested (it needs a booted WooCommerce). Dropping the
+     * argument silently restores `view`, which resolves to the PARENT's image when a variation
+     * has none — a cross-aggregate value that goes stale when the parent is edited, because a
+     * parent image change emits no variation event. The failure is invisible on a store where
+     * every variation has its own image, which is exactly the reference store.
+     */
+    public function testTheVariationLoaderCapturesTheVariationsOwnImageNotTheEffectiveOne(): void
+    {
+        $loader = (string) file_get_contents(
+            \dirname(__DIR__, 3) . '/modules/Commerce/WpCommerceLoaderImpl.php'
+        );
+
+        self::assertStringContainsString(
+            "\$variation->get_image_id('edit')",
+            $loader,
+            "the variation loader must capture the variation's own explicit image (FLAG-COMMVARIMG-1)",
+        );
+
+        self::assertStringNotContainsString(
+            '$variation->get_image_id()',
+            $loader,
+            "the default 'view' context inherits the parent's image — a cross-aggregate value",
+        );
+    }
+
+    /**
      * Core declares the capability and knows no implementation of it.
      *
      * The two Commerce-side halves of this boundary — no Content import, no string naming a
