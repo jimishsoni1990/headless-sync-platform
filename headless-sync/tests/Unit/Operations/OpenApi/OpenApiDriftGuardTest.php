@@ -6,13 +6,10 @@ namespace HSP\Tests\Unit\Operations\OpenApi;
 
 
 use HSP\Core\Container\Container;
-use HSP\Core\Container\ContainerBuilder;
 use HSP\Core\Contracts\Operations\EndpointAuth;
 use HSP\Core\Contracts\Operations\EndpointDescriptor;
-use HSP\Core\Database\DatabaseConnectionInterface;
-use HSP\Core\Module\ModuleRegistry;
 use HSP\Core\Operations\OpenApi\OpenApiGenerator;
-use HSP\Core\Operations\Services\OperationsService;
+use HSP\Tests\Support\LiveHspRouteIndex;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -62,45 +59,24 @@ use PHPUnit\Framework\TestCase;
  */
 final class OpenApiDriftGuardTest extends TestCase
 {
-    /** The ONE frozen structural exemption prefix (ADR-055 (f), v1.28 — DECISION W (e)). */
-    private const EXEMPT_PREFIX = 'hsp/v1/onboarding/';
+    /**
+     * The live route index and the descriptor registry — the two independent surfaces this guard
+     * compares — come from the shared trait, so this route-EXISTENCE guard and the
+     * parameter-CONTRACT guard cannot disagree about what "live" means (FLAG-RESTARGDRIFT-1).
+     */
+    use LiveHspRouteIndex;
 
     private const VALIDATOR_SCRIPT = __DIR__ . '/../../../../tools/openapi-validator/validate-openapi.mjs';
 
-    private mixed $priorWpdb = null;
-
     /**
-     * Two conditions the real composition root needs, and one of them is load-bearing for this
-     * guard's whole purpose.
-     *
-     * `$wpdb` — OutboxServiceProvider reads `$wpdb->prefix` at composition time; a headless
-     * PHPUnit process has no `$wpdb`. Same minimal stub RealCompositionRootTest uses.
-     *
-     * WooCommerce marker — Commerce's availability probe is EXACTLY
-     * `class_exists(\WooCommerce::class, false)` (CommerceServiceProvider::isAvailable(), AG-12).
-     * WITHOUT the marker Commerce is discovered-but-unavailable, registers nothing, and this
-     * guard quietly goes back to checking Content alone — passing while eight Commerce routes
-     * sit unguarded, which is the exact failure being fixed. Declaring it makes the
-     * both-modules-active surface the DETERMINISTIC subject of the guard rather than a side
-     * effect of which test happened to run first.
-     *
-     * The condition mirrors the probe and NOTHING else: `tests/bootstrap.php` stubs
-     * `wc_get_product()`, so an extra `function_exists()` arm here would skip the eval and
-     * silently leave Commerce unavailable. Nothing stubs WooCommerce BEHAVIOUR — no assertion
-     * below calls a WooCommerce function.
+     * `$wpdb` and the WooCommerce availability marker the real composition root needs — both
+     * owned by LiveHspRouteIndex, which documents why the marker is load-bearing: without it
+     * Commerce is discovered-but-unavailable and this guard silently narrows to Content alone.
      */
     protected function setUp(): void
     {
         parent::setUp();
-
-        $this->priorWpdb = $GLOBALS['wpdb'] ?? null;
-        $GLOBALS['wpdb'] = new class {
-            public string $prefix = 'wp_';
-        };
-
-        if (! class_exists(\WooCommerce::class, false)) {
-            eval('class WooCommerce {}');
-        }
+        $this->bootWordPressPreconditions();
     }
 
     /** Guard the guard: if Commerce ever stops being active here, the coverage claim is void. */
@@ -115,14 +91,7 @@ final class OpenApiDriftGuardTest extends TestCase
 
     protected function tearDown(): void
     {
-        unset($GLOBALS['_hsp_stub_rest_routes'], $GLOBALS['_hsp_stub_action_callbacks']);
-
-        if ($this->priorWpdb === null) {
-            unset($GLOBALS['wpdb']);
-        } else {
-            $GLOBALS['wpdb'] = $this->priorWpdb;
-        }
-
+        $this->restoreWordPressPreconditions();
         parent::tearDown();
     }
 
@@ -175,9 +144,9 @@ final class OpenApiDriftGuardTest extends TestCase
         self::assertNotEmpty($exempted, 'The onboarding surface should contribute exempted routes.');
         foreach ($exempted as $route) {
             self::assertStringStartsWith(
-                self::EXEMPT_PREFIX,
+                $this->exemptPrefix(),
                 $route,
-                "Only the frozen '" . self::EXEMPT_PREFIX . "' prefix may be exempted (ADR-055 (f), v1.28).",
+                "Only the frozen '" . $this->exemptPrefix() . "' prefix may be exempted (ADR-055 (f), v1.28).",
             );
         }
     }
@@ -328,123 +297,13 @@ final class OpenApiDriftGuardTest extends TestCase
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Route enumeration — the external ground truth (drive the real registrars)
-    // -------------------------------------------------------------------------
-
     /**
-     * Capture every live `hsp/v1` route by driving the SAME boot funnel production uses, then
-     * normalise to descriptor route-key form (`hsp/v1{template-route}`). This is the external index
-     * the guard checks — produced by the real boot path, never by the endpoint registry.
+     * The route keys a descriptor is COMPLETE for. "Complete" = has parameters coherent with
+     * the route, a response schema, an auth requirement, a version and a module owner.
      *
-     * Omission-proof by construction (ADR-055 v1.28 requirement): routes reach `rest_api_init` via
-     *   (a) the CORE funnel — `RestRegistrarRegistry::coreRegistrarKeys()`, the ONE list production
-     *       (`headless-sync.php`) iterates; a new core registrar added there is picked up here for
-     *       free; and
-     *   (b) the MODULE funnel — the real `ModuleRegistry` lifecycle (register-all → boot-all) over
-     *       every AVAILABLE module, each of which `add_action('rest_api_init', …)`s its own
-     *       registrar exactly as production does. No module is named here, so a module that ships
-     *       routes cannot escape the guard by not appearing in a test array — the defect that let
-     *       eight Commerce routes go unguarded.
-     * Both hook onto `rest_api_init`; firing `do_action('rest_api_init')` runs them all. Nothing is
-     * hand-listed in this test, so a registrar added to production but not to a test array cannot
-     * exist — the exact drift class the guard defends against.
-     *
-     * @return list<string>
-     */
-    private function captureLiveHspV1Routes(): array
-    {
-        $GLOBALS['_hsp_stub_rest_routes']     = [];
-        $GLOBALS['_hsp_stub_action_callbacks'] = [];
-
-        $container = $this->bootContainer();
-
-        // (a) CORE funnel — the single authoritative list production iterates in headless-sync.php.
-        add_action('rest_api_init', static function () use ($container): void {
-            foreach (\HSP\Core\Rest\RestRegistrarRegistry::coreRegistrarKeys() as $registrarKey) {
-                $container->get($registrarKey)->register();
-            }
-        });
-
-        // (b) MODULE funnel — the real ModuleRegistry lifecycle (register-all → boot-all), which
-        // is what production runs. Each AVAILABLE module's boot() hooks its own REST registrar.
-        // This used to be a hardcoded `ContentModule::boot()`, and that is precisely why eight
-        // Commerce routes went unguarded: a module the test did not name could not be seen.
-        // Driving the registry means module coverage is discovered, not listed (AG-1).
-        /** @var ModuleRegistry $modules */
-        $modules = $container->get('module.registry');
-        $modules->register();
-        $modules->boot();
-
-        // Fire the hook exactly as WordPress would — runs every registrar hooked by (a) and (b).
-        do_action('rest_api_init');
-
-        $keys = [];
-        foreach ($GLOBALS['_hsp_stub_rest_routes'] as $registration) {
-            $namespace = (string) $registration['namespace'];
-            if ($namespace !== 'hsp/v1') {
-                continue;
-            }
-            $keys[] = $namespace . $this->normaliseWpRoute((string) $registration['route']);
-        }
-
-        unset($GLOBALS['_hsp_stub_action_callbacks']);
-
-        return array_values(array_unique($keys));
-    }
-
-    /**
-     * Subtract the ONE frozen structural exemption (the onboarding admin prefix).
-     *
-     * @param list<string> $routes
-     * @return list<string>
-     */
-    private function guardedRoutes(array $routes): array
-    {
-        return array_values(array_filter(
-            $routes,
-            static fn (string $route): bool => ! str_starts_with($route, self::EXEMPT_PREFIX),
-        ));
-    }
-
-    /**
-     * Normalise a WP route to OpenAPI template form: `(?P<slug>[a-z0-9_-]+)` → `{slug}`, and a
-     * literal `openapi.json` stays as-is. Never used as the generation source (ADR-055 (a)).
-     */
-    private function normaliseWpRoute(string $route): string
-    {
-        $templated = preg_replace('/\(\?P<([a-zA-Z_]+)>[^)]*\)/', '{$1}', $route);
-
-        return $templated ?? $route;
-    }
-
-    // -------------------------------------------------------------------------
-    // The endpoint registry (the SAME source the generator + Playground consume)
-    // -------------------------------------------------------------------------
-
-    /**
-     * The aggregated registry snapshot, read the way the generator and the API Playground read
-     * it: `OperationsService::endpointDescriptors()` over every `EndpointProviderInterface` a
-     * provider registered with the `RefreshCoordinator`.
-     *
-     * This used to hand-instantiate `ContentEndpointProvider` + `OpenApiEndpointProvider`, which
-     * silently excluded Commerce from BOTH halves of the guard — the descriptors it compared
-     * against AND the document it validated. Reading the real registry means any module that
-     * registers a provider is covered with no edit here (ADR-055 (b): one source of truth).
-     *
-     * @return EndpointDescriptor[]
-     */
-    private function registryDescriptors(): array
-    {
-        /** @var OperationsService $operations */
-        $operations = $this->bootContainer()->get(OperationsService::class);
-
-        return $operations->endpointDescriptors();
-    }
-
-    /**
-     * The route keys a descriptor is COMPLETE for. "Complete" = has parameters coherent with the
-     * route, a response schema, an auth requirement, a version and a module owner.
+     * Route ENUMERATION and the descriptor registry both come from LiveHspRouteIndex, shared
+     * with the parameter-contract guard; this reduction to "which routes are described at
+     * all" is this guard's own concern and stays here.
      *
      * @param EndpointDescriptor[] $descriptors
      * @return list<string>
@@ -460,65 +319,6 @@ final class OpenApiDriftGuardTest extends TestCase
         }
 
         return array_values(array_unique($keys));
-    }
-
-    // -------------------------------------------------------------------------
-    // Real container — the SAME service providers production wires, with fakes only for the
-    // libpq-opening handle and reconciliation/replay leaves. No hand-built registrars.
-    // -------------------------------------------------------------------------
-
-    private ?Container $container = null;
-
-    /**
-     * The REAL composition root — `ContainerBuilder` against the REAL `modules/` directory.
-     *
-     * This replaced ~90 lines of hand-wired fakes, and the reason is the defect this guard
-     * missed: the old container hand-registered `ContentServiceProvider` and stubbed
-     * `module.registry` to return `[]`, so the guard could only ever see Content. Commerce
-     * shipped eight `hsp/v1` routes that the completeness assertion never looked at.
-     *
-     * Driving the composition root instead means module coverage is DISCOVERED, exactly as
-     * production discovers it (DECISION AG AG-1: each module declares its provider in
-     * module.json; ModuleProviderComposer composes them; core hardcodes no module). A third
-     * module adds no line to this file — which is the property that failed here.
-     *
-     * The ONE substitution is the delivery handle: the real binding is a FORCE_NEW libpq
-     * connection (DECISION K) that would need live PostgreSQL. Route registration and endpoint
-     * metadata never touch it, so a non-connecting stand-in keeps this in the Unit suite.
-     */
-    private function bootContainer(): Container
-    {
-        if ($this->container !== null) {
-            return $this->container;
-        }
-
-        $container = (new ContainerBuilder())->build(
-            ['worker' => ['reconciliation' => ['page_size' => 500]]],
-            dirname(__DIR__, 4) . '/modules/',
-        );
-
-        // Stand-in delivery handle (DECISION K FORCE_NEW libpq needs live PG). Rebinding after
-        // build() is safe: bindings resolve lazily, so nothing has opened a connection yet.
-        $container->singleton(DatabaseConnectionInterface::class, fn () => new class implements DatabaseConnectionInterface {
-            public function execute(string $sql, array $params = []): int
-            {
-                return 0;
-            }
-
-            /** @return array<int,array<string,mixed>> */
-            public function query(string $sql, array $params = []): array
-            {
-                return [];
-            }
-
-            public function beginTransaction(): void {}
-
-            public function commit(): void {}
-
-            public function rollback(): void {}
-        });
-
-        return $this->container = $container;
     }
 
     // -------------------------------------------------------------------------

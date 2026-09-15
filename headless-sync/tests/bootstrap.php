@@ -227,6 +227,60 @@ if (! class_exists(\WP_REST_Request::class)) {
         {
             return $this->params;
         }
+
+        /** @var array<string,mixed> route attributes, as WP_REST_Server::dispatch() sets them */
+        private array $attributes = [];
+
+        /**
+         * The route's registered definition, including its per-parameter `args`.
+         *
+         * WordPress sets this during dispatch, and `rest_validate_request_arg()` reads a
+         * parameter's schema back out of it — so a module validator that delegates to the
+         * native one needs it present (FLAG-RESTARGDRIFT-1).
+         *
+         * @param array<string,mixed> $attributes
+         */
+        public function set_attributes(array $attributes): void
+        {
+            $this->attributes = $attributes;
+        }
+
+        /** @return array<string,mixed> */
+        public function get_attributes(): array
+        {
+            return $this->attributes;
+        }
+    }
+}
+
+/**
+ * WordPress's generic request-argument validator (FLAG-RESTARGDRIFT-1).
+ *
+ * Production names this function as the `validate_callback` of every constraint-bearing route
+ * argument, and one module validator composes it before adding its own semantic, so the unit
+ * suite needs it. Like real WordPress, it reads the parameter's schema out of the request's
+ * route attributes and evaluates the value against it; the evaluation itself lives in
+ * HSP\Tests\Support\WpRestArgDispatch, which documents its fidelity to WP 7.1 and is the ONE
+ * place that algorithm is reproduced.
+ */
+if (! function_exists('rest_validate_request_arg')) {
+    function rest_validate_request_arg(mixed $value, object $request, string $param): bool|\WP_Error
+    {
+        $args = [];
+        if (method_exists($request, 'get_attributes')) {
+            $attributes = $request->get_attributes();
+            $args       = $attributes['args'][$param] ?? [];
+        }
+
+        if (! is_array($args) || $args === []) {
+            return true; // WordPress returns true for an unregistered parameter.
+        }
+
+        $code = \HSP\Tests\Support\WpRestArgDispatch::validateAgainstSchema($args, $value);
+
+        return $code === null
+            ? true
+            : new \WP_Error($code, sprintf('%s is not valid.', $param), ['status' => 400]);
     }
 }
 
