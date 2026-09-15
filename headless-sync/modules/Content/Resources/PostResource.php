@@ -83,19 +83,7 @@ final class PostResource implements ResourceInterface
      */
     private function featuredMedia(array $row): ?array
     {
-        if (! isset($row['fm_url']) || (string) $row['fm_url'] === '') {
-            return null;
-        }
-
-        return [
-            'slug'      => (string) ($row['fm_slug'] ?? ''),
-            'url'       => (string) $row['fm_url'],
-            'alt_text'  => (string) ($row['fm_alt_text'] ?? ''),
-            'mime_type' => (string) ($row['fm_mime_type'] ?? ''),
-            'width'     => (int) ($row['fm_width'] ?? 0),
-            'height'    => (int) ($row['fm_height'] ?? 0),
-            'sizes'     => JsonMap::decode($row['fm_sizes_jsonb'] ?? null),
-        ];
+        return MediaReference::fromRow($row, 'fm_');
     }
 
     public function toCollection(array $rows, ?string $nextCursor): array

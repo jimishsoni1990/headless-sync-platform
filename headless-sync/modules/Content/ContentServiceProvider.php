@@ -7,6 +7,7 @@ namespace HSP\Modules\Content;
 use HSP\Core\Container\Container;
 use HSP\Core\Container\ServiceProvider;
 use HSP\Core\Contracts\EventProviderInterface;
+use HSP\Core\Contracts\MediaReferenceProviderInterface;
 use HSP\Core\Contracts\OutboxWriterInterface;
 use HSP\Core\Contracts\PartitionRouterInterface;
 use HSP\Core\Contracts\ProjectionDescriptor;
@@ -53,6 +54,7 @@ use HSP\Modules\Content\Handlers\PostUpsertHandler;
 use HSP\Modules\Content\Queries\CategoryQueryProvider;
 use HSP\Modules\Content\Replay\ContentReplayEmitter;
 use HSP\Modules\Content\Queries\MediaQueryProvider;
+use HSP\Modules\Content\Queries\MediaReferenceProvider;
 use HSP\Modules\Content\Queries\PageQueryProvider;
 use HSP\Modules\Content\Queries\PostQueryProvider;
 use HSP\Modules\Content\Resources\CategoryResource;
@@ -109,6 +111,15 @@ final class ContentServiceProvider extends ServiceProvider
 
         $container->singleton(MediaQueryProvider::class, fn (Container $c) =>
             new MediaQueryProvider($c->get(DatabaseConnectionInterface::class))
+        );
+
+        // The AG-10 cross-module media capability. Bound under the CORE CONTRACT rather than
+        // the concrete class, because that is the key a consuming module is allowed to know:
+        // Commerce asks the container for `MediaReferenceProviderInterface` and never learns
+        // that Content answered. Content is the only module that implements it — attachment
+        // state has one owner — so this is not an AG-2 last-writer-wins key.
+        $container->singleton(MediaReferenceProviderInterface::class, fn (Container $c) =>
+            new MediaReferenceProvider($c->get(DatabaseConnectionInterface::class))
         );
 
         // Tags reuse the taxonomy query provider with taxonomy_type='post_tag' (P1B-S3) — the
