@@ -10,6 +10,89 @@
 
 **Current phase:** **Phase 2 — WooCommerce Catalog: COMPLETE (P2-S0 … P2-S7 all shipped).** WooCommerce is the second independent HSP domain module, and the success test was never "products synchronize" — it was that this happened **without special-casing Commerce in Core**. It did: a repo-wide assertion proves there is no reference to `HSP\Modules\Commerce` anywhere under `core/`, and none to `HSP\Modules\Content` anywhere under `modules/Commerce/`. Six Commerce aggregates ship — product, product category, attribute definition, `pa_*` attribute term, product variation, inventory — each with capture, projection, delivery, replay, reconciliation and a proven create → update → delete → tombstone → replay lifecycle. The two-module system test runs both domains through one real bounded cycle on live MySQL + PostgreSQL. **Measured: mixed-domain worst-case sync latency is ≈20.1 s against the 30 s SLA — 9.9 s of margin, so Commerce did NOT consume the headroom** and DECISION AG Part 5's STOP-and-flag was not triggered. **Both flags raised in Phase 2 are now RESOLVED by architect ruling (2026-09-08): DECISION AH** closes FLAG-COMMPERMA-1 as Case B authorised with implementation scheduled into Phase 4 — architecture decided, not an open gap — and **DECISION AI** closes FLAG-PERFCYCLE-1 as Option (a), keeping the threshold unchanged and moving enforcement to a controlled CI performance gate (`HSP_PERFORMANCE_GATE=1`). **No open flags.** FLAG-LIFECYCLE-1 was raised and resolved the same day: live-site testing found AG-12's automatic activation transition built but never invoked, and AG-12 had already pre-authorised the correction, so `ModuleLifecycleRunner` now drives it from the bounded WP-Cron cycle — **proven live: a torn-down Commerce module converged its full catalog in ONE cycle with no reactivation, no manual migrate and no manual reconcile.**
 
+**Last updated:** 2026-09-16 (**FLAG-COMMSOURCEID-1 — Commerce internal/source identity leakage:
+RESOLVED**, as an explicit **Doc 9 §26 lifecycle-completion** session on scope-owner directive, not
+a direct removal — **and one dependency transferred, not resolved: new FLAG-COMMCATPARENT-1 is
+OPEN.** Commerce published the PostgreSQL projection UUID as `id` on all five public shapes and the
+WordPress source key as `source_id` on four of them, plus an ambiguous `product_id` on variations —
+none authorised by any decision, all prohibited *by name* in DECISION F's internal-column clause.
+**The audit found no runtime/OpenAPI drift at all:** every candidate was present in both the live
+JSON and the live `openapi.json`, so nothing was an undocumented leak and every removal is a real
+contract transition.
+**Removed:** `id` ×5, `source_id` on product / variation / attribute definition / **attribute
+term**, a variation's `product_id`, and an attribute term's `parent`. **Kept:** `woo_product_id`
+and `woo_variation_id` (DECISION AK-1 — the native cart handoff, unchanged and now the SOLE
+published Woo identity rather than a duplicate of a generic field) and `media.featured_id` /
+`gallery_ids` (Finding 011, untouched).
+**The attribute-term half is what the first pass got wrong, and it is the substance.** `product_cat`
+and `pa_*` terms share one projection table (AG-9) and were served by **one** `TermResource` and one
+schema, so a field product categories depend on was published on attribute terms too. Verified
+against WooCommerce 11.1.0 rather than inferred: `product_cat` is `'hierarchical' => true`
+(`class-wc-post-types.php:106`), `pa_*` is `'hierarchical' => false` (`:269`; the `true` at `:318`
+is inside the `rewrite` array, a permalink option). An attribute term's `parent` is therefore
+**structurally incapable** of carrying information and its `source_id` anchors nothing — no
+`?parent=` on that endpoint, and the product filter selects by SLUG. New `AttributeTermResource` +
+`attributeTermSchema()` shape the same query row differently at the Resource boundary: **no new
+table, no projection, no duplicated data, no migration, no second taxonomy architecture.**
+**The product-category pair is a TRANSFER, not an approval.** `source_id`/`parent` stay published
+only because the shipped `GET /product-categories?parent={source-term-id}` filter takes that integer
+and `source_id` is the only field yielding it. A Case A/B/C check against the frozen hierarchy
+ruling returned **Case B**: the P2-S3 preflight answered the hierarchy question **NO** (leaf slugs
+cannot repeat — `wp_unique_term_slug()` scopes uniqueness per taxonomy) and concluded a category
+filter "may safely use a **bare slug** as its canonical key… the ambiguity that would have forced
+an exact path **or a term id** does not arise"; the ratified P2-S3 plan row requires "**no WordPress
+term ID as the required public key**"; DECISION AD-8 rejected `?parent=` for Pages in both forms on
+exactly that reasoning; and `git log -S` finds the parameter introduced in `85aa4b5` with no
+rationale recorded. So the pair is **NOT** reclassified as intentional public identity and is **not
+precedent** — it is a temporarily retained legacy contract dependency owned by
+**FLAG-COMMCATPARENT-1**. The resolved claim is scoped accordingly: *all accidental Commerce
+identity leakage covered by FLAG-COMMSOURCEID-1 has been removed except the product-category
+source-term pair required by the independently flagged shipped category-parent contract.*
+**Lifecycle, recorded rather than assumed.** Version **0.1.0**, **zero git tags**, no CHANGELOG, no
+release workflow, no published artifact, no declared support state — demonstrably **unreleased**;
+the only repo-owned consumer, `hsp-blog`, is **Content-only with zero Commerce usage**. AK-9 had
+already **Deprecated** `source_id`/`product_id` on 2026-09-14, so those completed Deprecated →
+Removed; the rest are recorded here as **Supported → Deprecated → Removed in one session**, exactly
+the completion **DECISION AF** performed on the same grounds — and AF's caveat is carried forward
+unweakened: **not precedent for a released contract.**
+**Internal persistence is untouched — no migration, no dropped column, no checksum, event, replay,
+reconciliation or capture change.** All four `*.id` UUIDs remain the deterministic cursor tiebreaker
+and stay encoded inside every opaque cursor; `products.id` still joins `entity_taxonomies`;
+`source_product_id` still carries the inventory join and supplies `woo_product_id`. Exactly **one**
+dead SELECT column was dropped (`AttributeQueryProvider`'s `source_attribute_id`, which had no
+reader left); the column stays in the table.
+**Guard.** `CommerceIdentityLeakGuardTest` asserts **both** halves — runtime output *and* ADR-055
+schemas — across every public shape and all eight routes, so "runtime cleaned, schema stale" and its
+inverse both fail CI. Deliberately **not** a `*_id` regex, which would reject every intentional
+identifier above. Keyed by **public endpoint semantic, not resource class**: `product_category` and
+`attribute_term` are separate entries although both read `commerce.taxonomies`, so a category's
+dependency can never again silently license the same field on `pa_*` terms — the exact mechanism by
+which the attribute-term exposure arose. The `product_category` entry is annotated **DEBT** naming
+FLAG-COMMCATPARENT-1, **asserted mechanically**, so it cannot be reworded into an approved
+convention. A **mutation test** reintroduces `id` + `source_id` and a nested `source_parent_id` and
+asserts the detector names them; another runs the **same** taxonomy row through both term resources
+so a future re-merge of the two shapes fails immediately.
+**Compatibility:** response keys removed are `id` (products, variations, categories, attribute terms,
+attribute definitions), `source_id` (products, variations, attribute definitions, attribute terms),
+`product_id` (variations) and `parent` (attribute terms). **No repository consumer had to change** —
+only three test assertions that existed to pin AK-9's deferral were inverted to pin its completion,
+plus three registrar fixtures gaining the new constructor argument.
+**Incidental, reported and NOT acted on:** Content publishes `categories.parent_id`,
+`tags.parent_id`, `pages.parent_id` and `media.attached_to_id` with no self-identity to resolve them
+against — a Content contract question, deliberately not folded into a Commerce cleanup. **No
+generic "endpoint parameters ship without authorisation" flag was raised** — one concrete defect,
+one concrete flag; a systemic claim would need its own evidence.
+Tests, all from the **clean committed tree** at `776a58f`: `CommerceIdentityLeakGuardTest` +
+`WooHandoffIdentityTest` + `EndpointParameterDriftGuardTest` + both `RestArgEnforcementTest`s
+**152 ✅** · **Unit 2070 ✅** (4 pre-existing skips) · Commerce Integration **188 ✅** · **full
+Integration 469 ✅** (1 pre-existing skip — the DECISION AI performance gate) · ADR-055 route drift
++ OpenAPI 3.1 AJV meta-schema + CCF-003 error-instance validation **114 ✅** with
+`HSP_REQUIRE_NODE_GATE=1` (node gate exercised, not skipped) · PHPStan level 8 ✅ · PHPCS ✅.
+**No new ADR · no architecture amendment · no migration · no new persistence · no new route · no
+event/replay/reconciliation change · no category runtime behaviour change.**
+**FLAG-COMMSOURCEID-1: RESOLVED. FLAG-COMMCATPARENT-1: OPEN.** FLAG-GATE-WORKTREE-1, CCF-001
+navigation and the Commerce permalink Phase 4 work remain deliberately untouched.)
+
 **Last updated:** 2026-09-16 (**FLAG-RESTARGDRIFT-1 parity corrections — now RESOLVED.** Architect
 review held the flag OPEN on two residual mismatches, both the flag's own shape: the descriptor
 declared one accepted set and the runtime accepted or rejected something else.
@@ -1624,9 +1707,11 @@ change beyond deleting the dead argument name.
 ---
 ### FLAG-COMMSOURCEID-1 — Commerce publishes `id` and `source_id` with no authorising decision, and Finding 009 now duplicates one of them
 
-**Raised:** 2026-09-14 | **Session:** Finding 009 | **Status:** **OPEN — reported, not resolved.
-No field was removed or renamed, because removing a published field is a separate compatibility
-decision (Doc 9 §26).**
+**Raised:** 2026-09-14 | **Session:** Finding 009 | **Status:** **RESOLVED 2026-09-16 — the
+compatibility decision was taken, as an explicit Doc 9 §26 lifecycle-completion session
+(scope-owner directive 2026-09-16). One dependency was transferred rather than resolved: the
+product-category `source_id`/`parent` pair is now owned by FLAG-COMMCATPARENT-1. See
+"Resolution" at the end of this entry.**
 
 **What was found during the Finding 009 identity audit.** Every Commerce resource — Product,
 Variation, Term, Attribute — publishes both `id` (the PostgreSQL projection UUID) and `source_id`
@@ -1668,6 +1753,204 @@ architecture entry should be assessed when it is taken, not assumed now.
 **Nothing is blocked.** Finding 009's contract is correct under either ruling — it names and
 documents an identity that was already public. This flag exists so the duplication is a decision
 rather than a drift.
+
+#### Resolution — 2026-09-16 (scope-owner directive; Doc 9 §26 lifecycle completion)
+
+**Answer to question 1: deprecation candidate, not ratified.** Answer to question 2: the `woo_*`
+fields become the sole published Woo identity and the duplication is gone.
+
+**The audit found no runtime/OpenAPI drift.** Every candidate field was present in *both* the live
+JSON and the live `openapi.json` — there was no undocumented runtime leak anywhere, so every
+field had genuinely entered the v1 contract and every removal is a real contract transition
+rather than the correction of something that was never published.
+
+**Classification of every candidate identity field.**
+
+| Public shape | Field | Class | Disposition |
+| --- | --- | --- | --- |
+| Product | `id` (UUID) | internal projection identity | **Removed** |
+| Product | `source_id` | generic source leak (duplicate of `woo_product_id`) | **Removed** |
+| Product | `woo_product_id` | intentional interoperability id (AK-1) | Kept |
+| Product | `media.featured_id`, `media.gallery_ids` | intentional source reference (Finding 011) | Kept |
+| Variation | `id` (UUID) | internal projection identity | **Removed** |
+| Variation | `source_id` | generic source leak (duplicate of `woo_variation_id`) | **Removed** |
+| Variation | `product_id` | ambiguous, superseded by `woo_product_id` | **Removed** |
+| Variation | `woo_product_id`, `woo_variation_id` | intentional interoperability ids (AK-1) | Kept |
+| Variation | `media.featured_id` | intentional source reference (Finding 011) | Kept |
+| Attribute definition | `id` (UUID), `source_id` | internal identity; nothing published reaches them | **Removed** |
+| **Attribute term** (`pa_*`) | `id` (UUID), `source_id`, `parent` | internal identity + a structurally-impossible hierarchy field | **Removed** |
+| **Product category** | `id` (UUID) | internal projection identity | **Removed** |
+| **Product category** | `source_id`, `parent` | **legacy contract dependency — NOT approved public identity** | **Retained provisionally → FLAG-COMMCATPARENT-1** |
+
+**The attribute-term half, which the first pass got wrong.** `product_cat` and `pa_*` terms share
+one projection table (AG-9) and were served by **one** `TermResource` and one schema, so a field
+product categories depend on was published on attribute terms too. A shared storage model does not
+oblige one public shape, and here the two genuinely differ — verified against WooCommerce 11.1.0,
+not inferred: `product_cat` is registered `'hierarchical' => true`
+(`class-wc-post-types.php:106`) while `pa_*` taxonomies are `'hierarchical' => false` (`:269` —
+the `true` at `:318` is inside the `rewrite` array, a permalink option). An attribute term's
+`parent` is therefore **structurally incapable** of carrying information, and its `source_id`
+anchors nothing: that endpoint has no `?parent=` filter and the product filter selects a term by
+SLUG (`?attribute=pa_colour&attribute_term=blue`). A new `AttributeTermResource` +
+`attributeTermSchema()` shape the same query row differently at the Resource boundary — **no new
+table, no projection, no duplicated taxonomy data, no migration, no second taxonomy
+architecture**. `count` stays: it is independently contractual (FLAG-COMMTERMCOUNT-1).
+
+**The product-category pair is a TRANSFER OF OWNERSHIP, not an approval.** `source_id` and
+`parent` remain published for exactly one reason: the shipped
+`GET /product-categories?parent={source-term-id}` filter takes that integer and `source_id` is the
+only published field a consumer can obtain it from, so removing either would strand an API this
+platform already publishes. Case B was then confirmed on the evidence — **no recorded architecture
+ruling authorises that filter** — so the pair is **not** reclassified as an intentional public
+hierarchy reference and **must not** be cited as precedent. It is tracked, with the conflict, as
+**FLAG-COMMCATPARENT-1** below. Scope of the resolved claim, stated precisely:
+
+> All accidental Commerce identity leakage covered by FLAG-COMMSOURCEID-1 has been removed except
+> the product-category source-term pair required by the independently flagged shipped
+> category-parent contract. That pair is retained provisionally and is owned by
+> FLAG-COMMCATPARENT-1.
+
+**Lifecycle evidence (Doc 9 §26).** Plugin version **0.1.0**; **zero git tags**, no CHANGELOG, no
+release workflow, no published artifact, no declared external-consumer support state — the platform
+is demonstrably **unreleased**. The only repo-owned consumer, `hsp-blog`, calls **Content endpoints
+only and has zero Commerce usage**. `source_id`/`product_id` on Product+Variation were already
+**Deprecated** by AK-9 on 2026-09-14 (the live OpenAPI read "Legacy generic source identifier,
+retained for compatibility"), so those completed Deprecated → Removed. `id` on all four shapes,
+`source_id` on the attribute definition and attribute term, and an attribute term's `parent` had no
+Deprecated step and were recorded as **Supported → Deprecated → Removed in this session** — the
+same-day completion **DECISION AF** performed on identical grounds. AF's caveat is carried forward
+unweakened: *this must not be cited as precedent for a same-day retirement on a released contract.*
+Direct removal was not performed; the lifecycle was completed and recorded.
+
+**What changed, exactly.**
+
+```
+Product           before: id, source_id, woo_product_id, sku, slug, … media{featured_id, gallery_ids, …}
+                  after:  woo_product_id, sku, slug, … media{featured_id, gallery_ids, …}
+Variation         before: id, source_id, product_id, woo_product_id, woo_variation_id, …
+                  after:  woo_product_id, woo_variation_id, …
+Product category  before: id, source_id, slug, name, description, parent, count
+                  after:  source_id, slug, name, description, parent, count   ← pair is FLAG-COMMCATPARENT-1 debt
+Attribute term    before: id, source_id, slug, name, description, parent, count
+                  after:  slug, name, description, count
+Attribute defn    before: id, source_id, taxonomy, name, type, order_by, has_archives
+                  after:  taxonomy, name, type, order_by, has_archives
+```
+
+Eight operations changed, **no route added or removed**, and the generated `openapi.json` diff
+contains **only** those removals.
+
+**Internal persistence is untouched, and this is the half the flag's title could have been read to
+threaten.** No migration, no column dropped, no checksum input altered, no event, replay,
+reconciliation, capture or adapter change. All four `*.id` UUIDs remain the deterministic cursor
+tiebreaker (`ORDER BY …, id`) and are still encoded inside every opaque cursor; `products.id`
+still joins `entity_taxonomies`; `source_product_id` still carries the inventory join
+(`i.owner_id = p.source_product_id`) and supplies `woo_product_id`; `source_variation_id` is still
+the variation lookup key. **One** SELECT column was dropped as dead code —
+`AttributeQueryProvider`'s `source_attribute_id`, which had no reader once the attribute contract
+stopped publishing it; the column itself stays in `commerce.attributes`.
+
+**Guard.** `tests/Unit/Commerce/CommerceIdentityLeakGuardTest.php` asserts **both** the runtime
+resource output and the ADR-055 response schemas, across every public shape and all eight routes,
+so "runtime cleaned, schema stale" and its inverse both fail CI. It is deliberately **not** a
+`*_id` regex — that would reject `woo_product_id`, `woo_variation_id`, `media.featured_id` and
+`media.gallery_ids`, and a guard you have to suppress to ship intentional work stops meaning
+anything. It is keyed by **public endpoint semantic, not by resource class**, which is the part
+that matters: `product_category` and `attribute_term` are separate entries although both read
+`commerce.taxonomies`, so a category's dependency can never again silently license the same field
+on `pa_*` terms — the exact mechanism by which the attribute-term exposure arose. The
+`product_category` entry is annotated **DEBT** and names FLAG-COMMCATPARENT-1, and a test asserts
+that annotation mechanically, so promoting it to "approved" requires deleting an assertion rather
+than rewording a comment. A **mutation test** reintroduces `id` + `source_id` into a product shape
+and a nested `source_parent_id` into a variation's `media` and asserts the detector names them —
+the guard is proven to fail, not merely observed to pass. A further test runs the **same** taxonomy
+fixture row through both term resources, so if the two shapes ever collapse back into one class it
+fails immediately.
+
+**Incidental observation, reported and NOT acted on (out of scope).** Content publishes
+`categories.parent_id`, `tags.parent_id`, `pages.parent_id` and `media.attached_to_id` — WordPress
+source ids — while publishing no self-identity to resolve them against. That is a Content contract
+question, deliberately left alone rather than folded into a Commerce cleanup.
+
+**Architecture:** no new ADR, no amendment, no migration, no new persistence, no new route, no
+event/replay/reconciliation change, no category runtime behaviour change. DECISION F already
+prohibited these fields by name; this restores that rule rather than creating one. DECISION AK is
+unchanged except that AK-9's deferred removal has now happened — AK-1 through AK-8 and AK-10 stand
+exactly as written.
+
+---
+
+### FLAG-COMMCATPARENT-1 — Product-category parent filter uses unauthorised source-term identity
+
+**Raised:** 2026-09-16 | **Session:** FLAG-COMMSOURCEID-1 | **Status:** **OPEN — reported, not
+resolved. No behaviour changed under this flag. Requires its own investigation-first task.**
+
+**Scope.**
+
+```
+GET /hsp/v1/product-categories?parent={integer}
+ProductCategory.source_id
+ProductCategory.parent
+```
+
+**The conflict.** The shipped filter takes a **WordPress/WooCommerce source term id**, and a
+consumer can only obtain that integer from `ProductCategory.source_id`, so the parameter forces
+both fields into the public contract. But:
+
+- **The ratified P2-S3 plan row** requires category addressing/filtering to use the approved
+  domain-safe hierarchy identity, with "no arbitrary leaf-slug tie-break, **no WordPress term ID
+  as the required public key**".
+- **DECISION AD ruling 8** rejected `?parent=` for Pages **in both forms**, the id form precisely
+  because "by id it would make WP post IDs the public addressing contract (Rule 6)". AD scopes
+  itself to Pages, so it does not bind Commerce — but no contrary Commerce ruling was ever taken.
+
+**P2-S3 evidence — the discrepancy, recorded rather than reinterpreted.**
+
+```
+P2-S3 preflight + plan:  product-category filtering uses a domain-safe public key
+                         consistent with category addressing; never a term ID
+Shipped implementation:  ?parent={source-term-id}
+```
+
+The preflight (`docs/notes/WOOCOMMERCE-SOURCE-VERIFICATION.md` §7, verified 2026-09-08 against
+WordPress core and WooCommerce 11.1.0) answered the hierarchy question **NO** — `product_cat` leaf
+slugs **cannot** repeat under different parents, because `wp_unique_term_slug()`
+(`wp-includes/taxonomy.php:3136`) scopes uniqueness **per taxonomy** and appends ancestor slugs
+(`shirts-men`) then numeric suffixes. Its recorded conclusions were that flat `/{slug}` addressing
+"is correct and sufficient", that the DECISION AD full-ancestor-path model is "**not needed
+here**", and — directly on this point — that "a product-category filter may safely use a **bare
+slug** as its canonical key. The ambiguity that would have forced an exact path **(or a term id)**
+does not arise." The one sentence pointing toward a public parent — "`parent_id` is carried so a
+consumer can reconstruct the tree" — sits in a projection paragraph and names no published field,
+no filter and no key type.
+
+**Provenance.** `git log -S"'parent'" -- modules/Commerce/Rest/CommerceRestRegistrar.php` returns
+exactly one commit, `85aa4b5` (P2-S3). Its message discusses the slug preflight and the dangling
+parent soft reference at length and says **nothing** about a public integer `?parent=` parameter or
+about publishing `source_id`. It was an implementation choice that reached the contract without a
+ruling — the same shape as FLAG-COMMSOURCEID-1 itself, which is why it is tracked rather than
+absorbed.
+
+**Why nothing was changed here.** Removing the fields would strand a published API; changing the
+filter's key is a new addressing semantic. Neither belongs in an identity-leak cleanup, and
+DECISION AG must not be silently reinterpreted to legitimise the implementation.
+
+**What a dedicated investigation must determine.**
+
+1. What the P2-S3 hierarchy preflight actually established (recorded above, to be re-verified).
+2. Whether duplicate leaf slugs are possible under supported WooCommerce semantics.
+3. The intended canonical Product Category public identity.
+4. Whether list hierarchy/filtering should use a full ancestor path, a parent path, a parent
+   slug/path, or another domain-safe public identifier.
+5. How to migrate off the integer source-term dependency **without inventing a second hierarchy
+   model** (DECISION AD/AE/AF, AG-9).
+6. Contract-lifecycle treatment (Doc 9 §26) for the currently published integer filter.
+
+**Nothing is blocked.** The category API works as shipped and its behaviour is unchanged. The two
+fields are guarded as explicit debt: `CommerceIdentityLeakGuardTest` allow-lists
+`product_category.source_id` with a **DEBT** annotation naming this flag, and asserts that
+annotation mechanically, so the exception cannot be quietly promoted to an approved convention and
+cannot spread to attribute terms.
 
 ---
 
@@ -3018,3 +3301,5 @@ refuse. **AG-9 unchanged; no local/custom attribute support added.**
 2026-09-16 | FLAG-RESTARGDRIFT-1 | **HSP published one request contract and WordPress executed another; it now executes the published one, and CI fails on the next parameter that diverges.** Root cause was one line of WordPress: `sanitize_params()` installs its validating default `rest_parse_request_arg` ONLY for an arg with a `type` and no `sanitize_callback` key, so declaring a sanitizer silently disabled schema validation — on 48 of 50 args. The two without a sanitizer (`featured`, `in_stock`) were the only two ever validated, which is the proof rather than a coincidence. Audited all 19 non-exempt routes: 47 descriptor parameters vs 50 registered args, the 3-arg gap being `status` registered on three listings whose handlers never read it. Nine parameters now enforce their published bounds (Content `per_page` 1..100; Commerce `limit` 1..100 products / 1..200 term-shaped, per-route; `parent` minimum 0; `type` enum from `ProductScope`; `published_after` `date-time` + a narrow module check for the explicit offset WordPress leaves optional). `EndpointParameter` carries the constraints machine-readably and `OpenApiGenerator` emits them — ADR-055 unchanged, still registry-only. Four asymmetries kept and proven harmless: cursors stay opaque under `CursorToken`, money under `Money`'s exact decimals, `status` under the validator owning `hsp_invalid_status` and the empty-means-absent semantic, slug filters under WordPress normalisation. Path patterns are published but enforced structurally, so no `errorStatuses` changed. The durable half is the parameter drift guard: ten mutation fixtures through the same comparison the live assertion uses, plus an enforcement-path assertion that rejects the exact shipped `per_page` declaration — constraint + sanitizer + no validator can never be green again. Valid requests unchanged (live); invalid corrected 200→400, of which only `/categories?per_page=150` and `/tags?per_page=150` previously returned real rows. 28 live error bodies validate against the live `openapi.json`; CCF-003 codes all preserved. Unit 2030 ✅, Integration 469 ✅ from a clean tree, PHPStan 8 + PHPCS clean, ajv gate required. No migration, no persistence, no new ADR. No new flags.
 
 2026-09-16 | FLAG-RESTARGDRIFT-1 (parity corrections) | **Architect review held the flag open on two residual mismatches of its own shape, and finding the second one required measuring rather than reasoning.** `?status=` answered 200 because `validateStatus()` collapsed a SUPPLIED EMPTY value into omission while the published enum said `{publish}`; the check is now `=== null` only — absent and supplied-empty are different requests — so `?status=` is 400 `hsp_invalid_status` exactly like `?status=draft`, the enum stays `['publish']` with no empty-string member, and the module validator is retained so the CCF-003 code is unchanged. The page path published the route's own capture class, `^[a-z0-9_/-]+$`, which describes `about//team` as valid when the handler has always refused it; it now publishes `^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$`, same per-segment policy plus the empty-segment rule. **The measurement changed the design and caught a regression I had shipped:** the page `path` arg is the one path arg with no `sanitize_callback`, so WordPress installs its validating default and a pattern declared there is natively ENFORCED — the previous session's own change had turned `/pages/My-Account` from 200 into 400, and a segment-aware pattern would also have rejected `my-account/`. The pattern is therefore descriptor-only, `sanitizePath()` stays authoritative, and the regression is reverted. Two of my fixtures were also wrong against measured reality and were corrected to it: `about//` is trimmed to `about` (a tolerated form), and the `-` case is unassertable in Unit because the bootstrap's `sanitize_title` stub is not WordPress's — verified live instead. The guard now proves a domain-grammar pattern is STRICTLY NARROWER than its route's capture class rather than equal to it, with a mutation test for the echo, and a new sweep asserts every constrained parameter rejects an explicit empty value — `status` was the only instance of the shape. Re-inventory: 19 operations, 47 args, 47 parameters, drift 0, one documented asymmetry. Live: status corrections confirmed, page-path runtime unchanged in both directions, 33 error bodies validate against the live `openapi.json`, and `about//team` fails the live page-path parameter schema as an ajv instance. Unit 2045 ✅, Integration 469 ✅ clean tree, PHPStan 8 + PHPCS clean. **FLAG-RESTARGDRIFT-1: RESOLVED.** No new flags.
+
+2026-09-16 | FLAG-COMMSOURCEID-1 | **Commerce stopped publishing its own internal identity — and the one source pair still published is now recorded as debt rather than mistaken for a contract.** Every Commerce shape had been serializing the PostgreSQL projection UUID as `id`, four of them the WordPress source key as `source_id`, variations an ambiguous `product_id`, and attribute terms a `parent` that can never hold a value — none authorised by any decision, all prohibited *by name* in DECISION F's internal-column clause. **Removed:** `id` ×5, `source_id` on product/variation/attribute-definition/attribute-term, variation `product_id`, attribute-term `parent`. **Kept:** `woo_product_id` + `woo_variation_id` (AK-1) and `media.featured_id` + `gallery_ids` (Finding 011). **The attribute-term half is the substance:** `product_cat` and `pa_*` share one projection table (AG-9) and were served by ONE `TermResource`, so a field categories depend on was published on attribute terms too — where, verified against WooCommerce 11.1.0, it cannot mean anything (`product_cat` is `'hierarchical' => true` at `class-wc-post-types.php:106`; `pa_*` is `false` at `:269`, the `true` at `:318` being a `rewrite` option). A new `AttributeTermResource` + `attributeTermSchema()` shape the same query row differently at the Resource boundary — no new table, projection, migration or second taxonomy architecture. **Product-category `source_id`/`parent` were TRANSFERRED, not approved:** they stay only because the shipped `?parent={source-term-id}` filter takes that integer, and a Case A/B/C check returned **Case B** — the P2-S3 preflight answered the hierarchy question NO and named the **bare slug** as the category filter's canonical key, the ratified plan row requires "no WordPress term ID as the required public key", DECISION AD-8 rejected `?parent=` for Pages in both forms on that reasoning, and `git log -S` finds the parameter introduced in `85aa4b5` with no rationale. Raised as **FLAG-COMMCATPARENT-1 (OPEN)** with the conflict recorded; no behaviour changed and DECISION AG was not reinterpreted. Run as an explicit **Doc 9 §26 lifecycle-completion** session on scope-owner directive: version 0.1.0, zero tags, no changelog or artifact, no external consumers, `hsp-blog` Content-only — AK-9 had already Deprecated `source_id`/`product_id`, and the rest were recorded Supported → Deprecated → Removed in one session, the completion **DECISION AF** performed on identical grounds, whose "not precedent for a released contract" caveat is carried forward intact. **Internal persistence untouched** — no migration, dropped column, checksum, event, replay or reconciliation change; all four UUIDs remain cursor tiebreakers inside every opaque cursor, `products.id` still joins `entity_taxonomies`, `source_product_id` still carries the inventory join. One dead SELECT column dropped (`AttributeQueryProvider`'s `source_attribute_id`). New `CommerceIdentityLeakGuardTest` guards **runtime and schema together**, keyed by **public endpoint semantic rather than resource class** so a category's dependency can never again license the same field on `pa_*` terms, with the `product_category` entry annotated **DEBT** naming the new flag and that annotation asserted mechanically, plus a mutation test and a shared-fixture test that fails if the two term shapes re-merge. **FLAG-COMMSOURCEID-1: RESOLVED. FLAG-COMMCATPARENT-1: OPEN.** Reported but not acted on: Content publishes `parent_id`/`attached_to_id` with no self-identity to resolve them against — a Content contract question, not folded in here.
