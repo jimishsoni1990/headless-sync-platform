@@ -18,16 +18,22 @@ required** — not in the P2-S3 plan row (listing, slug lookup, product category
 DECISION AG, Doc 9 or Doc 11, and P2-S3's own migration `0003` says no delivery query filters by
 parent. So it is **removed with no replacement** (no `parent_slug` query, no root-only query). The
 **parent relationship** on the resource *was* intended — §7 "`parent_id` is carried so a consumer can
-reconstruct the tree" — so it stays, re-keyed onto the verified public key: **`source_id` and integer
-`parent` Removed, new `parent_slug: string|null` Supported**. Re-verified live on WordPress 7.1 +
-WooCommerce 11.1.0: `product_cat` hierarchical (`class-wc-post-types.php:106`), `wp_unique_term_slug()`
-taxonomy-wide (`taxonomy.php:3136/3143`).
-**Contract.** `ProductCategory` = `slug, name, description, parent_slug, count`;
-`GET /product-categories` params = `cursor, limit`. `parent_slug` null = top-level **or** parent not
-currently projected (AG-7, stated in the schema); the child is always listed. Listing order, cursor
-envelope, `count`, `/product-categories/{slug}` and `/products?category={slug}` unchanged.
+reconstruct the tree" — so it stays, re-expressed in domain-safe terms: **`source_id` and integer
+`parent` Removed; new `has_parent: boolean` and `parent_slug: string|null` Supported**. Re-verified
+live on WordPress 7.1 + WooCommerce 11.1.0: `product_cat` hierarchical (`class-wc-post-types.php:106`),
+`wp_unique_term_slug()` taxonomy-wide (`taxonomy.php:3136/3143`).
+**Contract.** `ProductCategory` = `slug, name, description, has_parent, parent_slug, count`, all
+declared `required`; `GET /product-categories` params = `cursor, limit`. **Two independent facts,
+so an unknown parent is never published as no parent:** `has_parent` states whether the category's
+projected relationship names a parent (from its own `parent_id`, never from the join result);
+`parent_slug` resolves that parent through the current `product_cat` projection when its row is
+available. Root = `false/null`; resolved child = `true/"<slug>"`; child whose parent has not
+synchronised yet or was removed (AG-7) = **`true/null`** — a child, not a root, still listed. An
+architect review of the first cut caught that `parent_slug: null` alone conflated root with
+unresolved child; corrected before merge. Listing order, cursor envelope, `count`,
+`/product-categories/{slug}` and `/products?category={slug}` unchanged.
 **Lifecycle (Doc 9 §26).** `source_id`, `parent`, `?parent=` each Supported → Deprecated → Removed
-in this session; `parent_slug` new Supported, not a retype. Preconditions re-verified (0.1.0, zero
+in this session; `has_parent` and `parent_slug` new Supported, not a retype. Preconditions re-verified (0.1.0, zero
 tags, no CHANGELOG/release, `hsp-blog` Content-only, no repo consumer of any removed surface). AF's
 caveat carries forward: **not precedent for a released API.** An old `?parent=28` is now an
 undeclared key WordPress ignores → full listing, 200 — absence of a filter, not support; no
@@ -35,20 +41,26 @@ unknown-parameter policy added.
 **Implementation.** One LEFT self-join in `TermQueryProvider` on `uq_commerce_taxonomies_source_id`,
 scoped by `taxonomy_type`; `TermFilterSet.parentId` gone. **No migration, column, index, FK, stored
 path, event, capture, replay or reconciliation change**; `source_term_id`/`parent_id`/`id` remain
-internal. EXPLAIN ANALYZE at 20 000 rows: index scans on both sides, no Seq Scan, 0.41 ms page,
+internal. `has_parent` reads the already-selected `t.parent_id`, so the SQL is unchanged — no extra
+query or join. EXPLAIN ANALYZE at 20 000 rows: index scans on both sides, no Seq Scan, 0.41 ms page,
 constant one query per call.
 **Guard.** No FLAG-COMMCATPARENT-1 debt exception remains in `CommerceIdentityLeakGuardTest`;
-`parent`/`parent_slug` are governed per endpoint semantic (mutation-tested). New
-`ProductCategoryHierarchyContractTest`.
-**Live, read-only after deploy:** `clothing` → `parent_slug: null`, `hoodies` → `"clothing"`,
-`/products?category=hoodies` → 3 products, page-2 cursor token byte-identical to before, live
-OpenAPI diff = category changes only, runtime keys == schema keys, ajv-valid, OpenAPI 3.1 valid.
-Tests from the **clean committed tree** at `d6ee45e`: **Unit 2071 ✅** (4 pre-existing skips) ·
+`parent`, `has_parent` and `parent_slug` are governed per endpoint semantic — the last two allowed on
+product categories only — and a reintroduced `source_id`/`parent`/`parent_id` fails (mutation-tested).
+New `ProductCategoryHierarchyContractTest` pins root / resolved child / unresolved child and
+ajv-validates all three; `ProductCategoryIntegrationTest` proves child-before-parent, parent later
+projects, tombstoned parent and read-time rename (child row untouched) against the real join.
+**Live, read-only after deploy:** `clothing` → `has_parent: false, parent_slug: null`; `hoodies`,
+`accessories`, `tshirts` → `has_parent: true, parent_slug: "clothing"`; `/products?category=hoodies`
+→ 3 products; runtime keys == schema keys == `required`; no `id`/`source_id`/`parent` in runtime or
+schema; declared params `cursor, limit`; ajv-valid against the live schema; OpenAPI 3.1 valid. The
+unresolved-child state has no live fixture and was not manufactured (no content mutation) — it is
+proven in Integration.
+Tests from the **clean committed tree** at `54556ed`: **Unit 2072 ✅** (4 pre-existing skips) ·
 ADR-055 drift + OpenAPI generator + AJV meta-schema + CCF-003 + payload fidelity + parameter drift
 **105 ✅** and identity guard + hierarchy contract + arg enforcement + handoff + cursor + filter
-validation **187 ✅**, both with `HSP_REQUIRE_NODE_GATE=1` · **full Integration 475 ✅** (includes
-all Commerce Integration + the 6 new hierarchy cases; 1 pre-existing skip — the DECISION AI
-performance gate) · PHPStan level 8 ✅ ·
+validation **188 ✅**, both with `HSP_REQUIRE_NODE_GATE=1` · Commerce Integration **189 ✅** · **full
+Integration 475 ✅** (1 pre-existing skip — the DECISION AI performance gate) · PHPStan level 8 ✅ ·
 PHPCS ✅.
 **No new ADR · no architecture amendment · no migration · no new persistence · no new route · no
 event/replay/reconciliation change.** **FLAG-COMMCATPARENT-1: RESOLVED.** No new flags.)
@@ -2030,30 +2042,44 @@ release workflow — unreleased, no external consumers.
 
 **So: Case A for the filter, Case B-shaped for the relationship.** The filter is removed with **no
 replacement** (no `parent_slug` query, no root-only query — neither is required, and inventing one
-would repeat the defect). The resource keeps the P2-S3-intended hierarchy reference, re-keyed onto
-the verified public key.
+would repeat the defect). The resource keeps the P2-S3-intended hierarchy relationship, expressed
+in domain-safe public semantics.
 
 ```
 ProductCategory  before: source_id:int, slug, name, description, parent:int|null, count
-                 after:  slug, name, description, parent_slug:string|null, count
+                 after:  slug, name, description, has_parent:boolean, parent_slug:string|null, count
+                         (all six declared required)
 GET /product-categories  params before: cursor, limit, parent:int(min 0)
                          params after:  cursor, limit
 ```
 
 **Lifecycle (Doc 9 §26), per surface.** `ProductCategory.source_id`: Supported → Deprecated →
 **Removed**. `ProductCategory.parent` (integer source term id): Supported → Deprecated → **Removed**.
-`?parent=` query parameter: Supported → Deprecated → **Removed**. `ProductCategory.parent_slug`:
-**new, Supported** — a new field with a new meaning, *not* `parent` retyped. No intermediate commit
-carries old and new together. Same-session Deprecated → Removed on an unreleased pre-1.0 contract is
-the DECISION AF / FLAG-COMMSOURCEID-1 treatment, and the caveat carries forward unweakened: **not
-precedent for a released API.**
+`?parent=` query parameter: Supported → Deprecated → **Removed**. `ProductCategory.has_parent` and
+`ProductCategory.parent_slug`: **new, Supported** — new fields with new meanings, *not* `parent`
+retyped. No pushed commit carries old and new together. Same-session Deprecated → Removed on an
+unreleased pre-1.0 contract is the DECISION AF / FLAG-COMMSOURCEID-1 treatment, and the caveat
+carries forward unweakened: **not precedent for a released API.**
 
-**Semantics.** `parent_slug` is null when no parent is **currently projected** — the category is
-top-level, **or** its parent has not synchronised yet / was tombstoned (AG-7: hierarchy is a soft
-reference, and DECISION AE's rule that a projection-order limit is stated in the contract rather
-than rediscovered). The child is always published; never an error, never dropped, never a slug
-invented from the source id. A parent rename shows the moment the parent's row updates (read-time,
-DECISION AD ruling 3 precedent). The listing is **unchanged**: every depth, `(name, id)` order,
+**Semantics — two independent facts, so an unknown parent is never published as no parent.**
+
+```
+root category                                  has_parent=false  parent_slug=null
+child, parent row projected                    has_parent=true   parent_slug="<parent-slug>"
+child, parent not yet synchronised / removed   has_parent=true   parent_slug=null
+```
+
+`has_parent` states whether the category's **projected source relationship** names a parent — read
+from the child's own `parent_id`, **never** from whether the join found a row. `parent_slug`
+resolves that parent through the current `product_cat` projection when its row is available. A
+missing parent projection (AG-7: hierarchy is a soft reference; DECISION AE: a projection-order
+limit is stated in the contract, not rediscovered) is therefore `true/null` and is **not** confused
+with a real top-level category. The child is always published; never an error, never dropped, never
+a slug invented from the source id. A parent rename shows the moment the parent's row updates, with
+the child row untouched (read-time, DECISION AD ruling 3 precedent). **Correction recorded, not
+hidden:** the first cut published `parent_slug: null` alone for both root and unresolved child;
+architect review before merge rejected that as encoding "unknown parent" as "no parent", and
+`has_parent` was added. The listing is **unchanged**: every depth, `(name, id)` order,
 identical cursor envelope — the live page-2 cursor token is byte-identical to the pre-change capture.
 `count` (FLAG-COMMTERMCOUNT-1), `/product-categories/{slug}` addressing and `/products?category=` are
 untouched.
@@ -2067,8 +2093,9 @@ code rejects the obsolete key and no unknown-parameter policy was introduced. Th
 **Implementation.** `TermQueryProvider` resolves `p.slug AS parent_slug` through **one** LEFT
 self-join (`p.source_term_id = t.parent_id AND p.taxonomy_type = t.taxonomy_type AND p.deleted_at
 IS NULL`) — DECISION AA's taxonomy predicate holds inside the join. `TermFilterSet` lost `parentId`.
-`TermResource` publishes `parent_slug`; `source_term_id`/`parent_id`/`id` stay in the query row as
-internal identity (source key, join key, cursor tiebreaker). **No migration, no column, no index, no
+`TermResource` publishes `has_parent` (from the already-selected `t.parent_id` — no extra query or
+join) and `parent_slug`; `source_term_id`/`parent_id`/`id` stay in the query row as internal
+identity (source key, join/relationship key, cursor tiebreaker). **No migration, no column, no index, no
 FK, no stored/derived path, no event, capture, replay or reconciliation change.** Attribute terms
 (same provider) are unaffected — `AttributeTermResource` never reads the new column.
 
@@ -2080,21 +2107,29 @@ index, 0.09 ms. **No Seq Scan, no new index needed**, and one query per call whe
 or 200 rows — asserted in `ProductCategoryIntegrationTest`.
 
 **Guard.** `CommerceIdentityLeakGuardTest` has **no FLAG-COMMCATPARENT-1 debt exception**:
-`test_no_debt_exception_remains` asserts `product_category` allows exactly `parent_slug` and no entry
-anywhere is DEBT. `parent` and `parent_slug` joined the governed vocabulary, so a reintroduced
-`source_id`/`parent` on a category, or `parent_slug` on an attribute term, fails (mutation-tested).
-New `ProductCategoryHierarchyContractTest` pins top-level/child/unresolved shapes, runtime keys ==
-schema keys, ajv instance validation of null **and** string, the handler not reading `?parent=`, the
-product `?category=` slug filter, and one-query SQL shape. FLAG-RESTARGDRIFT-1's route-arg ⇄
-descriptor equality stays green because `parent` left both halves together.
+`test_no_debt_exception_remains` asserts `product_category` allows exactly `has_parent` +
+`parent_slug` and no entry anywhere is DEBT. `parent`, `has_parent` and `parent_slug` joined the
+governed vocabulary, so a reintroduced `source_id`/`parent`/`parent_id` on a category, or either
+hierarchy field on an attribute term, fails (mutation-tested). `ProductCategoryHierarchyContractTest`
+pins the three states above exactly, walks `has_parent`/`parent_slug` through before-parent → parent
+lands → rename → tombstone at the Resource boundary, asserts runtime keys == schema keys ==
+`required`, ajv-validates all three states (and refuses an integer `parent_slug` or a missing
+`has_parent`), and covers the handler not reading `?parent=`, the product `?category=` slug filter
+and the one-query SQL shape. `ProductCategoryIntegrationTest` proves the same states against the
+real join and real handlers: every depth, child before parent → `true/null` then `true/"clothing"`,
+tombstoned parent → `true/null` still listed, rename → `true/"apparel"` with the child row
+byte-identical, no cross-taxonomy join. FLAG-RESTARGDRIFT-1's route-arg ⇄ descriptor equality stays
+green because `parent` left both halves together.
 
-**Live (read-only, after deploy).** Top-level `clothing` → `parent_slug: null`; child `hoodies` →
-`parent_slug: "clothing"` (also `accessories`, `tshirts`); `/products?category=hoodies` still
-resolves by slug (3 products; `ProductQueryProvider` untouched); live `openapi.json` diff contains
-**only** the category changes (two `source_id`/`parent` removals + `parent_slug` additions, the
-`parent` parameter removal, the listing summary/description); live
-runtime keys == schema keys; ajv validates the live listing, child and top-level payloads, and the
-document still passes the OpenAPI 3.1 meta-schema.
+**Live (read-only, after deploy).** Root `clothing` → `has_parent: false, parent_slug: null` (also
+`decor`, `music`, `uncategorized`); children `hoodies`, `accessories`, `tshirts` →
+`has_parent: true, parent_slug: "clothing"`; `/products?category=hoodies` still resolves by slug (3
+products; `ProductQueryProvider` untouched); runtime keys == schema keys == `required`; no `id`,
+`source_id` or `parent` in any live payload or schema; declared params `cursor, limit`, and
+`?parent=28` returns a response byte-identical to no parameter; ajv validates the live listing, root
+and child payloads against the live schema, and the document passes the OpenAPI 3.1 meta-schema. The
+unresolved-child state has no live fixture and was deliberately not manufactured (no content
+mutation); it is proven in Integration.
 
 **Architecture:** no new ADR, no amendment, no migration, no new persistence, no new route, no
 event/replay/reconciliation change. The contract follows directly from P2-S3 §7, the P2-S3 plan row
@@ -3453,4 +3488,4 @@ refuse. **AG-9 unchanged; no local/custom attribute support added.**
 2026-09-16 | FLAG-RESTARGDRIFT-1 (parity corrections) | **Architect review held the flag open on two residual mismatches of its own shape, and finding the second one required measuring rather than reasoning.** `?status=` answered 200 because `validateStatus()` collapsed a SUPPLIED EMPTY value into omission while the published enum said `{publish}`; the check is now `=== null` only — absent and supplied-empty are different requests — so `?status=` is 400 `hsp_invalid_status` exactly like `?status=draft`, the enum stays `['publish']` with no empty-string member, and the module validator is retained so the CCF-003 code is unchanged. The page path published the route's own capture class, `^[a-z0-9_/-]+$`, which describes `about//team` as valid when the handler has always refused it; it now publishes `^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$`, same per-segment policy plus the empty-segment rule. **The measurement changed the design and caught a regression I had shipped:** the page `path` arg is the one path arg with no `sanitize_callback`, so WordPress installs its validating default and a pattern declared there is natively ENFORCED — the previous session's own change had turned `/pages/My-Account` from 200 into 400, and a segment-aware pattern would also have rejected `my-account/`. The pattern is therefore descriptor-only, `sanitizePath()` stays authoritative, and the regression is reverted. Two of my fixtures were also wrong against measured reality and were corrected to it: `about//` is trimmed to `about` (a tolerated form), and the `-` case is unassertable in Unit because the bootstrap's `sanitize_title` stub is not WordPress's — verified live instead. The guard now proves a domain-grammar pattern is STRICTLY NARROWER than its route's capture class rather than equal to it, with a mutation test for the echo, and a new sweep asserts every constrained parameter rejects an explicit empty value — `status` was the only instance of the shape. Re-inventory: 19 operations, 47 args, 47 parameters, drift 0, one documented asymmetry. Live: status corrections confirmed, page-path runtime unchanged in both directions, 33 error bodies validate against the live `openapi.json`, and `about//team` fails the live page-path parameter schema as an ajv instance. Unit 2045 ✅, Integration 469 ✅ clean tree, PHPStan 8 + PHPCS clean. **FLAG-RESTARGDRIFT-1: RESOLVED.** No new flags.
 
 2026-09-16 | FLAG-COMMSOURCEID-1 | **Commerce stopped publishing its own internal identity — and the one source pair still published is now recorded as debt rather than mistaken for a contract.** Every Commerce shape had been serializing the PostgreSQL projection UUID as `id`, four of them the WordPress source key as `source_id`, variations an ambiguous `product_id`, and attribute terms a `parent` that can never hold a value — none authorised by any decision, all prohibited *by name* in DECISION F's internal-column clause. **Removed:** `id` ×5, `source_id` on product/variation/attribute-definition/attribute-term, variation `product_id`, attribute-term `parent`. **Kept:** `woo_product_id` + `woo_variation_id` (AK-1) and `media.featured_id` + `gallery_ids` (Finding 011). **The attribute-term half is the substance:** `product_cat` and `pa_*` share one projection table (AG-9) and were served by ONE `TermResource`, so a field categories depend on was published on attribute terms too — where, verified against WooCommerce 11.1.0, it cannot mean anything (`product_cat` is `'hierarchical' => true` at `class-wc-post-types.php:106`; `pa_*` is `false` at `:269`, the `true` at `:318` being a `rewrite` option). A new `AttributeTermResource` + `attributeTermSchema()` shape the same query row differently at the Resource boundary — no new table, projection, migration or second taxonomy architecture. **Product-category `source_id`/`parent` were TRANSFERRED, not approved:** they stay only because the shipped `?parent={source-term-id}` filter takes that integer, and a Case A/B/C check returned **Case B** — the P2-S3 preflight answered the hierarchy question NO and named the **bare slug** as the category filter's canonical key, the ratified plan row requires "no WordPress term ID as the required public key", DECISION AD-8 rejected `?parent=` for Pages in both forms on that reasoning, and `git log -S` finds the parameter introduced in `85aa4b5` with no rationale. Raised as **FLAG-COMMCATPARENT-1 (OPEN)** with the conflict recorded; no behaviour changed and DECISION AG was not reinterpreted. Run as an explicit **Doc 9 §26 lifecycle-completion** session on scope-owner directive: version 0.1.0, zero tags, no changelog or artifact, no external consumers, `hsp-blog` Content-only — AK-9 had already Deprecated `source_id`/`product_id`, and the rest were recorded Supported → Deprecated → Removed in one session, the completion **DECISION AF** performed on identical grounds, whose "not precedent for a released contract" caveat is carried forward intact. **Internal persistence untouched** — no migration, dropped column, checksum, event, replay or reconciliation change; all four UUIDs remain cursor tiebreakers inside every opaque cursor, `products.id` still joins `entity_taxonomies`, `source_product_id` still carries the inventory join. One dead SELECT column dropped (`AttributeQueryProvider`'s `source_attribute_id`). New `CommerceIdentityLeakGuardTest` guards **runtime and schema together**, keyed by **public endpoint semantic rather than resource class** so a category's dependency can never again license the same field on `pa_*` terms, with the `product_category` entry annotated **DEBT** naming the new flag and that annotation asserted mechanically, plus a mutation test and a shared-fixture test that fails if the two term shapes re-merge. **FLAG-COMMSOURCEID-1: RESOLVED. FLAG-COMMCATPARENT-1: OPEN.** Reported but not acted on: Content publishes `parent_id`/`attached_to_id` with no self-identity to resolve them against — a Content contract question, not folded in here.
-2026-09-16 | FLAG-COMMCATPARENT-1 | **Product categories stopped needing a WordPress term id for anything.** Investigation first: the `?parent={source-term-id}` child filter (shipped in `85aa4b5` with no ruling) was required by nothing — not the P2-S3 plan row, DECISION AG, Doc 9 or Doc 11, and P2-S3's own migration `0003` says no delivery query filters by parent — so it was **removed with no replacement**. The parent *relationship* was intended ("`parent_id` is carried so a consumer can reconstruct the tree"), so it stays, re-keyed onto the verified public key: `ProductCategory.source_id` and integer `parent` **Removed**, new **`parent_slug: string|null` Supported** (not a retype). Slug uniqueness re-verified on WordPress 7.1 + WooCommerce 11.1.0 (`wp_unique_term_slug()` is taxonomy-wide). Lifecycle Supported → Deprecated → Removed for each of the three surfaces on the unreleased 0.1.0 contract (zero tags, no repo consumer), AF caveat carried forward. `parent_slug` comes from one LEFT self-join on `uq_commerce_taxonomies_source_id` scoped by `taxonomy_type`; null = top-level or parent not currently projected (AG-7), child always listed. **No migration, column, index, event, replay or reconciliation change.** EXPLAIN ANALYZE at 20 000 rows: index-backed both sides, constant one query per call. Leak guard has no debt exception left; new `ProductCategoryHierarchyContractTest`. An old `?parent=28` is now an ignored undeclared key (full listing, 200) — not support, no rejection policy added. Unit 2071 ✅ · Integration 475 ✅ · node-gated ADR-055/AJV/CCF-003 105 ✅ · PHPStan L8 ✅ · PHPCS ✅; live: `hoodies.parent_slug = "clothing"`, `clothing.parent_slug = null`, `/products?category=hoodies` unchanged, OpenAPI diff category-only. Also corrected the stale "Next session" open-flags list, which still named FLAG-RESTARGDRIFT-1 and FLAG-COMMSOURCEID-1 as open. **FLAG-COMMCATPARENT-1: RESOLVED.** No new flags.
+2026-09-16 | FLAG-COMMCATPARENT-1 | **Product categories stopped needing a WordPress term id for anything.** Investigation first: the `?parent={source-term-id}` child filter (shipped in `85aa4b5` with no ruling) was required by nothing — not the P2-S3 plan row, DECISION AG, Doc 9 or Doc 11, and P2-S3's own migration `0003` says no delivery query filters by parent — so it was **removed with no replacement**. The parent *relationship* was intended ("`parent_id` is carried so a consumer can reconstruct the tree"), so it stays in domain-safe terms: `ProductCategory.source_id` and integer `parent` **Removed**, new **`has_parent: boolean` + `parent_slug: string|null` Supported** (not a retype; all category fields now declared `required`). Two independent facts so an unknown parent is never published as no parent: `has_parent` from the child's own projected relationship (`parent_id`), `parent_slug` from the current projection when the parent row is available — root `false/null`, resolved child `true/"slug"`, child whose parent has not synchronised or was removed `true/null` (AG-7), always listed. The first cut published `parent_slug: null` alone for both root and unresolved child; architect review rejected that before merge and it was corrected. Slug uniqueness re-verified on WordPress 7.1 + WooCommerce 11.1.0 (`wp_unique_term_slug()` is taxonomy-wide). Lifecycle Supported → Deprecated → Removed for each of the three removed surfaces on the unreleased 0.1.0 contract (zero tags, no repo consumer), AF caveat carried forward. `parent_slug` comes from one LEFT self-join on `uq_commerce_taxonomies_source_id` scoped by `taxonomy_type`; `has_parent` reads the already-selected `parent_id`, so no extra query or join. **No migration, column, index, event, replay or reconciliation change.** EXPLAIN ANALYZE at 20 000 rows: index-backed both sides, constant one query per call. Leak guard has no debt exception left; `ProductCategoryHierarchyContractTest` + Integration prove all three states, child-before-parent, tombstoned parent and read-time rename with the child row untouched. An old `?parent=28` is now an ignored undeclared key (full listing, 200) — not support, no rejection policy added. Clean tree at `54556ed`: Unit 2072 ✅ · Commerce Integration 189 ✅ · full Integration 475 ✅ · node-gated ADR-055/AJV/CCF-003 105 ✅ + contract groups 188 ✅ · PHPStan L8 ✅ · PHPCS ✅; live: `clothing` `false/null`, `hoodies` `true/"clothing"`, `/products?category=hoodies` unchanged, no removed field in payload or schema, ajv-valid against live schema. Also corrected the stale "Next session" open-flags list, which still named FLAG-RESTARGDRIFT-1 and FLAG-COMMSOURCEID-1 as open. **FLAG-COMMCATPARENT-1: RESOLVED.** No new flags.
