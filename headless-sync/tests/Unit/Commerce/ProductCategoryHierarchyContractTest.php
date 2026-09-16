@@ -22,39 +22,63 @@ use HSP\Modules\Commerce\Resources\VariationResource;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrar;
 use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
 use HSP\Tests\Unit\Operations\OpenApi\OpenApiMetaSchemaValidator;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
  * FLAG-COMMCATPARENT-1 — the public Product Category hierarchy contract.
  *
- * A category is addressed by `slug` and points at its parent by `parent_slug`, the same key. No
- * WordPress term id is published and no server-side parent filter exists: the tree is rebuilt
- * from the listing. `parent_slug` is resolved from the projection at read time by one self-join.
+ * A category is addressed by `slug` and relates to its parent through two INDEPENDENT facts:
+ * `has_parent` (does its own projected relationship name a parent?) and `parent_slug` (that
+ * parent's slug, when its row is currently projected). No WordPress term id is published and no
+ * server-side parent filter exists: the tree is rebuilt from the listing.
+ *
+ * The lifecycle transitions below are asserted here at the Resource boundary, from the rows the
+ * query provider returns; ProductCategoryIntegrationTest proves the same states against the real
+ * self-join and real handlers (child before parent, parent later projects, tombstoned parent,
+ * parent rename with no child rewrite).
  */
 final class ProductCategoryHierarchyContractTest extends TestCase
 {
     private const VALIDATOR_SCRIPT = __DIR__ . '/../../../tools/openapi-validator/validate-openapi.mjs';
 
-    private const KEYS = ['slug', 'name', 'description', 'parent_slug', 'count'];
+    private const KEYS = ['slug', 'name', 'description', 'has_parent', 'parent_slug', 'count'];
 
     // -------------------------------------------------------------------------
-    // Resource
+    // Resource — the three published states
     // -------------------------------------------------------------------------
 
-    public function test_a_top_level_category_publishes_a_null_parent_slug(): void
+    /** @return array<string, array{0:array<string,mixed>, 1:array<string,mixed>}> */
+    public static function publishedStates(): array
     {
-        $published = (new TermResource())->toArray(self::row('clothing', 0, null));
-
-        self::assertSame(self::KEYS, array_keys($published));
-        self::assertNull($published['parent_slug']);
+        return [
+            'root'             => [
+                self::row('clothing', 0, null),
+                ['slug' => 'clothing', 'has_parent' => false, 'parent_slug' => null],
+            ],
+            'resolved child'   => [
+                self::row('hoodies', 28, 'clothing'),
+                ['slug' => 'hoodies', 'has_parent' => true, 'parent_slug' => 'clothing'],
+            ],
+            // Parent not projected yet, or tombstoned: the join found nothing. A child, NOT a root.
+            'unresolved child' => [
+                self::row('hoodies', 28, null),
+                ['slug' => 'hoodies', 'has_parent' => true, 'parent_slug' => null],
+            ],
+        ];
     }
 
-    public function test_a_child_category_publishes_its_parents_slug_and_no_source_identity(): void
+    /**
+     * @param array<string,mixed> $row
+     * @param array<string,mixed> $expected
+     */
+    #[DataProvider('publishedStates')]
+    public function test_each_hierarchy_state_publishes_exactly(array $row, array $expected): void
     {
-        $published = (new TermResource())->toArray(self::row('hoodies', 28, 'clothing'));
+        $published = (new TermResource())->toArray($row);
 
         self::assertSame(self::KEYS, array_keys($published));
-        self::assertSame('clothing', $published['parent_slug']);
+        self::assertSame($expected, array_intersect_key($published, $expected));
 
         foreach (['id', 'source_id', 'parent', 'parent_id', 'source_term_id'] as $internal) {
             self::assertArrayNotHasKey($internal, $published);
@@ -62,34 +86,55 @@ final class ProductCategoryHierarchyContractTest extends TestCase
     }
 
     /**
-     * AG-7: the parent has not projected yet (or was tombstoned), so the join resolved nothing.
-     * The child is still published, with a null reference — never an error, never a slug
-     * invented from the source id.
+     * `has_parent` comes from the child's own relationship, never from whether the join resolved.
+     * Walked through the provider rows a child sees over its life: arriving before its parent,
+     * the parent landing, the parent renamed, the parent tombstoned.
      */
-    public function test_an_unresolved_parent_publishes_null_and_the_category_survives(): void
+    public function test_has_parent_tracks_the_relationship_and_parent_slug_tracks_resolution(): void
     {
-        $published = (new TermResource())->toArray(self::row('hoodies', 28, null));
+        $resource = new TermResource();
+        $shape    = static fn (array $row): array => array_intersect_key(
+            $resource->toArray($row),
+            ['has_parent' => true, 'parent_slug' => true],
+        );
 
-        self::assertSame('hoodies', $published['slug']);
-        self::assertNull($published['parent_slug']);
+        $before  = $shape(self::row('hoodies', 28, null));
+        $landed  = $shape(self::row('hoodies', 28, 'clothing'));
+        $renamed = $shape(self::row('hoodies', 28, 'apparel'));
+        $deleted = $shape(self::row('hoodies', 28, null));
+
+        self::assertSame(['has_parent' => true, 'parent_slug' => null], $before, 'child before parent');
+        self::assertSame(['has_parent' => true, 'parent_slug' => 'clothing'], $landed, 'parent later projects');
+        self::assertSame(['has_parent' => true, 'parent_slug' => 'apparel'], $renamed, 'parent renamed');
+        self::assertSame(['has_parent' => true, 'parent_slug' => null], $deleted, 'parent tombstoned');
+
+        // And a root can never acquire a parent slug, whatever a row carries.
+        self::assertSame(
+            ['has_parent' => false, 'parent_slug' => null],
+            $shape(self::row('clothing', 0, 'stray')),
+        );
     }
 
     // -------------------------------------------------------------------------
     // Runtime ⇄ generated OpenAPI
     // -------------------------------------------------------------------------
 
-    public function test_runtime_keys_equal_the_published_schema_keys(): void
+    public function test_runtime_keys_equal_the_published_schema_keys_and_all_are_required(): void
     {
         $document = self::document();
-        $detail   = self::schema($document, '/hsp/v1/product-categories/{slug}');
-        $listing  = self::schema($document, '/hsp/v1/product-categories');
 
-        self::assertSame(self::KEYS, array_keys($detail['properties']));
-        self::assertSame(self::KEYS, array_keys($listing['properties']['data']['items']['properties']));
-        self::assertSame(['string', 'null'], $detail['properties']['parent_slug']['type']);
+        foreach ([
+            self::schema($document, '/hsp/v1/product-categories/{slug}'),
+            self::schema($document, '/hsp/v1/product-categories')['properties']['data']['items'],
+        ] as $item) {
+            self::assertSame(self::KEYS, array_keys($item['properties']));
+            self::assertSame(self::KEYS, $item['required']);
+            self::assertSame('boolean', $item['properties']['has_parent']['type']);
+            self::assertSame(['string', 'null'], $item['properties']['parent_slug']['type']);
+        }
     }
 
-    /** Both nullability states, through ajv, against the schema the generator actually publishes. */
+    /** All three states, through ajv, against the schema the generator actually publishes. */
     public function test_category_payloads_validate_against_the_generated_schema(): void
     {
         $validator = new OpenApiMetaSchemaValidator(self::VALIDATOR_SCRIPT);
@@ -103,17 +148,13 @@ final class ProductCategoryHierarchyContractTest extends TestCase
 
         $resource = new TermResource();
         $document = self::document();
-        $topLevel = $resource->toArray(self::row('clothing', 0, null));
-        $child    = $resource->toArray(self::row('hoodies', 28, 'clothing'));
+        $detail   = '/hsp/v1/product-categories/{slug}';
+        $rows     = array_column(self::publishedStates(), 0);
+        $cases    = ['listing' => ['/hsp/v1/product-categories', $resource->toCollection($rows, 'abc')]];
 
-        $cases = [
-            'detail, top-level' => ['/hsp/v1/product-categories/{slug}', $topLevel],
-            'detail, child'     => ['/hsp/v1/product-categories/{slug}', $child],
-            'listing'           => [
-                '/hsp/v1/product-categories',
-                $resource->toCollection([self::row('clothing', 0, null), self::row('hoodies', 28, 'clothing')], 'abc'),
-            ],
-        ];
+        foreach (self::publishedStates() as $label => [$row]) {
+            $cases["detail, {$label}"] = [$detail, $resource->toArray($row)];
+        }
 
         foreach ($cases as $label => [$path, $payload]) {
             $decoded = json_decode(json_encode($payload, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
@@ -126,16 +167,23 @@ final class ProductCategoryHierarchyContractTest extends TestCase
             );
         }
 
-        // And the gate is not vacuous: the removed integer shape is refused.
-        $error = null;
-        self::assertSame(
-            OpenApiMetaSchemaValidator::GATE_INVALID,
-            $validator->instanceStatus(
-                self::schema($document, '/hsp/v1/product-categories/{slug}'),
-                ['slug' => 'hoodies', 'name' => 'H', 'description' => '', 'parent_slug' => 28, 'count' => 0],
-                $error,
-            ),
-        );
+        // And the gate is not vacuous: an integer parent, or a payload without has_parent, is refused.
+        $valid = [
+            'slug' => 'hoodies', 'name' => 'H', 'description' => '',
+            'has_parent' => true, 'parent_slug' => null, 'count' => 0,
+        ];
+
+        foreach ([
+            'integer parent_slug' => ['parent_slug' => 28] + $valid,
+            'missing has_parent'  => array_diff_key($valid, ['has_parent' => true]),
+        ] as $label => $invalid) {
+            $error = null;
+            self::assertSame(
+                OpenApiMetaSchemaValidator::GATE_INVALID,
+                $validator->instanceStatus(self::schema($document, $detail), $invalid, $error),
+                $label,
+            );
+        }
     }
 
     // -------------------------------------------------------------------------

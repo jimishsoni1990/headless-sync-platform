@@ -18,12 +18,20 @@ use HSP\Core\Contracts\ResourceInterface;
  *
  * `parent_slug` is NOT the old integer `parent` retyped. That field — and `source_id`, which
  * existed only to resolve it and to feed the removed `?parent={source-term-id}` filter — were
- * Removed. This is a new field with a new meaning.
+ * Removed. `has_parent` and `parent_slug` are new fields with new meanings.
  *
- * NULL means "no projected parent": the category is top-level, OR its parent has not projected
- * yet / has been tombstoned (AG-7 — hierarchy is a soft reference and projection order is not
- * guaranteed). That state converges through normal projection; it is never an error, and the
- * category itself is always published.
+ * TWO INDEPENDENT FACTS, so "unknown parent" is never published as "no parent":
+ *
+ *   has_parent   — does the child's OWN projected relationship name a parent? Read from its
+ *                  `parent_id` (non-zero), NEVER from whether the join found a row.
+ *   parent_slug  — that parent's slug, when its row is currently projected; else null.
+ *
+ *   root                              has_parent=false  parent_slug=null
+ *   child, parent projected           has_parent=true   parent_slug="<slug>"
+ *   child, parent not (yet) available has_parent=true   parent_slug=null
+ *
+ * The third state is AG-7 at work — a child may project before its parent, or outlive a
+ * tombstoned one — and converges through normal projection. The category is always published.
  *
  * `id`, `source_term_id` and `parent_id` stay in the query row as internal identity — cursor
  * tiebreaker, source key and join key — and are never serialized.
@@ -39,11 +47,16 @@ final class TermResource implements ResourceInterface
      */
     public function toArray(array $row): array
     {
+        // From the child's own relationship — deliberately not `parent_slug !== null`, which
+        // would publish an unresolved parent as a root.
+        $hasParent = (int) ($row['parent_id'] ?? 0) !== 0;
+
         return [
             'slug'        => (string) ($row['slug'] ?? ''),
             'name'        => (string) ($row['name'] ?? ''),
             'description' => (string) ($row['description'] ?? ''),
-            'parent_slug' => isset($row['parent_slug']) ? (string) $row['parent_slug'] : null,
+            'has_parent'  => $hasParent,
+            'parent_slug' => $hasParent && isset($row['parent_slug']) ? (string) $row['parent_slug'] : null,
             'count'       => (int) ($row['term_count'] ?? 0),
         ];
     }

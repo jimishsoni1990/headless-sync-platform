@@ -12,6 +12,7 @@ use HSP\Modules\Commerce\Handlers\TermTombstoneHandler;
 use HSP\Modules\Commerce\Handlers\TermUpsertHandler;
 use HSP\Modules\Commerce\Queries\TermFilterSet;
 use HSP\Modules\Commerce\Queries\TermQueryProvider;
+use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Transformers\TermTransformer;
 use HSP\Modules\Commerce\Validation\TermValidator;
 use PHPUnit\Framework\TestCase;
@@ -136,38 +137,44 @@ final class ProductCategoryIntegrationTest extends TestCase
     }
 
     // =========================================================================
-    // Public hierarchy — parent_slug resolved at read time (FLAG-COMMCATPARENT-1)
+    // Public hierarchy — has_parent + parent_slug through the real join (FLAG-COMMCATPARENT-1)
     // =========================================================================
 
     /** The tree rebuilds from the listing alone: every depth is listed, each names its parent by slug. */
-    public function test_the_listing_resolves_each_parent_by_slug_at_every_depth(): void
+    public function test_the_listing_publishes_the_hierarchy_at_every_depth(): void
     {
         $this->project(10, 'clothing');
         $this->project(11, 'men', 10);
         $this->project(12, 'shirts-men', 11);
 
         self::assertSame(
-            ['clothing' => null, 'men' => 'clothing', 'shirts-men' => 'men'],
-            array_column($this->provider()->list(new TermFilterSet())->rows, 'parent_slug', 'slug'),
+            [
+                'clothing'   => [false, null],
+                'men'        => [true, 'clothing'],
+                'shirts-men' => [true, 'men'],
+            ],
+            $this->listedHierarchy(),
         );
-        self::assertSame('men', $this->provider()->findBySlug('shirts-men')['parent_slug']);
+        self::assertSame([true, 'men'], $this->publishedHierarchy('shirts-men'));
     }
 
-    /** AG-7: a child that projects first is listed with a null reference — never dropped — then converges. */
-    public function test_a_child_before_its_parent_is_listed_with_a_null_parent_slug_until_it_lands(): void
+    /**
+     * AG-7: a child that projects first is a CHILD with an unresolved parent — never dropped, never
+     * published as a root — and converges when the parent lands.
+     */
+    public function test_a_child_before_its_parent_is_an_unresolved_child_until_the_parent_lands(): void
     {
         $this->project(11, 'men', 10);
 
-        $rows = $this->provider()->list(new TermFilterSet())->rows;
-        self::assertSame(['men'], array_column($rows, 'slug'), 'the child is never dropped');
-        self::assertNull($rows[0]['parent_slug']);
+        self::assertSame(['men' => [true, null]], $this->listedHierarchy(), 'listed, and not as a root');
+        self::assertSame([true, null], $this->publishedHierarchy('men'));
 
         $this->project(10, 'clothing');
 
-        self::assertSame('clothing', $this->provider()->findBySlug('men')['parent_slug']);
+        self::assertSame([true, 'clothing'], $this->publishedHierarchy('men'));
     }
 
-    public function test_a_tombstoned_parent_resolves_to_null_and_the_child_stays_listed(): void
+    public function test_a_tombstoned_parent_leaves_an_unresolved_child_still_listed(): void
     {
         $this->project(10, 'clothing');
         $this->project(11, 'men', 10);
@@ -175,20 +182,21 @@ final class ProductCategoryIntegrationTest extends TestCase
         (new TermTombstoneHandler(new TermAdapter($this->db)))
             ->handle($this->event(10, 'commerce.product_category.deleted', 2, 'd10'));
 
-        self::assertSame(['men'], array_column($this->provider()->list(new TermFilterSet())->rows, 'slug'));
-        self::assertNull($this->provider()->findBySlug('men')['parent_slug']);
+        self::assertSame(['men' => [true, null]], $this->listedHierarchy());
     }
 
-    /** Read-time, not a stored copy: a parent's new slug shows the moment its own row updates. */
-    public function test_a_parent_slug_change_is_visible_without_reprojecting_the_child(): void
+    /** Read-time, not a stored copy: a parent's new slug shows the moment its OWN row updates. */
+    public function test_a_parent_rename_is_visible_without_rewriting_the_child(): void
     {
         $this->project(10, 'clothing');
         $this->project(11, 'men', 10);
+        $childBefore = $this->fetch(11);
 
         $this->loader->terms[10] = $this->term(10, 'apparel');
         $this->handler()->handle($this->event(10, 'commerce.product_category.updated', 2, 'u10'));
 
-        self::assertSame('apparel', $this->provider()->findBySlug('men')['parent_slug']);
+        self::assertSame([true, 'apparel'], $this->publishedHierarchy('men'));
+        self::assertSame($childBefore, $this->fetch(11), 'the child row was not touched');
     }
 
     /** DECISION AA holds inside the join: a parent id naming another taxonomy's term resolves to nothing. */
@@ -197,7 +205,7 @@ final class ProductCategoryIntegrationTest extends TestCase
         $this->project(20, 'blue', 0, 'pa_colour');
         $this->project(11, 'men', 20);
 
-        self::assertNull($this->provider()->findBySlug('men')['parent_slug']);
+        self::assertSame([true, null], $this->publishedHierarchy('men'));
     }
 
     public function test_reprocessing_an_unchanged_term_suppresses_the_write(): void
@@ -477,6 +485,27 @@ final class ProductCategoryIntegrationTest extends TestCase
                 (id, source_term_id, taxonomy_type, slug, name, description, parent_id,
                  term_count, checksum)
             VALUES ' . implode(',', $values));
+    }
+
+    /** @return array{0:mixed,1:mixed} the published [has_parent, parent_slug] of one category */
+    private function publishedHierarchy(string $slug): array
+    {
+        $row = $this->provider()->findBySlug($slug);
+        self::assertNotNull($row, "{$slug} must be addressable");
+        $published = (new TermResource())->toArray($row);
+
+        return [$published['has_parent'], $published['parent_slug']];
+    }
+
+    /** @return array<string, array{0:mixed,1:mixed}> slug → published [has_parent, parent_slug], listing order */
+    private function listedHierarchy(): array
+    {
+        $out = [];
+        foreach ((new TermResource())->toCollection($this->provider()->list(new TermFilterSet())->rows, null)['data'] as $item) {
+            $out[$item['slug']] = [$item['has_parent'], $item['parent_slug']];
+        }
+
+        return $out;
     }
 
     private function project(int $id, string $slug, int $parent = 0, string $taxonomy = 'product_cat'): void

@@ -51,11 +51,12 @@ final class CommerceIdentityLeakGuardTest extends TestCase
      * them in the same breath and they are equally never-public — a guard that only knows about
      * the fields that already leaked would not have caught these.
      *
-     * `parent` and `parent_slug` are HIERARCHY REFERENCES, governed here for the same reason: a
-     * parent reference is identity pointing elsewhere. The integer `parent` a product category
-     * used to publish was a WordPress term id (FLAG-COMMCATPARENT-1); `parent_slug` is the
-     * domain-safe replacement, and listing it here means it is published only where ALLOWED says
-     * so — on product categories, never on the flat `pa_*` terms that share their table.
+     * `parent`, `has_parent` and `parent_slug` are HIERARCHY FIELDS, governed here for the same
+     * reason: a parent reference is identity pointing elsewhere. The integer `parent` a product
+     * category used to publish was a WordPress term id (FLAG-COMMCATPARENT-1); `has_parent` +
+     * `parent_slug` are the domain-safe replacement, and listing them here means they are
+     * published only where ALLOWED says so — on product categories, never on the flat `pa_*`
+     * terms that share their table.
      *
      * @var list<string>
      */
@@ -82,6 +83,7 @@ final class CommerceIdentityLeakGuardTest extends TestCase
         'deleted_at',
         'taxonomy_type',
         'parent',
+        'has_parent',
         'parent_slug',
     ];
 
@@ -118,13 +120,15 @@ final class CommerceIdentityLeakGuardTest extends TestCase
             'media.featured_id' => 'Finding 011 — attachment reference',
         ],
         'product_category' => [
+            'has_parent'  => 'P2-S3 source verification §7 — product_cat is hierarchical; whether '
+                . 'a parent exists, independent of whether it resolves (FLAG-COMMCATPARENT-1)',
             'parent_slug' => 'P2-S3 source verification §7 — product_cat slugs are unique '
                 . 'taxonomy-wide, so the slug is the public category key (FLAG-COMMCATPARENT-1)',
         ],
         // Deliberately EMPTY, and the emptiness is load-bearing: `pa_*` taxonomies are
         // registered 'hierarchical' => false, so a parent reference here can never carry
         // information, and no published operation selects an attribute term by id. The
-        // product-category `parent_slug` does NOT extend here just because both read
+        // product-category hierarchy fields do NOT extend here just because both read
         // `commerce.taxonomies` — that inheritance is precisely what this guard exists to stop.
         'attribute_term'  => [],
         'attribute'       => [],
@@ -133,12 +137,12 @@ final class CommerceIdentityLeakGuardTest extends TestCase
     /**
      * FLAG-COMMCATPARENT-1 closed its debt exception rather than rewording it.
      *
-     * A product category may publish its domain-safe parent reference and NOTHING else from the
+     * A product category may publish its domain-safe hierarchy fields and NOTHING else from the
      * identity vocabulary — no `source_id`, no integer `parent` — and no entry anywhere is debt.
      */
     public function test_no_debt_exception_remains(): void
     {
-        self::assertSame(['parent_slug'], array_keys(self::ALLOWED['product_category']));
+        self::assertSame(['has_parent', 'parent_slug'], array_keys(self::ALLOWED['product_category']));
 
         foreach (self::ALLOWED as $semantic => $fields) {
             foreach ($fields as $field => $why) {
@@ -185,6 +189,7 @@ final class CommerceIdentityLeakGuardTest extends TestCase
 
         // A PRODUCT CATEGORY relates to its parent by the parent's slug — resolvable against a
         // sibling's `slug` with no source id anywhere in the shape.
+        self::assertTrue($term['has_parent']);
         self::assertSame('clothing', $term['parent_slug']);
     }
 
@@ -204,6 +209,7 @@ final class CommerceIdentityLeakGuardTest extends TestCase
         self::assertSame(['slug', 'name', 'description', 'count'], array_keys($published));
         self::assertArrayNotHasKey('source_id', $published);
         self::assertArrayNotHasKey('parent', $published);
+        self::assertArrayNotHasKey('has_parent', $published);
         self::assertArrayNotHasKey('parent_slug', $published);
 
         // What a consumer actually selects and renders with is all still here.
@@ -307,18 +313,24 @@ final class CommerceIdentityLeakGuardTest extends TestCase
 
         self::assertSame(['media.source_parent_id'], self::leaks('variation', self::flatten($nested)));
 
-        // FLAG-COMMCATPARENT-1: the old source-term hierarchy pair is a leak on a category now,
-        // and a category's `parent_slug` does not license itself onto an attribute term.
+        // FLAG-COMMCATPARENT-1: the old source-term hierarchy identity is a leak on a category now
+        // — as a top-level integer, a source key, or smuggled back as a raw parent_id — and a
+        // category's hierarchy fields do not license themselves onto an attribute term.
         $category              = (new TermResource())->toArray(self::termRow());
         $category['source_id'] = 31;
         $category['parent']    = 28;
+        $category['parent_id'] = 28;
 
-        self::assertSame(['parent', 'source_id'], self::leaks('product_category', self::flatten($category)));
+        self::assertSame(
+            ['parent', 'parent_id', 'source_id'],
+            self::leaks('product_category', self::flatten($category)),
+        );
 
         $term                = (new AttributeTermResource())->toArray(self::termRow());
+        $term['has_parent']  = true;
         $term['parent_slug'] = 'clothing';
 
-        self::assertSame(['parent_slug'], self::leaks('attribute_term', self::flatten($term)));
+        self::assertSame(['has_parent', 'parent_slug'], self::leaks('attribute_term', self::flatten($term)));
     }
 
     /** And it stays green on the shapes that ship, so the two halves above are not vacuous. */
@@ -444,7 +456,7 @@ final class CommerceIdentityLeakGuardTest extends TestCase
             'variation'          => ['variation', (new VariationResource())->toArray(self::variationRow())],
             'product category'   => ['product_category', (new TermResource())->toArray(self::termRow())],
             // The SAME projection row through the OTHER resource — so if the two shapes ever
-            // collapse back into one class, this case starts failing on `parent_slug`.
+            // collapse back into one class, this case starts failing on `has_parent`/`parent_slug`.
             'attribute term'     => ['attribute_term', (new AttributeTermResource())->toArray(self::termRow())],
             'attribute'          => ['attribute', (new AttributeResource())->toArray(self::attributeRow())],
         ];

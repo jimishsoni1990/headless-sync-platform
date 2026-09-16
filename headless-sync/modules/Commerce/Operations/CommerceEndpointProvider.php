@@ -32,7 +32,7 @@ use HSP\Core\Contracts\Operations\SchemaObject;
  * Product + Variation ONLY and is explicitly not a precedent for the rest of the platform.
  *
  * No other source identity is published. Product categories relate to their parent by
- * `parent_slug` — the verified public category key — and not by term id.
+ * `has_parent` + `parent_slug` — the verified public category key — and not by term id.
  *
  * Everything that once leaked (`id` on all four resources, `source_id` on products, variations,
  * attribute definitions and attribute terms, a variation's `product_id`, and an attribute term's
@@ -175,11 +175,12 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             description: 'List WooCommerce product categories. Namespaced separately from the '
                 . "Content module's /categories, which serves WordPress post categories. Every "
                 . 'category is listed at every depth; rebuild the tree from each category\'s '
-                . 'parent_slug.',
+                . 'has_parent and parent_slug. A category with has_parent=true and '
+                . 'parent_slug=null is a child whose parent is not yet available, not a root.',
             // No `parent` filter. `?parent={source-term-id}` keyed a public query on WordPress
             // term ids with no ruling behind it, and was Removed with no replacement: no
             // architecture or consumer requires server-side child listing, and the tree is
-            // rebuilt from `parent_slug` (FLAG-COMMCATPARENT-1).
+            // rebuilt from `has_parent` + `parent_slug` (FLAG-COMMCATPARENT-1).
             parameters: [
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
                 self::pageSize(self::TERM_MAX_LIMIT),
@@ -456,24 +457,32 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
 
     private function termSchema(): SchemaObject
     {
-        return SchemaObject::object([
+        $schema = SchemaObject::object([
             // REMOVED: `id`, the projection UUID (FLAG-COMMSOURCEID-1); `source_id` and the
             // integer `parent` source term id (FLAG-COMMCATPARENT-1).
             'slug'        => 'string',
             'name'        => 'string',
             'description' => 'string',
-            // A NEW field, not `parent` retyped. The slug is the verified public category key
-            // (P2-S3: `wp_unique_term_slug()` is taxonomy-wide), resolved from the projection at
-            // read time. Nullable for two reasons, and the description says both (AG-7 / the
-            // DECISION AE rule that a projection-order limit is stated, not rediscovered).
+            // NEW fields, not `parent` retyped, and two of them on purpose: whether a parent
+            // EXISTS and whether it is currently RESOLVABLE are independent facts (AG-7 — a child
+            // may project before its parent). One nullable field would publish "unknown parent"
+            // as "no parent", and a tree builder would render the child as a root.
+            'has_parent'  => [
+                'type'        => 'boolean',
+                'description' => 'Whether the projected category source relationship identifies '
+                    . 'a parent category. false = a top-level category. true = a child, whether or '
+                    . 'not its parent can currently be resolved (see parent_slug).',
+            ],
             'parent_slug' => [
                 'type'        => ['string', 'null'],
-                'description' => 'Slug of the parent category — the same key this category is '
-                    . 'addressed by (GET /product-categories/{slug}) and products are filtered '
-                    . 'by. Null when no parent is currently projected: the category is top-level, '
-                    . 'or its parent has not synchronised yet or has been removed. That second '
-                    . 'case is transient and converges through normal synchronisation; the '
-                    . 'category itself is always published.',
+                'description' => 'The resolved public slug of the parent category — the same key '
+                    . 'categories are addressed by (GET /product-categories/{slug}) and products '
+                    . 'are filtered by — when its projected row is available. null when the '
+                    . 'category is top-level (has_parent=false), OR when has_parent=true but the '
+                    . 'parent row is currently unavailable (not yet synchronised, or removed); that '
+                    . 'second state is transient and converges through normal synchronisation. '
+                    . 'Read the two fields together: never treat parent_slug=null alone as '
+                    . 'top-level.',
             ],
             // The SOURCE count, projected verbatim — not a Delivery API result count and not a
             // pagination total (FLAG-COMMTERMCOUNT-1). It shipped with no description at all,
@@ -488,7 +497,13 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                     . 'pagination total: a product hidden from the catalog, or of a product '
                     . 'type outside Phase 2 support, still counts here.',
             ],
-        ]);
+        ])->schema;
+
+        // Every key is always present — including both hierarchy fields, whose tri-state only
+        // works if a consumer can rely on neither being absent.
+        $schema['required'] = array_keys($schema['properties']);
+
+        return new SchemaObject($schema);
     }
 
     /**
@@ -500,7 +515,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
      * (`class-wc-post-types.php:106`) while `pa_*` taxonomies are `'hierarchical' => false`
      * (`:269` — the `true` at `:318` is inside the `rewrite` array, a permalink option). An
      * attribute term's parent is therefore structurally always null, so a category's
-     * `parent_slug` has nothing to say here; and the product filter selects a term by SLUG
+     * `has_parent`/`parent_slug` have nothing to say here; and the product filter selects a term by SLUG
      * (`?attribute=pa_colour&attribute_term=blue`).
      *
      * `count` is kept because it is independently contractual (FLAG-COMMTERMCOUNT-1) and its

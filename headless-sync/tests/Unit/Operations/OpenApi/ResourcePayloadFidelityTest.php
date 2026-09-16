@@ -140,8 +140,11 @@ final class ResourcePayloadFidelityTest extends TestCase
         $child    = (new TermResource())->toArray(['slug' => 'c', 'parent_id' => 42, 'parent_slug' => 'p']);
         $props    = $this->itemProperties($this->commerceByRoute()['/product-categories/{slug}']);
 
+        self::assertFalse($topLevel['has_parent']);
         self::assertNull($topLevel['parent_slug']);
+        self::assertTrue($child['has_parent']);
         self::assertSame('p', $child['parent_slug']);
+        self::assertSame('boolean', $props['has_parent']['type']);
         self::assertSame(['string', 'null'], $props['parent_slug']['type']);
     }
 

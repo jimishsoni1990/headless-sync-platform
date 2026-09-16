@@ -15,7 +15,7 @@ use HSP\Core\Contracts\QueryFilterInterface;
  *
  * Pagination only. There is deliberately no parent filter: the shipped `parentId` keyed a public
  * `?parent=` on WordPress term ids with no ruling behind it, and was Removed by
- * FLAG-COMMCATPARENT-1. The tree is rebuilt consumer-side from each category's `parent_slug`,
+ * FLAG-COMMCATPARENT-1. The tree is rebuilt consumer-side from each category's `has_parent` + `parent_slug`,
  * which is what P2-S3 projected the hierarchy for.
  */
 final class TermFilterSet implements QueryFilterInterface

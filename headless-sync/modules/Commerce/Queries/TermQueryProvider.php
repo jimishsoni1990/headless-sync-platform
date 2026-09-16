@@ -33,7 +33,9 @@ use HSP\Core\Database\DatabaseConnectionInterface;
  *
  * The join is LEFT and tolerant by design (AG-7): a child may project before its parent, or
  * outlive a tombstoned one. It then carries `parent_slug = NULL` and stays in the listing —
- * never dropped, never an error, never a slug invented from the source id. Index-backed on
+ * never dropped, never an error, never a slug invented from the source id. `t.parent_id` stays
+ * selected so the Resource can still say the parent EXISTS (`has_parent`) when the join found
+ * nothing — the join answers "resolvable?", never "has a parent?". Index-backed on
  * `uq_commerce_taxonomies_source_id`; the `taxonomy_type` predicate keeps the join inside the
  * requested taxonomy (DECISION AA).
  */
