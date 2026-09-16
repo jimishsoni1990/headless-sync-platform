@@ -152,16 +152,9 @@ final class CommerceRestRegistrar
                     'validate_callback' => 'rest_validate_request_arg',
                     'sanitize_callback' => 'absint',
                 ],
-                // `0` means top-level, so the floor is 0 rather than 1. Unvalidated, `absint`
-                // made `?parent=abc` mean 0 — a request naming a category returned the TOP-LEVEL
-                // listing as though it had succeeded — and `?parent=-5` mean the children of
-                // term 5.
-                'parent' => [
-                    'type'              => 'integer',
-                    'minimum'           => 0,
-                    'validate_callback' => 'rest_validate_request_arg',
-                    'sanitize_callback' => 'absint',
-                ],
+                // No `parent` arg: the `?parent={source-term-id}` filter was Removed
+                // (FLAG-COMMCATPARENT-1). WordPress ignores an undeclared query key, so an old
+                // caller still sending it gets the full listing — not a supported filter.
             ],
         ]);
 
@@ -363,12 +356,9 @@ final class CommerceRestRegistrar
             return $cursorError;
         }
 
-        $parent = $this->param($request, 'parent');
-
         $page = $this->categoryQueryProvider->list(new TermFilterSet(
-            parentId: $parent === null ? null : (int) $parent,
-            cursor:   $this->param($request, 'cursor'),
-            limit:    $this->intParam($request, 'limit'),
+            cursor: $this->param($request, 'cursor'),
+            limit:  $this->intParam($request, 'limit'),
         ));
 
         return $this->respond($this->termResource->toCollection($page->rows, $page->nextCursor));

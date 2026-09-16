@@ -13,16 +13,14 @@ use HSP\Core\Contracts\QueryFilterInterface;
  * almost nothing in common beyond pagination, and merging them would recreate in miniature the
  * problem AG-5 solved — one filter class accumulating fields for everything that queries.
  *
- * `parentId` is offered because the tree is reconstructed consumer-side from the projected
- * parent, so fetching one level at a time is a real access pattern. Note that no index covers
- * it yet: migration 0003 deliberately does not create (taxonomy_type, parent_id) because no
- * shipped endpoint drives it, and an index nothing reads is paid for on every write. It ships
- * with the first endpoint that walks the tree.
+ * Pagination only. There is deliberately no parent filter: the shipped `parentId` keyed a public
+ * `?parent=` on WordPress term ids with no ruling behind it, and was Removed by
+ * FLAG-COMMCATPARENT-1. The tree is rebuilt consumer-side from each category's `parent_slug`,
+ * which is what P2-S3 projected the hierarchy for.
  */
 final class TermFilterSet implements QueryFilterInterface
 {
     public function __construct(
-        public readonly ?int $parentId = null,
         public readonly ?string $cursor = null,
         public readonly ?int $limit = null,
     ) {

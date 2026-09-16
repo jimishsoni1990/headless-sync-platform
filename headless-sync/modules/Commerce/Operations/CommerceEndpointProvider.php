@@ -31,15 +31,14 @@ use HSP\Core\Contracts\Operations\SchemaObject;
  * exposing source ids elsewhere. Ratified by DECISION AK, which authorises them for Commerce
  * Product + Variation ONLY and is explicitly not a precedent for the rest of the platform.
  *
- * The only other source identity published here is a PRODUCT CATEGORY's `source_id`/`parent`,
- * and it is NOT a second approved exception — it is a legacy dependency of the shipped
- * `?parent={source-term-id}` filter, retained provisionally and owned by FLAG-COMMCATPARENT-1.
- * Attribute terms, which share the same projection table, publish neither.
+ * No other source identity is published. Product categories relate to their parent by
+ * `parent_slug` — the verified public category key — and not by term id.
  *
- * Everything else that once leaked (`id` on all four resources, `source_id` on products,
- * variations, attribute definitions and attribute terms, a variation's `product_id`, and an
- * attribute term's `parent`) completed the Doc 9 §26 lifecycle and is Removed —
- * FLAG-COMMSOURCEID-1. Adding any of them back is a schema change that
+ * Everything that once leaked (`id` on all four resources, `source_id` on products, variations,
+ * attribute definitions and attribute terms, a variation's `product_id`, and an attribute term's
+ * `parent`) completed the Doc 9 §26 lifecycle and is Removed — FLAG-COMMSOURCEID-1. A product
+ * category's `source_id` and integer `parent`, and the `?parent={source-term-id}` filter they
+ * existed for, followed — FLAG-COMMCATPARENT-1. Adding any of them back is a schema change that
  * CommerceIdentityLeakGuardTest fails CI for.
  */
 final class CommerceEndpointProvider implements EndpointProviderInterface
@@ -174,22 +173,16 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
             namespace: self::NAMESPACE,
             displayGroup: 'Commerce',
             description: 'List WooCommerce product categories. Namespaced separately from the '
-                . "Content module's /categories, which serves WordPress post categories.",
+                . "Content module's /categories, which serves WordPress post categories. Every "
+                . 'category is listed at every depth; rebuild the tree from each category\'s '
+                . 'parent_slug.',
+            // No `parent` filter. `?parent={source-term-id}` keyed a public query on WordPress
+            // term ids with no ruling behind it, and was Removed with no replacement: no
+            // architecture or consumer requires server-side child listing, and the tree is
+            // rebuilt from `parent_slug` (FLAG-COMMCATPARENT-1).
             parameters: [
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
                 self::pageSize(self::TERM_MAX_LIMIT),
-                // `0` is a real value — the top-level listing — so the floor is 0, not 1. It was
-                // unenforced, and `absint` turned `?parent=abc` into 0, answering 200 with the
-                // top-level listing as though the request had succeeded (FLAG-RESTARGDRIFT-1 C-2).
-                new EndpointParameter(
-                    'parent',
-                    EndpointParameter::IN_QUERY,
-                    'integer',
-                    false,
-                    'Only terms directly under this parent term id. 0 returns the top-level '
-                    . 'terms. A negative or non-integer value is rejected with 400.',
-                    minimum: 0
-                ),
             ],
             responseSchema: $this->termSchema()->asCursorPage(),
             requestSchema: null,
@@ -451,7 +444,7 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
         return SchemaObject::object([
             // REMOVED: `id` and `source_id` (FLAG-COMMSOURCEID-1). An attribute definition is
             // reachable only through `taxonomy`, so neither anchored anything a consumer can
-            // call — unlike a term's `source_id`, which the `?parent=` filter takes.
+            // call.
             // The FULL pa_-prefixed name — the key that joins to this attribute's terms.
             'taxonomy'     => 'string',
             'name'         => 'string',
@@ -464,36 +457,23 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private function termSchema(): SchemaObject
     {
         return SchemaObject::object([
-            // REMOVED: `id`, the projection UUID (FLAG-COMMSOURCEID-1).
-            //
-            // `source_id` and `parent` are RETAINED PROVISIONALLY — a legacy contract
-            // dependency, NOT an approved public identity. The shipped
-            // `GET /product-categories?parent={source-term-id}` filter takes that integer and
-            // `source_id` is the only published field a consumer can get it from, so removing
-            // either strands a published API. The filter itself has no recorded architecture
-            // authorisation and is tracked by **FLAG-COMMCATPARENT-1**; these two fields are
-            // owned by that flag and go with whatever it rules.
-            'source_id'   => [
-                'type'        => 'integer',
-                'description' => 'Source term id. Retained because the `parent` query parameter '
-                    . 'of GET /product-categories accepts this value and `parent` below refers '
-                    . 'to it. Site-specific — authoritative for the connected source site only '
-                    . '— and NOT an address: categories are addressed by slug. Treat it as a '
-                    . 'legacy hierarchy dependency rather than a stable public identity; the '
-                    . 'category hierarchy contract is under review.',
-            ],
+            // REMOVED: `id`, the projection UUID (FLAG-COMMSOURCEID-1); `source_id` and the
+            // integer `parent` source term id (FLAG-COMMCATPARENT-1).
             'slug'        => 'string',
             'name'        => 'string',
             'description' => 'string',
-            // Parent SOURCE term id, or NULL at top level. The column is `NOT NULL DEFAULT 0`,
-            // but the published contract deliberately maps the sentinel 0 to null: "top level"
-            // reads better than a magic zero in JSON, and the schema must say so rather than
-            // promise an integer. Same provisional status as `source_id` above.
-            'parent'      => [
-                'type'        => ['integer', 'null'],
-                'description' => 'Parent source term id, or null for a top-level term. Same '
-                    . 'legacy-dependency caveat as source_id: the category hierarchy contract '
-                    . 'is under review.',
+            // A NEW field, not `parent` retyped. The slug is the verified public category key
+            // (P2-S3: `wp_unique_term_slug()` is taxonomy-wide), resolved from the projection at
+            // read time. Nullable for two reasons, and the description says both (AG-7 / the
+            // DECISION AE rule that a projection-order limit is stated, not rediscovered).
+            'parent_slug' => [
+                'type'        => ['string', 'null'],
+                'description' => 'Slug of the parent category — the same key this category is '
+                    . 'addressed by (GET /product-categories/{slug}) and products are filtered '
+                    . 'by. Null when no parent is currently projected: the category is top-level, '
+                    . 'or its parent has not synchronised yet or has been removed. That second '
+                    . 'case is transient and converges through normal synchronisation; the '
+                    . 'category itself is always published.',
             ],
             // The SOURCE count, projected verbatim — not a Delivery API result count and not a
             // pagination total (FLAG-COMMTERMCOUNT-1). It shipped with no description at all,
@@ -515,13 +495,13 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
      * A `pa_*` attribute term — the same projection table as a product category, a DIFFERENT
      * published shape (FLAG-COMMSOURCEID-1).
      *
-     * Neither `source_id` nor `parent` appears, and neither is an oversight. Verified against
+     * No parent reference appears, and that is not an oversight. Verified against
      * WooCommerce 11.1.0: `product_cat` is registered `'hierarchical' => true`
      * (`class-wc-post-types.php:106`) while `pa_*` taxonomies are `'hierarchical' => false`
      * (`:269` — the `true` at `:318` is inside the `rewrite` array, a permalink option). An
-     * attribute term's parent is therefore structurally always null, and its source term id
-     * anchors nothing: this endpoint has no `?parent=` filter, and the product filter selects a
-     * term by SLUG (`?attribute=pa_colour&attribute_term=blue`).
+     * attribute term's parent is therefore structurally always null, so a category's
+     * `parent_slug` has nothing to say here; and the product filter selects a term by SLUG
+     * (`?attribute=pa_colour&attribute_term=blue`).
      *
      * `count` is kept because it is independently contractual (FLAG-COMMTERMCOUNT-1) and its
      * description is the identical source fact, deliberately not reworded into a second

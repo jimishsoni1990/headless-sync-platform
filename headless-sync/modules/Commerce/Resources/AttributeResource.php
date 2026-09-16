@@ -26,8 +26,7 @@ final class AttributeResource implements ResourceInterface
             // definition is addressed by `taxonomy` and nothing else: `/product-attributes/
             // {taxonomy}` and `/product-attributes/{taxonomy}/terms` both key on it, and the
             // product filter takes `?attribute=pa_colour`. Neither removed field was reachable
-            // from any published operation, so unlike a term's `source_id` (which anchors the
-            // shipped `?parent=` filter) there was nothing for them to anchor.
+            // from any published operation, so there was nothing for them to anchor.
             'taxonomy'     => (string) ($row['slug'] ?? ''),
             'name'         => (string) ($row['name'] ?? ''),
             'type'         => (string) ($row['type'] ?? 'select'),
