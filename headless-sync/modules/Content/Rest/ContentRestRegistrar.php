@@ -97,12 +97,22 @@ final class ContentRestRegistrar
                 'path' => [
                     'required' => true,
                     'type'     => 'string',
-                    // The HIERARCHICAL class — the single-slug one plus the `/` separator — so the
-                    // published pattern keeps admitting the multi-segment form `about/team` that is
-                    // this endpoint's whole point (DECISION AD). Publishing a single-slug pattern
-                    // here would describe an API unable to address a nested page. Structural like
-                    // the slug routes: no new 400 (FLAG-RESTARGDRIFT-1 D-5).
-                    'pattern'  => '^[a-z0-9_/-]+$',
+                    // NO `pattern` HERE, AND THAT IS THE POINT (FLAG-RESTARGDRIFT-1 parity
+                    // correction). This is the one path arg with no sanitize_callback, so
+                    // WordPress DOES install its validating default rest_parse_request_arg on it
+                    // — which means any pattern declared here is ENFORCED, natively and
+                    // case-sensitively. Declaring one measurably broke two things: `My-Account`
+                    // became 400 (routes match case-insensitively, `@^…$@i`, and sanitizePath()
+                    // lowercases each segment, so mixed case resolved fine before), and a
+                    // segment-aware pattern would additionally reject `my-account/`, which also
+                    // resolves today, and would answer `rest_invalid_param` where the module
+                    // answers the stable `hsp_invalid_path`.
+                    //
+                    // The consumer-facing grammar IS published — as the descriptor's `pattern`,
+                    // segment-aware so `about//team` is not described as valid. Its enforcement
+                    // is sanitizePath() below, which is stricter than any regex here could be
+                    // (it rejects a segment that sanitises away to nothing) and is the named
+                    // domain validator the ADR-055 parameter guard records for this parameter.
                 ],
             ],
         ]);
@@ -433,11 +443,23 @@ final class ContentRestRegistrar
 
     /**
      * Validate that ?status= is within the public set (OPEN-10).
-     * Returns WP_Error 400 if invalid; null if valid or absent.
+     *
+     * ABSENT and SUPPLIED-EMPTY are different requests, and conflating them was a drift of its
+     * own (FLAG-RESTARGDRIFT-1 parity correction). `?status=` is the consumer SUPPLYING a value
+     * that is not in the published enum, so it is a 400 exactly like `?status=draft`; only the
+     * absence of the parameter means "no status filter". The old `$raw === ''` arm silently
+     * coerced a supplied empty value into omission and answered 200 — the published contract
+     * says `{publish}`, so the runtime aligns to it rather than the contract widening to admit
+     * an empty string. `''` is therefore NOT a second enum value.
+     *
+     * The check is `=== null` and deliberately NOT a truthiness or empty() test: those collapse
+     * `''` back into absence, which is the defect.
+     *
+     * Returns WP_Error 400 if a value is supplied and outside the set; null when absent.
      */
     private function validateStatus(mixed $raw): ?\WP_Error
     {
-        if ($raw === null || $raw === '') {
+        if ($raw === null) {
             return null;
         }
         $sanitized = sanitize_text_field((string) $raw);

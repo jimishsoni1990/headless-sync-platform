@@ -171,25 +171,67 @@ final class ContentRestArgEnforcementTest extends TestCase
     }
 
     /**
-     * The empty and absent cases, pinned because generic enum validation WOULD have changed them.
+     * ABSENT and SUPPLIED-EMPTY are different requests (FLAG-RESTARGDRIFT-1 parity correction).
      *
-     * `?status=` has always meant "no status filter" on these endpoints, and that is why status
-     * enforcement stays with the module validator instead of moving to
-     * `rest_validate_request_arg`, which would reject `''` against the enum.
+     * Omitting `status` means "no status filter". Supplying `?status=` is the consumer handing over
+     * a value that is not in the published `{publish}` enum, so it is a 400 exactly like
+     * `?status=draft` — it used to be coerced into omission and answered 200, which made the
+     * runtime accept a value the contract calls invalid. The contract did not widen to admit an
+     * empty string; the runtime aligned to the contract.
+     *
+     * Asserted on BOTH status-bearing routes, since one shared helper registers the parameter and
+     * one shared validator enforces it.
      */
-    public function test_absent_and_empty_status_both_mean_the_default_public_listing(): void
+    public function test_absent_status_is_the_default_listing_but_supplied_empty_is_a_400(): void
     {
-        $registrar = $this->registrar();
+        foreach (['handlePostListing', 'handlePageListing'] as $handler) {
+            $registrar = $this->registrar();
 
-        self::assertInstanceOf(\WP_REST_Response::class, $registrar->handlePostListing(new \WP_REST_Request([])));
-        self::assertInstanceOf(
-            \WP_REST_Response::class,
-            $registrar->handlePostListing(new \WP_REST_Request(['status' => '']))
-        );
-        self::assertInstanceOf(
-            \WP_REST_Response::class,
-            $registrar->handlePostListing(new \WP_REST_Request(['status' => 'publish']))
-        );
+            // Absent → the normal public listing.
+            self::assertInstanceOf(
+                \WP_REST_Response::class,
+                $registrar->{$handler}(new \WP_REST_Request([])),
+                "{$handler}: omitting status must return the default public listing.",
+            );
+
+            // publish → valid.
+            self::assertInstanceOf(
+                \WP_REST_Response::class,
+                $registrar->{$handler}(new \WP_REST_Request(['status' => 'publish'])),
+                "{$handler}: status=publish is the public set and must be accepted.",
+            );
+
+            // Supplied empty → 400, with the CCF-003 code, NOT silently treated as absent.
+            $empty = $registrar->{$handler}(new \WP_REST_Request(['status' => '']));
+            self::assertInstanceOf(
+                \WP_Error::class,
+                $empty,
+                "{$handler}: a supplied empty status is a value outside {publish}, not an omission.",
+            );
+            self::assertSame('hsp_invalid_status', $empty->code);
+            self::assertSame(400, $empty->data['status']);
+
+            // draft → 400, same code, same shape.
+            $draft = $registrar->{$handler}(new \WP_REST_Request(['status' => 'draft']));
+            self::assertInstanceOf(\WP_Error::class, $draft);
+            self::assertSame('hsp_invalid_status', $draft->code);
+            self::assertSame(400, $draft->data['status']);
+        }
+    }
+
+    /**
+     * The empty string is NOT a second enum value.
+     *
+     * The correction had two possible shapes and only one is right: align the runtime to the
+     * published set, or widen the published set to `['publish', '']` to match the accidental
+     * runtime behaviour. This pins the first.
+     */
+    public function test_the_published_enum_does_not_contain_an_empty_string(): void
+    {
+        foreach (['hsp/v1/posts', 'hsp/v1/pages'] as $route) {
+            self::assertSame(['publish'], $this->registrations[$route]['status']['enum']);
+            self::assertNotContains('', $this->registrations[$route]['status']['enum']);
+        }
     }
 
     /**
@@ -255,6 +297,129 @@ final class ContentRestArgEnforcementTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Hierarchical page path — published grammar vs runtime acceptance
+    // -------------------------------------------------------------------------
+
+    /** @return iterable<string,array{0:string,1:bool}> */
+    public static function pagePathProvider(): iterable
+    {
+        yield 'one segment'      => ['about', true];
+        yield 'two segments'     => ['about/team', true];
+        yield 'three segments'   => ['about/team/history', true];
+        yield 'underscores and digits' => ['a_b/c-d/e9', true];
+
+        // MEASURED, not assumed: an empty INTERNAL segment is malformed, but SURROUNDING
+        // separators are trimmed before the split, so `about//` normalises to `about` and is
+        // covered by the tolerated-normalisation test below rather than here.
+        yield 'empty internal segment'     => ['about//team', false];
+        yield 'empty segment mid-path'     => ['a//b/c', false];
+        yield 'nothing but separators'     => ['//', false];
+    }
+
+    /**
+     * The published pattern and the runtime agree about page-path STRUCTURE.
+     *
+     * The descriptor used to publish the route's own capture class, `^[a-z0-9_/-]+$`, which
+     * describes `about//team` as a valid page path while the handler has always refused it — the
+     * schema said one thing and the operation did another (FLAG-RESTARGDRIFT-1 parity correction).
+     *
+     * Both halves are asserted from the same fixture: the value is checked against the pattern the
+     * DESCRIPTOR publishes, and against what the REAL handler does with it.
+     */
+    #[DataProvider('pagePathProvider')]
+    public function test_page_path_structure_agrees_between_schema_and_runtime(
+        string $path,
+        bool $wellFormed
+    ): void {
+        $pattern = $this->publishedPagePathPattern();
+
+        self::assertSame(
+            $wellFormed ? 1 : 0,
+            preg_match('#' . $pattern . '#u', $path),
+            "'{$path}' must be schema-" . ($wellFormed ? 'VALID' : 'INVALID') . " under {$pattern}.",
+        );
+
+        $result = $this->registrar()->handlePageSingle(new \WP_REST_Request(['path' => $path]));
+
+        if ($wellFormed) {
+            // Structurally valid: it reaches the lookup. The fake provider has no such page, so a
+            // 404 is the CORRECT outcome here — what matters is that it is not a 400.
+            self::assertNotInstanceOf(
+                \WP_Error::class,
+                $result instanceof \WP_Error && $result->code === 'hsp_invalid_path' ? $result : null,
+                "'{$path}' is a well-formed page path and must not be rejected as malformed.",
+            );
+
+            return;
+        }
+
+        self::assertInstanceOf(\WP_Error::class, $result, "'{$path}' must be rejected.");
+        self::assertSame('hsp_invalid_path', $result->code);
+        self::assertSame(400, $result->data['status']);
+    }
+
+    /**
+     * The normalisation the runtime performs and the contract documents, pinned so a future
+     * tightening of the published pattern cannot silently break addresses that work today.
+     *
+     * MEASURED against the deployed site, not inferred: WordPress matches routes with the `/i`
+     * flag (`@^…$@i`), so mixed case reaches `{path}` and each segment is lower-cased by
+     * `sanitize_title()`; and surrounding slashes reach `{path}` too, where `sanitizePath()` trims
+     * them. `/pages/` with nothing after it is served by the LISTING route, so an empty path never
+     * arrives here at all.
+     */
+    public function test_surrounding_slashes_and_mixed_case_remain_addressable(): void
+    {
+        foreach (['about/', '/about', '/about/', 'about//', 'About/Team', 'ABOUT'] as $tolerated) {
+            $result = $this->registrar()->handlePageSingle(new \WP_REST_Request(['path' => $tolerated]));
+
+            $isMalformed = $result instanceof \WP_Error && $result->code === 'hsp_invalid_path';
+            self::assertFalse(
+                $isMalformed,
+                "'{$tolerated}' is normalised by the runtime today and must keep resolving; the "
+                . 'published pattern describes the canonical form, it does not forbid these.',
+            );
+        }
+    }
+
+    /**
+     * The runtime rule is stronger than the published regex, and stays that way.
+     *
+     * Only the STRUCTURAL half is asserted here. The other half — a segment that survives the
+     * character class but sanitises away to nothing, e.g. `-` — depends on real
+     * `sanitize_title()`, which the unit bootstrap's stub deliberately does not reproduce; it is
+     * verified live instead (`/pages/-` → 400 `hsp_invalid_path`). That gap is exactly why the
+     * published pattern is not asked to imitate `sanitize_title()`.
+     */
+    public function test_segment_sanitization_remains_authoritative(): void
+    {
+        foreach (['/', '//', 'a//b', 'about//team'] as $malformed) {
+            $result = $this->registrar()->handlePageSingle(new \WP_REST_Request(['path' => $malformed]));
+
+            self::assertInstanceOf(\WP_Error::class, $result, "'{$malformed}' must be rejected.");
+            self::assertSame('hsp_invalid_path', $result->code);
+            self::assertSame(400, $result->data['status']);
+        }
+    }
+
+    /**
+     * The page `path` arg must not declare the pattern, measured consequence and all.
+     *
+     * It is the one path arg with no `sanitize_callback`, so WordPress installs its validating
+     * default and a `pattern` there is natively ENFORCED: declaring one turned `/pages/My-Account`
+     * into a 400 and would answer `rest_invalid_param` where the module answers the stable
+     * `hsp_invalid_path`.
+     */
+    public function test_the_page_path_arg_declares_no_natively_enforced_pattern(): void
+    {
+        $spec = $this->registrations['hsp/v1/pages/{path}']['path'];
+
+        self::assertArrayNotHasKey('pattern', $spec);
+        self::assertArrayNotHasKey('sanitize_callback', $spec);
+        self::assertTrue($spec['required']);
+        self::assertSame('string', $spec['type']);
+    }
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
@@ -293,6 +458,26 @@ final class ContentRestArgEnforcementTest extends TestCase
             "{$described} must be refused through WordPress's own request-validation envelope.",
         );
         self::assertSame($expectedCode, $detailCode, "{$described} was rejected for the wrong reason.");
+    }
+
+    /**
+     * The `pattern` the DESCRIPTOR publishes for the page path — read from the registry, so
+     * this test cannot drift from the document consumers actually read.
+     */
+    private function publishedPagePathPattern(): string
+    {
+        foreach ($this->registryDescriptors() as $descriptor) {
+            if ($descriptor->route !== '/pages/{path}') {
+                continue;
+            }
+            foreach ($descriptor->parameters as $parameter) {
+                if ($parameter->name === 'path' && $parameter->pattern !== null) {
+                    return $parameter->pattern;
+                }
+            }
+        }
+
+        self::fail('The page path parameter publishes no pattern.');
     }
 
     private function registrar(): ContentRestRegistrar

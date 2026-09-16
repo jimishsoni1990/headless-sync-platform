@@ -8,6 +8,7 @@ use HSP\Core\Contracts\Operations\EndpointDescriptor;
 use HSP\Core\Contracts\Operations\EndpointParameter;
 use HSP\Core\Operations\OpenApi\OpenApiGenerator;
 use HSP\Tests\Support\LiveHspRouteIndex;
+use HSP\Tests\Support\WpRestArgDispatch;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -76,6 +77,34 @@ final class EndpointParameterDriftGuardTest extends TestCase
         'published_after' => 'ContentRestRegistrar::validatePublishedAfter() — native grammar + offset',
     ];
 
+    /**
+     * Path parameters whose PUBLISHED grammar is intentionally NARROWER than the route's capture
+     * class, because a named domain validator enforces the difference.
+     *
+     * Without this distinction the guard would green-light a path parameter merely because its
+     * descriptor pattern equalled the capture class — which is exactly the state the page path was
+     * in: the route matches `[a-z0-9_/-]+`, so `about//team` matched, and the descriptor echoed
+     * that class while the handler had always rejected an empty internal segment. Echoing the
+     * broadest matcher is not a published contract when the operation refuses part of it.
+     *
+     * `patternRejects` values match the route class but MUST fail the published pattern — that is
+     * the narrowing being proven. `validatorOnly` values are accepted by the pattern and refused by
+     * the validator: the pattern is not required to reproduce every internal detail of
+     * `sanitize_title()` (`-` sanitises away to nothing), and pretending otherwise would be a regex
+     * imitating a WordPress function.
+     *
+     * @var array<string,array{parameter:string,validator:string,accepts:list<string>,patternRejects:list<string>,validatorOnly:list<string>}>
+     */
+    private const DOMAIN_GRAMMAR = [
+        'hsp/v1/pages/{path}' => [
+            'parameter'      => 'path',
+            'validator'      => 'ContentRestRegistrar::sanitizePath() — hsp_invalid_path',
+            'accepts'        => ['about', 'about/team', 'about/team/history', 'a_b/c-d/e9'],
+            'patternRejects' => ['about//team', '//', 'a//b/c'],
+            'validatorOnly'  => ['-'],
+        ],
+    ];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -116,6 +145,7 @@ final class EndpointParameterDriftGuardTest extends TestCase
                 $registrations[$route],
                 $descriptors[$route]->parameters,
                 $rawRoutes[$route] ?? $route,
+                self::patternExemptParameters($route),
             )];
 
             $compared += max(count($registrations[$route]), count($descriptors[$route]->parameters));
@@ -168,6 +198,174 @@ final class EndpointParameterDriftGuardTest extends TestCase
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Domain grammar — a published pattern narrower than the route matcher
+    // -------------------------------------------------------------------------
+
+    /**
+     * The page path publishes the grammar the OPERATION accepts, not the one the ROUTE matches.
+     *
+     * Three things are proven, and the first is the one that makes this more than a spelling check:
+     *   (1) the published pattern is STRICTLY NARROWER than the route's capture class — equality
+     *       here would mean the descriptor had gone back to echoing the matcher;
+     *   (2) every value the published grammar calls valid also matches the route class, so nothing
+     *       the contract describes is unroutable; and
+     *   (3) `about//team` and friends match the route class and FAIL the published pattern, which
+     *       is the empty-internal-segment rule actually being represented.
+     */
+    public function test_page_path_publishes_a_narrower_grammar_than_its_route(): void
+    {
+        $rawRoutes   = $this->captureLiveHspV1RawRoutes();
+        $descriptors = $this->indexDescriptorsByRoute();
+
+        foreach (self::DOMAIN_GRAMMAR as $route => $grammar) {
+            self::assertArrayHasKey($route, $rawRoutes, "{$route} is not a live route.");
+
+            $parameter = null;
+            foreach ($descriptors[$route]->parameters as $candidate) {
+                if ($candidate->name === $grammar['parameter']) {
+                    $parameter = $candidate;
+                }
+            }
+
+            self::assertNotNull($parameter, "{$route} publishes no {$grammar['parameter']} parameter.");
+            self::assertNotNull(
+                $parameter->pattern,
+                "{$route}?{$grammar['parameter']} must publish its grammar, not leave it to prose.",
+            );
+
+            $captureClass = $this->routeCaptureClass($grammar['parameter'], $rawRoutes[$route]);
+            self::assertNotNull($captureClass, "No capture group for {$grammar['parameter']} in the route.");
+
+            // (1) Strictly narrower — never the bare capture class.
+            self::assertNotSame(
+                '^' . $captureClass . '$',
+                $parameter->pattern,
+                "{$route}?{$grammar['parameter']} merely echoes the route's capture class, but "
+                . "{$grammar['validator']} rejects part of it. The published grammar must describe "
+                . 'what the OPERATION accepts.',
+            );
+
+            // (2) Everything the contract calls valid is routable, and matches the pattern.
+            foreach ($grammar['accepts'] as $value) {
+                self::assertSame(
+                    1,
+                    preg_match('#' . $parameter->pattern . '#u', $value),
+                    "'{$value}' is a legitimate page path and must satisfy the published pattern.",
+                );
+                self::assertSame(
+                    1,
+                    preg_match('#^' . $captureClass . '$#u', $value),
+                    "'{$value}' satisfies the published pattern but cannot reach the route.",
+                );
+            }
+
+            // (3) The narrowing is real: routable, yet outside the published grammar.
+            foreach ($grammar['patternRejects'] as $value) {
+                self::assertSame(
+                    1,
+                    preg_match('#^' . $captureClass . '$#u', $value),
+                    "Fixture '{$value}' must be routable for the narrowing to mean anything.",
+                );
+                self::assertSame(
+                    0,
+                    preg_match('#' . $parameter->pattern . '#u', $value),
+                    "'{$value}' has an empty segment and must NOT be described as valid.",
+                );
+            }
+
+            // And the documented allowance: the pattern does not imitate sanitize_title().
+            foreach ($grammar['validatorOnly'] as $value) {
+                self::assertSame(
+                    1,
+                    preg_match('#' . $parameter->pattern . '#u', $value),
+                    "'{$value}' is structurally well-formed; only {$grammar['validator']} refuses it.",
+                );
+            }
+        }
+    }
+
+    /**
+     * A domain-grammar pattern is published in the DESCRIPTOR only, and that is deliberate.
+     *
+     * The page `path` arg is the one path arg with no `sanitize_callback`, so WordPress installs its
+     * validating default on it and any `pattern` declared there is natively ENFORCED — measurably
+     * turning `/pages/My-Account` into a 400 (routes match case-insensitively and sanitizePath()
+     * lowercases, so mixed case resolved before) and answering `rest_invalid_param` where the module
+     * answers the stable `hsp_invalid_path`. So the arg must NOT carry it.
+     */
+    public function test_a_domain_grammar_pattern_is_not_declared_on_the_wordpress_arg(): void
+    {
+        $registrations = $this->captureLiveHspV1Registrations();
+
+        foreach (self::DOMAIN_GRAMMAR as $route => $grammar) {
+            $spec = $registrations[$route][$grammar['parameter']] ?? null;
+
+            self::assertNotNull($spec, "{$route} does not register {$grammar['parameter']}.");
+            self::assertArrayNotHasKey(
+                'pattern',
+                $spec,
+                "{$route}?{$grammar['parameter']} must not declare its pattern on the WordPress arg: "
+                . 'that arg has no sanitize_callback, so the pattern would be natively enforced and '
+                . 'would reject values the operation accepts today.',
+            );
+            self::assertArrayNotHasKey(
+                'sanitize_callback',
+                $spec,
+                'The absence of a sanitizer is what makes a pattern here dangerous; if one is added, '
+                . 'revisit the decision above rather than silently relying on it.',
+            );
+        }
+    }
+
+    /**
+     * Explicit-empty audit (FLAG-RESTARGDRIFT-1 parity correction).
+     *
+     * `?status=` used to be coerced into "parameter absent" and answered 200 while the published
+     * enum said `{publish}` — a supplied value outside the published set being accepted. This sweeps
+     * EVERY natively-validated constrained parameter for the same shape, so the next one cannot
+     * arrive quietly.
+     *
+     * DOMAIN_ENFORCED parameters are excluded here and asserted in the behavioural suites instead,
+     * because their enforcement is a module validator this harness's arg-level gate does not run:
+     * ContentRestArgEnforcementTest pins `?status=` → 400 `hsp_invalid_status` and
+     * `?published_after=` → 400.
+     *
+     * This is about DECLARED parameters only. An unconstrained string parameter accepting an empty
+     * value violates nothing, and nothing here rejects undeclared query parameters.
+     */
+    public function test_an_explicitly_empty_value_is_rejected_by_every_constrained_parameter(): void
+    {
+        $registrations = $this->captureLiveHspV1Registrations();
+        $accepted      = [];
+        $checked       = 0;
+
+        foreach ($this->guardedRoutes(array_keys($registrations)) as $route) {
+            foreach ($registrations[$route] as $name => $spec) {
+                if (! $this->declaresEnforceableConstraint($spec) || isset(self::DOMAIN_ENFORCED[$name])) {
+                    continue;
+                }
+                if (($spec['required'] ?? false) === true) {
+                    continue; // A path parameter cannot be supplied empty: the route would not match.
+                }
+
+                $checked++;
+                [$ok] = WpRestArgDispatch::evaluate($registrations[$route], [$name => '']);
+
+                if ($ok) {
+                    $accepted[] = "{$route}?{$name}=";
+                }
+            }
+        }
+
+        self::assertGreaterThan(10, $checked, 'Expected the constrained surface to be swept.');
+        self::assertSame(
+            [],
+            $accepted,
+            "These parameters declare a constraint but accept an explicitly supplied empty value, "
+            . "which is a supplied value outside the published set:\n  " . implode("\n  ", $accepted),
+        );
+    }
     // -------------------------------------------------------------------------
     // (5) Every declared constraint has something that enforces it
     // -------------------------------------------------------------------------
@@ -377,10 +575,11 @@ final class EndpointParameterDriftGuardTest extends TestCase
             $schema('/hsp/v1/posts', 'published_after'),
         );
 
-        // The hierarchical page path must NOT publish the single-slug grammar: `about/team` is
-        // the whole point of the endpoint (DECISION AD).
+        // The hierarchical page path publishes a SEGMENT-AWARE grammar: it must still admit
+        // `about/team` (the whole point of the endpoint — DECISION AD) while refusing an empty
+        // internal segment, which the route's own capture class would have allowed.
         self::assertSame(
-            ['type' => 'string', 'pattern' => '^[a-z0-9_/-]+$'],
+            ['type' => 'string', 'pattern' => '^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$'],
             $schema('/hsp/v1/pages/{path}', 'path'),
         );
         self::assertSame(
@@ -481,6 +680,10 @@ final class EndpointParameterDriftGuardTest extends TestCase
             'default differs',
         ];
 
+        // The page-path regression, as a mutation: the descriptor going back to echoing the
+        // route's capture class. The drift comparison cannot see this (the pattern is exempt
+        // there by design), so it is caught by the narrowing assertion instead — proven by
+        // test_the_narrowing_assertion_rejects_a_pattern_that_echoes_the_route_class().
         yield 'location differs — a query parameter published as a path parameter' => [
             ['per_page' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100]],
             [EndpointParameter::path('per_page', 'integer', 'Page size.')],
@@ -541,15 +744,23 @@ final class EndpointParameterDriftGuardTest extends TestCase
      * function of its four inputs, so the mutation cases above exercise the SAME code the live
      * assertion runs: a guard whose failure path is never executed is not a guard.
      *
+     * $patternExempt names the parameters whose `pattern` is published in the descriptor ONLY, by
+     * documented decision (DOMAIN_GRAMMAR): declaring it on the WordPress arg would activate native
+     * enforcement and change both the accepted set and the error code. Those parameters are not
+     * unguarded — they are held by test_page_path_publishes_a_narrower_grammar_than_its_route()
+     * instead, which is strictly stronger than an equality check.
+     *
      * @param array<string,array<string,mixed>> $args
      * @param EndpointParameter[]               $parameters
+     * @param list<string>                      $patternExempt
      * @return list<string>
      */
     private function parameterDrift(
         string $route,
         array $args,
         array $parameters,
-        string $rawRoute
+        string $rawRoute,
+        array $patternExempt = []
     ): array {
         $published = [];
         foreach ($parameters as $parameter) {
@@ -602,6 +813,10 @@ final class EndpointParameterDriftGuardTest extends TestCase
             $publishedConstraints  = $parameter->schemaConstraints();
 
             foreach (self::CONSTRAINT_KEYS as $key) {
+                if ($key === 'pattern' && in_array($name, $patternExempt, true)) {
+                    continue;
+                }
+
                 $left  = $registeredConstraints[$key] ?? null;
                 $right = $publishedConstraints[$key] ?? null;
 
@@ -677,6 +892,65 @@ final class EndpointParameterDriftGuardTest extends TestCase
         return '^' . $matches[1] . '$' === (string) $spec['pattern'];
     }
 
+    /**
+     * The mutation proof for the narrowing assertion: a pattern that echoes the route's capture
+     * class must be rejected, because that is precisely the state the page path shipped in.
+     */
+    public function test_the_narrowing_assertion_rejects_a_pattern_that_echoes_the_route_class(): void
+    {
+        $rawRoute     = '/pages/(?P<path>[a-z0-9_/-]+)';
+        $captureClass = $this->routeCaptureClass('path', $rawRoute);
+
+        self::assertSame('[a-z0-9_/-]+', $captureClass);
+
+        $echoed = '^' . $captureClass . '$';
+
+        // The shipped pattern: `about//team` matched it, which is the defect.
+        self::assertSame(1, preg_match('#' . $echoed . '#u', 'about//team'));
+
+        // The corrected one refuses it while still admitting every legitimate form.
+        $corrected = '^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$';
+        self::assertSame(0, preg_match('#' . $corrected . '#u', 'about//team'));
+        foreach (['about', 'about/team', 'about/team/history'] as $valid) {
+            self::assertSame(1, preg_match('#' . $corrected . '#u', $valid));
+        }
+
+        // And the descriptor publishes the corrected one, not the echo.
+        $descriptors = $this->indexDescriptorsByRoute();
+        foreach ($descriptors['hsp/v1/pages/{path}']->parameters as $parameter) {
+            if ($parameter->name === 'path') {
+                self::assertNotSame($echoed, $parameter->pattern);
+                self::assertSame($corrected, $parameter->pattern);
+            }
+        }
+    }
+
+    /**
+     * The character class a named capture group in a WordPress route matches, or null.
+     *
+     * @return string|null e.g. `[a-z0-9_/-]+`
+     */
+    private function routeCaptureClass(string $parameter, string $rawRoute): ?string
+    {
+        if (preg_match('/\(\?P<' . preg_quote($parameter, '/') . '>([^)]*)\)/', $rawRoute, $m) !== 1) {
+            return null;
+        }
+
+        return $m[1];
+    }
+
+    /**
+     * Parameters of this route whose `pattern` is compared by the narrowing assertion rather than
+     * by mechanical equality (DOMAIN_GRAMMAR).
+     *
+     * @return list<string>
+     */
+    private static function patternExemptParameters(string $route): array
+    {
+        return isset(self::DOMAIN_GRAMMAR[$route])
+            ? [self::DOMAIN_GRAMMAR[$route]['parameter']]
+            : [];
+    }
     /** @return array<string,EndpointDescriptor> */
     private function indexDescriptorsByRoute(): array
     {

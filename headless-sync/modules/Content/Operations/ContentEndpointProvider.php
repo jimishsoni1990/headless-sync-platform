@@ -46,8 +46,24 @@ final class ContentEndpointProvider implements EndpointProviderInterface
      */
     private const SLUG_PATTERN = '^[a-z0-9_-]+$';
 
-    /** As SLUG_PATTERN, plus the `/` hierarchy separator pages are addressed by (DECISION AD). */
-    private const PATH_PATTERN = '^[a-z0-9_/-]+$';
+    /**
+     * The hierarchical page-path grammar: one or more slug SEGMENTS joined by `/`
+     * (DECISION AD).
+     *
+     * Segment-aware on purpose. The route's own capture class is `[a-z0-9_/-]+`, which admits
+     * `about//team` — a value the endpoint has always rejected as malformed — so echoing the
+     * capture class here would publish a grammar the runtime does not accept
+     * (FLAG-RESTARGDRIFT-1 parity correction). The per-segment character policy is UNCHANGED
+     * and identical to SLUG_PATTERN's: this adds the empty-segment rule, it is not a new slug
+     * policy.
+     *
+     * Enforcement is sanitizePath(), which is strictly stronger than this regex — it also
+     * rejects a segment that sanitises away to nothing (`-`) — and which answers the stable
+     * `hsp_invalid_path`. The pattern is therefore deliberately NOT declared on the WordPress
+     * arg: that arg has no sanitize_callback, so a pattern there would be natively enforced and
+     * would reject values that resolve today (see ContentRestRegistrar).
+     */
+    private const PATH_PATTERN = '^[a-z0-9_-]+(?:/[a-z0-9_-]+)*$';
 
     public function key(): string
     {
@@ -101,7 +117,11 @@ final class ContentEndpointProvider implements EndpointProviderInterface
             itemSchema: $this->pageSchema(),
             paramName: 'path',
             paramDescription: 'Full ancestor path, `/`-separated (e.g. about/team). '
-                . 'A one-segment path addresses a top-level page.',
+                . 'A one-segment path addresses a top-level page. Every segment must be a '
+                . 'non-empty slug: an empty internal segment (about//team) is malformed and is '
+                . 'rejected with 400. Surrounding slashes and mixed case are tolerated and '
+                . 'normalised — the canonical form, and the value the `path` field publishes, '
+                . 'is lower-case with no leading or trailing slash.',
             paramPattern: self::PATH_PATTERN,
             // The only single-resource route that can 400: a malformed path (an empty internal
             // segment, or a segment that sanitises away) is rejected before the lookup runs.
