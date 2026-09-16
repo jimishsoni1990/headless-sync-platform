@@ -24,10 +24,9 @@ use PHPUnit\Framework\TestCase;
  *
  * WHY IT IS NOT A REGEX OVER `*_id`. A blanket prohibition on id-shaped names would reject
  * `woo_product_id` and `woo_variation_id` (DECISION AK, the deliberate interoperability
- * contract), `media.featured_id` and `media.gallery_ids` (Finding 011, the attachment
- * references), and a product category's `source_id` and `parent` (the pair the shipped
- * `?parent=` filter is keyed on). Every one of those is published on purpose, and a guard that
- * has to be suppressed to ship intentional work gets suppressed until it means nothing.
+ * contract) and `media.featured_id` and `media.gallery_ids` (Finding 011, the attachment
+ * references). Every one of those is published on purpose, and a guard that has to be
+ * suppressed to ship intentional work gets suppressed until it means nothing.
  *
  * So the rule is semantic and keyed by PUBLIC ENDPOINT SEMANTIC, not by resource class. That
  * distinction is not pedantry — it is the thing that catches this bug class. `product_cat` and
@@ -51,6 +50,12 @@ final class CommerceIdentityLeakGuardTest extends TestCase
      * `checksum`, `synced_at`, `created_at` and `deleted_at` ride along because DECISION F names
      * them in the same breath and they are equally never-public — a guard that only knows about
      * the fields that already leaked would not have caught these.
+     *
+     * `parent` and `parent_slug` are HIERARCHY REFERENCES, governed here for the same reason: a
+     * parent reference is identity pointing elsewhere. The integer `parent` a product category
+     * used to publish was a WordPress term id (FLAG-COMMCATPARENT-1); `parent_slug` is the
+     * domain-safe replacement, and listing it here means it is published only where ALLOWED says
+     * so — on product categories, never on the flat `pa_*` terms that share their table.
      *
      * @var list<string>
      */
@@ -76,6 +81,8 @@ final class CommerceIdentityLeakGuardTest extends TestCase
         'created_at',
         'deleted_at',
         'taxonomy_type',
+        'parent',
+        'parent_slug',
     ];
 
     /**
@@ -89,15 +96,10 @@ final class CommerceIdentityLeakGuardTest extends TestCase
      * terms — which is exactly how the attribute-term exposure arose in the first place: one
      * `TermResource` served two endpoint families.
      *
-     * THE `product_category` ENTRY IS CONTRACT DEBT, NOT A BLESSED CONVENTION. Every other entry
-     * here cites a ruling that AUTHORISES the field. That one cites a FLAG, because no ruling
-     * authorises it: the shipped `GET /product-categories?parent={source-term-id}` filter takes
-     * that integer and `source_id` is the only published field a consumer can get it from, so
-     * removing either strands a published API. The filter itself is unauthorised — the P2-S3
-     * preflight concluded a category filter "may safely use a bare slug as its canonical key"
-     * and the ratified plan row requires "no WordPress term ID as the required public key" — so
-     * these two fields are OWNED BY FLAG-COMMCATPARENT-1 and go with whatever it rules. They are
-     * not a precedent for anything, and emphatically not for their own sibling below.
+     * NO ENTRY IS DEBT. Every entry cites a ruling or verified source fact that AUTHORISES the
+     * field. The product category's `source_id`/`parent` pair used to sit here as DEBT owned by
+     * FLAG-COMMCATPARENT-1; that flag removed both, together with the `?parent={source-term-id}`
+     * filter they existed for, so `source_id` and `parent` are now plain leaks on every shape.
      *
      * A product's `source_id` anchored nothing — `woo_product_id` carried the identical integer
      * under a name that means it.
@@ -115,41 +117,31 @@ final class CommerceIdentityLeakGuardTest extends TestCase
             'woo_variation_id'  => 'DECISION AK-1 — Woo variation id',
             'media.featured_id' => 'Finding 011 — attachment reference',
         ],
-        // DEBT, not authorisation — see the docblock. Owned by FLAG-COMMCATPARENT-1.
         'product_category' => [
-            'source_id' => 'DEBT (FLAG-COMMCATPARENT-1) — the shipped ?parent={source-term-id} '
-                . 'filter key; no ruling authorises it, retained only so the filter keeps working',
+            'parent_slug' => 'P2-S3 source verification §7 — product_cat slugs are unique '
+                . 'taxonomy-wide, so the slug is the public category key (FLAG-COMMCATPARENT-1)',
         ],
         // Deliberately EMPTY, and the emptiness is load-bearing: `pa_*` taxonomies are
         // registered 'hierarchical' => false, so a parent reference here can never carry
         // information, and no published operation selects an attribute term by id. The
-        // product-category debt above does NOT extend here just because both read
+        // product-category `parent_slug` does NOT extend here just because both read
         // `commerce.taxonomies` — that inheritance is precisely what this guard exists to stop.
         'attribute_term'  => [],
         'attribute'       => [],
     ];
 
     /**
-     * The debt entry is a FLAG reference, mechanically.
+     * FLAG-COMMCATPARENT-1 closed its debt exception rather than rewording it.
      *
-     * Without this, "provisional" is a word in a comment that a later edit can quietly promote
-     * to "approved" by rewording. A future session that wants to bless the product-category
-     * source pair has to delete an assertion that names the flag, which is a visible act.
+     * A product category may publish its domain-safe parent reference and NOTHING else from the
+     * identity vocabulary — no `source_id`, no integer `parent` — and no entry anywhere is debt.
      */
-    public function test_the_product_category_exception_is_recorded_as_flagged_debt(): void
+    public function test_no_debt_exception_remains(): void
     {
-        $reason = self::ALLOWED['product_category']['source_id'];
+        self::assertSame(['parent_slug'], array_keys(self::ALLOWED['product_category']));
 
-        self::assertStringContainsString('FLAG-COMMCATPARENT-1', $reason);
-        self::assertStringContainsString('DEBT', $reason);
-
-        // And it is the ONLY entry that is debt rather than an authorising ruling.
         foreach (self::ALLOWED as $semantic => $fields) {
             foreach ($fields as $field => $why) {
-                if ($semantic === 'product_category') {
-                    continue;
-                }
-
                 self::assertStringNotContainsString('DEBT', $why, "{$semantic}.{$field}");
             }
         }
@@ -191,20 +183,19 @@ final class CommerceIdentityLeakGuardTest extends TestCase
         self::assertSame(118, $variation['woo_variation_id']);
         self::assertSame(125, $variation['media']['featured_id']);
 
-        // The hierarchy pair on a PRODUCT CATEGORY: a child's `parent` is resolvable against a
-        // sibling's `source_id`, and `?parent=` takes that same integer.
-        self::assertSame(31, $term['source_id']);
-        self::assertSame(28, $term['parent']);
+        // A PRODUCT CATEGORY relates to its parent by the parent's slug — resolvable against a
+        // sibling's `slug` with no source id anywhere in the shape.
+        self::assertSame('clothing', $term['parent_slug']);
     }
 
     /**
-     * The same projection row, through the attribute-term contract: the hierarchy pair is GONE.
+     * The same projection row, through the attribute-term contract: no hierarchy reference.
      *
-     * Asserted from one shared fixture on purpose. `termRow()` carries `source_term_id: 31` and
-     * `parent_id: 28`, so this proves the two shapes diverge at the RESOURCE boundary rather
-     * than because attribute terms happen to arrive with empty columns — which is exactly the
-     * claim, since `pa_*` taxonomies are registered `'hierarchical' => false` and the data could
-     * never populate them anyway.
+     * Asserted from one shared fixture on purpose. `termRow()` carries `source_term_id: 31`,
+     * `parent_id: 28` and a resolved `parent_slug`, so this proves the two shapes diverge at the
+     * RESOURCE boundary rather than because attribute terms happen to arrive with empty columns —
+     * which is exactly the claim, since `pa_*` taxonomies are registered `'hierarchical' => false`
+     * and the data could never populate them anyway.
      */
     public function test_an_attribute_term_publishes_no_hierarchy_or_source_identity(): void
     {
@@ -213,6 +204,7 @@ final class CommerceIdentityLeakGuardTest extends TestCase
         self::assertSame(['slug', 'name', 'description', 'count'], array_keys($published));
         self::assertArrayNotHasKey('source_id', $published);
         self::assertArrayNotHasKey('parent', $published);
+        self::assertArrayNotHasKey('parent_slug', $published);
 
         // What a consumer actually selects and renders with is all still here.
         self::assertSame('accessories', $published['slug']);
@@ -276,7 +268,6 @@ final class CommerceIdentityLeakGuardTest extends TestCase
             'woo_variation_id',
             'featured_id',
             'gallery_ids',
-            'parent',
         ]);
 
         $found = array_values(array_filter($paths, static function (string $path) use ($vocabulary): bool {
@@ -315,6 +306,19 @@ final class CommerceIdentityLeakGuardTest extends TestCase
         $nested['media']['source_parent_id'] = 95;
 
         self::assertSame(['media.source_parent_id'], self::leaks('variation', self::flatten($nested)));
+
+        // FLAG-COMMCATPARENT-1: the old source-term hierarchy pair is a leak on a category now,
+        // and a category's `parent_slug` does not license itself onto an attribute term.
+        $category              = (new TermResource())->toArray(self::termRow());
+        $category['source_id'] = 31;
+        $category['parent']    = 28;
+
+        self::assertSame(['parent', 'source_id'], self::leaks('product_category', self::flatten($category)));
+
+        $term                = (new AttributeTermResource())->toArray(self::termRow());
+        $term['parent_slug'] = 'clothing';
+
+        self::assertSame(['parent_slug'], self::leaks('attribute_term', self::flatten($term)));
     }
 
     /** And it stays green on the shapes that ship, so the two halves above are not vacuous. */
@@ -440,7 +444,7 @@ final class CommerceIdentityLeakGuardTest extends TestCase
             'variation'          => ['variation', (new VariationResource())->toArray(self::variationRow())],
             'product category'   => ['product_category', (new TermResource())->toArray(self::termRow())],
             // The SAME projection row through the OTHER resource — so if the two shapes ever
-            // collapse back into one class, this case starts failing on `source_id`/`parent`.
+            // collapse back into one class, this case starts failing on `parent_slug`.
             'attribute term'     => ['attribute_term', (new AttributeTermResource())->toArray(self::termRow())],
             'attribute'          => ['attribute', (new AttributeResource())->toArray(self::attributeRow())],
         ];
@@ -527,6 +531,8 @@ final class CommerceIdentityLeakGuardTest extends TestCase
             'description'    => '',
             'parent_id'      => 28,
             'term_count'     => 5,
+            // Resolved by TermQueryProvider's self-join from parent_id 28 (live: "clothing").
+            'parent_slug'    => 'clothing',
         ];
     }
 

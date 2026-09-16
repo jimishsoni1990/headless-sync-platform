@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HSP\Tests\Integration\Commerce;
 
+use HSP\Core\Database\DatabaseConnectionInterface;
 use HSP\Core\Database\PostgresDatabaseConnection;
 use HSP\Modules\Commerce\Adapters\TermAdapter;
 use HSP\Modules\Commerce\Extractors\TermExtractor;
@@ -134,6 +135,71 @@ final class ProductCategoryIntegrationTest extends TestCase
         self::assertNotNull($this->fetch(10));
     }
 
+    // =========================================================================
+    // Public hierarchy — parent_slug resolved at read time (FLAG-COMMCATPARENT-1)
+    // =========================================================================
+
+    /** The tree rebuilds from the listing alone: every depth is listed, each names its parent by slug. */
+    public function test_the_listing_resolves_each_parent_by_slug_at_every_depth(): void
+    {
+        $this->project(10, 'clothing');
+        $this->project(11, 'men', 10);
+        $this->project(12, 'shirts-men', 11);
+
+        self::assertSame(
+            ['clothing' => null, 'men' => 'clothing', 'shirts-men' => 'men'],
+            array_column($this->provider()->list(new TermFilterSet())->rows, 'parent_slug', 'slug'),
+        );
+        self::assertSame('men', $this->provider()->findBySlug('shirts-men')['parent_slug']);
+    }
+
+    /** AG-7: a child that projects first is listed with a null reference — never dropped — then converges. */
+    public function test_a_child_before_its_parent_is_listed_with_a_null_parent_slug_until_it_lands(): void
+    {
+        $this->project(11, 'men', 10);
+
+        $rows = $this->provider()->list(new TermFilterSet())->rows;
+        self::assertSame(['men'], array_column($rows, 'slug'), 'the child is never dropped');
+        self::assertNull($rows[0]['parent_slug']);
+
+        $this->project(10, 'clothing');
+
+        self::assertSame('clothing', $this->provider()->findBySlug('men')['parent_slug']);
+    }
+
+    public function test_a_tombstoned_parent_resolves_to_null_and_the_child_stays_listed(): void
+    {
+        $this->project(10, 'clothing');
+        $this->project(11, 'men', 10);
+
+        (new TermTombstoneHandler(new TermAdapter($this->db)))
+            ->handle($this->event(10, 'commerce.product_category.deleted', 2, 'd10'));
+
+        self::assertSame(['men'], array_column($this->provider()->list(new TermFilterSet())->rows, 'slug'));
+        self::assertNull($this->provider()->findBySlug('men')['parent_slug']);
+    }
+
+    /** Read-time, not a stored copy: a parent's new slug shows the moment its own row updates. */
+    public function test_a_parent_slug_change_is_visible_without_reprojecting_the_child(): void
+    {
+        $this->project(10, 'clothing');
+        $this->project(11, 'men', 10);
+
+        $this->loader->terms[10] = $this->term(10, 'apparel');
+        $this->handler()->handle($this->event(10, 'commerce.product_category.updated', 2, 'u10'));
+
+        self::assertSame('apparel', $this->provider()->findBySlug('men')['parent_slug']);
+    }
+
+    /** DECISION AA holds inside the join: a parent id naming another taxonomy's term resolves to nothing. */
+    public function test_the_parent_join_never_crosses_taxonomies(): void
+    {
+        $this->project(20, 'blue', 0, 'pa_colour');
+        $this->project(11, 'men', 20);
+
+        self::assertNull($this->provider()->findBySlug('men')['parent_slug']);
+    }
+
     public function test_reprocessing_an_unchanged_term_suppresses_the_write(): void
     {
         $this->loader->terms[10] = $this->term(10, 'clothing');
@@ -252,6 +318,70 @@ final class ProductCategoryIntegrationTest extends TestCase
     }
 
     /**
+     * The parent_slug self-join, planned from the provider's OWN SQL (captured, not retyped)
+     * against 20 000 categories under 2 000 parents: index-backed on both sides, and one query
+     * per call whether the page holds one row or two hundred — no per-row parent lookup.
+     */
+    public function test_the_parent_slug_join_is_index_backed_with_a_constant_query_count(): void
+    {
+        $this->seedHierarchy(20000, 2000);
+        pg_query($this->pgConn, 'ANALYZE commerce.taxonomies');
+
+        $recorder = new class ($this->db) implements DatabaseConnectionInterface {
+            /** @var list<array{0:string,1:array<int,mixed>}> */
+            public array $log = [];
+
+            public function __construct(private readonly DatabaseConnectionInterface $inner)
+            {
+            }
+
+            public function execute(string $sql, array $params = []): int
+            {
+                return $this->inner->execute($sql, $params);
+            }
+
+            public function query(string $sql, array $params = []): array
+            {
+                $this->log[] = [$sql, $params];
+
+                return $this->inner->query($sql, $params);
+            }
+
+            public function beginTransaction(): void
+            {
+                $this->inner->beginTransaction();
+            }
+
+            public function commit(): void
+            {
+                $this->inner->commit();
+            }
+
+            public function rollback(): void
+            {
+                $this->inner->rollback();
+            }
+        };
+        $provider = new TermQueryProvider($recorder, 'product_cat');
+
+        $one  = $provider->list(new TermFilterSet(limit: 1));
+        $full = $provider->list(new TermFilterSet(limit: 200));
+        $leaf = $provider->findBySlug('term-15000');
+
+        self::assertCount(1, $one->rows);
+        self::assertCount(200, $full->rows);
+        self::assertCount(3, $recorder->log, 'one query per call, independent of page size');
+        self::assertSame('term-1001', $leaf['parent_slug'] ?? null, '15000 % 2000 + 1');
+
+        foreach ($recorder->log as [$sql, $params]) {
+            $plan = $this->explain($sql, $params);
+
+            self::assertStringNotContainsString('Seq Scan', $plan, $plan);
+            self::assertStringContainsString('uq_commerce_taxonomies_source_id', $plan, $plan);
+        }
+    }
+
+    /**
      * The migration deliberately ships no UNIQUE (taxonomy_type, slug): WordPress enforces slug
      * uniqueness at WRITE time and defeasibly, so a constraint here would turn an unusual but
      * valid source state into a projection failure that dead-letters (see the P2-S3 preflight
@@ -294,9 +424,10 @@ final class ProductCategoryIntegrationTest extends TestCase
         return $rows[0] ?? null;
     }
 
-    private function explain(string $sql): string
+    /** @param array<int,mixed> $params */
+    private function explain(string $sql, array $params = []): string
     {
-        $result = pg_query($this->pgConn, 'EXPLAIN ' . $sql);
+        $result = pg_query_params($this->pgConn, 'EXPLAIN ' . $sql, $params);
         $plan   = '';
 
         while ($row = pg_fetch_row($result)) {
@@ -324,6 +455,34 @@ final class ProductCategoryIntegrationTest extends TestCase
                 (id, source_term_id, taxonomy_type, slug, name, description, parent_id,
                  term_count, checksum)
             VALUES ' . implode(',', $values));
+    }
+
+    /** `$parents` top-level terms, then children spread evenly beneath them (`id % parents + 1`). */
+    private function seedHierarchy(int $count, int $parents): void
+    {
+        $values = [];
+        for ($i = 1; $i <= $count; $i++) {
+            $values[] = sprintf(
+                "(gen_random_uuid(), %d, 'product_cat', 'term-%d', 'Term %d', '', %d, 0, '%s')",
+                $i,
+                $i,
+                $i,
+                $i <= $parents ? 0 : $i % $parents + 1,
+                str_repeat('b', 64),
+            );
+        }
+
+        pg_query($this->pgConn, '
+            INSERT INTO commerce.taxonomies
+                (id, source_term_id, taxonomy_type, slug, name, description, parent_id,
+                 term_count, checksum)
+            VALUES ' . implode(',', $values));
+    }
+
+    private function project(int $id, string $slug, int $parent = 0, string $taxonomy = 'product_cat'): void
+    {
+        $this->loader->terms[$id] = $this->term($id, $slug, $taxonomy, $parent);
+        $this->handler()->handle($this->event($id, 'commerce.product_category.created', 1, "c{$id}"));
     }
 
     private function createSchema(): void

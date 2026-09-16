@@ -25,7 +25,8 @@ use PHPUnit\Framework\TestCase;
  *   - `"meta": []` where the schema says object (PHP cannot distinguish an empty list from an
  *     empty map);
  *   - `"sku": null` where the schema said `string`;
- *   - `"parent": null` where the schema said `integer`.
+ *   - `"parent": null` where the schema said `integer` (that field is since Removed; its
+ *     replacement `parent_slug` is pinned the same way).
  *
  * Each case is checked by decoding the Resource's own output as JSON and comparing it against the
  * published descriptor — no reflection, no runtime schema inference (ADR-055 (a)).
@@ -129,16 +130,19 @@ final class ResourcePayloadFidelityTest extends TestCase
         self::assertSame('ABC-1', $published['sku']);
     }
 
-    /** A top-level product category publishes `parent: null` by deliberate design. */
-    public function test_term_null_parent_matches_the_published_schema(): void
+    /**
+     * A top-level product category publishes `parent_slug: null`; a child publishes a string.
+     * (The integer `parent` this case originally pinned was Removed — FLAG-COMMCATPARENT-1.)
+     */
+    public function test_term_null_parent_slug_matches_the_published_schema(): void
     {
-        $topLevel = (new TermResource())->toArray(['slug' => 't', 'parent_id' => 0]);
-        $child    = (new TermResource())->toArray(['slug' => 'c', 'parent_id' => 42]);
+        $topLevel = (new TermResource())->toArray(['slug' => 't', 'parent_id' => 0, 'parent_slug' => null]);
+        $child    = (new TermResource())->toArray(['slug' => 'c', 'parent_id' => 42, 'parent_slug' => 'p']);
         $props    = $this->itemProperties($this->commerceByRoute()['/product-categories/{slug}']);
 
-        self::assertNull($topLevel['parent'], 'the 0 sentinel is published as null');
-        self::assertSame(42, $child['parent']);
-        self::assertSame(['integer', 'null'], $props['parent']['type']);
+        self::assertNull($topLevel['parent_slug']);
+        self::assertSame('p', $child['parent_slug']);
+        self::assertSame(['string', 'null'], $props['parent_slug']['type']);
     }
 
     /** A variation with no SKU. */

@@ -131,46 +131,27 @@ final class CommerceRestArgEnforcementTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
-    // parent — 0 is a real value, so the floor is 0
+    // parent — Removed (FLAG-COMMCATPARENT-1)
     // -------------------------------------------------------------------------
 
-    /** @return iterable<string,array{0:mixed,1:bool,2:string}> */
-    public static function parentProvider(): iterable
-    {
-        yield 'top level'     => ['0', true, ''];
-        yield 'a term id'     => ['42', true, ''];
-
-        yield 'negative'      => ['-1', false, 'rest_out_of_bounds'];
-        yield 'negative many' => ['-5', false, 'rest_out_of_bounds'];
-        yield 'not a number'  => ['abc', false, 'rest_invalid_type'];
-        yield 'not an integer' => ['1.5', false, 'rest_invalid_type'];
-        yield 'empty value'   => ['', false, 'rest_invalid_type'];
-    }
-
-    #[DataProvider('parentProvider')]
-    public function test_parent_is_enforced_as_a_non_negative_integer(
-        mixed $value,
-        bool $accepted,
-        string $expectedCode
-    ): void {
-        $this->assertRequest('hsp/v1/product-categories', ['parent' => $value], $accepted, $expectedCode);
-    }
-
     /**
-     * The specific silent coercion this closed: `?parent=abc` became `parent=0` through `absint`,
-     * so a request naming a category returned the TOP-LEVEL listing and looked like it worked.
+     * `?parent={source-term-id}` is no longer a declared argument of the category listing.
+     *
+     * Deliberately NOT asserted as a 400: HSP has no unknown-query-key rejection policy, and
+     * WordPress ignores a key no arg declares. So an old caller's `?parent=28` — or `?parent=abc`,
+     * which used to be a 400 — is now simply not read. That is the absence of a supported filter,
+     * not a supported filter; the handler half is pinned in ProductCategoryHierarchyContractTest.
      */
-    public function test_a_non_numeric_parent_no_longer_becomes_the_top_level_listing(): void
+    public function test_parent_is_no_longer_a_declared_category_listing_argument(): void
     {
-        self::assertSame(0, absint('abc'), 'The coercion itself is unchanged; it just cannot run first.');
+        $args = $this->registrations['hsp/v1/product-categories'];
 
-        [$accepted, $topCode] = WpRestArgDispatch::evaluate(
-            $this->registrations['hsp/v1/product-categories'],
-            ['parent' => 'abc']
-        );
+        self::assertSame(['cursor', 'limit'], array_keys($args));
 
-        self::assertFalse($accepted);
-        self::assertSame('rest_invalid_param', $topCode);
+        foreach (['28', 'abc', '-5'] as $obsolete) {
+            [$accepted] = WpRestArgDispatch::evaluate($args, ['parent' => $obsolete]);
+            self::assertTrue($accepted, "parent={$obsolete} is an undeclared key: ignored, not validated.");
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -555,9 +555,11 @@ final class EndpointParameterDriftGuardTest extends TestCase
             );
         }
 
+        // The category listing publishes pagination only: `parent` was Removed with no
+        // replacement filter (FLAG-COMMCATPARENT-1).
         self::assertSame(
-            ['type' => 'integer', 'minimum' => 0],
-            $schema('/hsp/v1/product-categories', 'parent'),
+            ['cursor', 'limit'],
+            array_column($document['paths']['/hsp/v1/product-categories']['get']['parameters'], 'name'),
         );
 
         self::assertSame(
