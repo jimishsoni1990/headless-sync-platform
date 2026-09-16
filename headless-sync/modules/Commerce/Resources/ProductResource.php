@@ -66,13 +66,16 @@ final class ProductResource implements ResourceInterface
         $type = (string) ($row['product_type'] ?? '');
 
         $published = [
-            'id'                 => (string) ($row['id'] ?? ''),
-            'source_id'          => (int) ($row['source_product_id'] ?? 0),
-            // The SAME value as `source_id`, published under a name that says what it is.
-            // `source_id` is generic infrastructure vocabulary — it also appears on categories
-            // and attribute definitions, meaning a term id and a definition id there — so a
-            // consumer holding only the contract cannot tell that this particular one is the
-            // identifier WooCommerce's own cart accepts. This name can only mean that.
+            // NO `id` AND NO `source_id` (FLAG-COMMSOURCEID-1). The projection UUID and the
+            // generic source key were published without a ruling and are now Removed: `id` is
+            // the row's internal identity — the cursor tiebreaker and the `entity_taxonomies`
+            // join key — and it is still SELECTed for exactly those, just not serialized
+            // (DECISION F: internal columns are never serialized). `source_id` carried the same
+            // integer as `woo_product_id` under a name that means a different kind of entity on
+            // every other Commerce resource.
+            //
+            // The one identifier a consumer needs from the source system is below, under a name
+            // that can only mean it.
             'woo_product_id'     => (int) ($row['source_product_id'] ?? 0),
             'sku'                => $this->nullableString($row['sku'] ?? null),
             'slug'               => (string) ($row['slug'] ?? ''),

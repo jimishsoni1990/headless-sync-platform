@@ -22,8 +22,12 @@ final class AttributeResource implements ResourceInterface
     public function toArray(array $row): array
     {
         return [
-            'id'           => (string) ($row['id'] ?? ''),
-            'source_id'    => (int) ($row['source_attribute_id'] ?? 0),
+            // NO `id` AND NO `source_id` (FLAG-COMMSOURCEID-1) — both Removed. An attribute
+            // definition is addressed by `taxonomy` and nothing else: `/product-attributes/
+            // {taxonomy}` and `/product-attributes/{taxonomy}/terms` both key on it, and the
+            // product filter takes `?attribute=pa_colour`. Neither removed field was reachable
+            // from any published operation, so unlike a term's `source_id` (which anchors the
+            // shipped `?parent=` filter) there was nothing for them to anchor.
             'taxonomy'     => (string) ($row['slug'] ?? ''),
             'name'         => (string) ($row['name'] ?? ''),
             'type'         => (string) ($row['type'] ?? 'select'),

@@ -11,6 +11,7 @@ use HSP\Core\Observability\StructuredLogger;
 use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Resources\AttributeResource;
+use HSP\Modules\Commerce\Resources\AttributeTermResource;
 use HSP\Modules\Commerce\Resources\ProductResource;
 use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Resources\VariationResource;
@@ -51,6 +52,7 @@ final class CommerceDeliveryFilterValidationTest extends TestCase
             $empty,
             new AttributeResource(),
             static fn (string $taxonomy): QueryProviderInterface => $empty,
+            new AttributeTermResource(),
             $empty,
             new VariationResource(),
             new DeliveryErrorBoundary(new StructuredLogger(static function (string $line): void {

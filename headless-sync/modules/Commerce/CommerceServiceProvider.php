@@ -54,6 +54,7 @@ use HSP\Modules\Commerce\Queries\VariationQueryProvider;
 use HSP\Modules\Commerce\Reconciliation\WpCommerceReconciliationSource;
 use HSP\Modules\Commerce\Replay\CommerceReplayEmitter;
 use HSP\Modules\Commerce\Resources\AttributeResource;
+use HSP\Modules\Commerce\Resources\AttributeTermResource;
 use HSP\Modules\Commerce\Resources\ProductResource;
 use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Resources\VariationResource;
@@ -272,6 +273,9 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
             ));
         $container->singleton(ProductResource::class, fn () => new ProductResource());
         $container->singleton(TermResource::class, fn () => new TermResource());
+        // Product categories and `pa_*` terms share one projection table (AG-9) but NOT one
+        // published shape — see AttributeTermResource (FLAG-COMMSOURCEID-1).
+        $container->singleton(AttributeTermResource::class, fn () => new AttributeTermResource());
 
         $container->singleton(VariationQueryProvider::class, fn (Container $c) =>
             new VariationQueryProvider(
@@ -309,6 +313,7 @@ final class CommerceServiceProvider extends ServiceProvider implements ModuleAva
                 $c->get(AttributeQueryProvider::class),
                 $c->get(AttributeResource::class),
                 $c->get('commerce.attribute_term_query_factory'),
+                $c->get(AttributeTermResource::class),
                 $c->get(VariationQueryProvider::class),
                 $c->get(VariationResource::class),
                 // CCF-003: Core-owned delivery error boundary (bound by DeliveryServiceProvider).

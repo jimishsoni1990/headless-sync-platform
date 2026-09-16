@@ -14,6 +14,7 @@ use HSP\Core\Operations\OpenApi\OpenApiGenerator;
 use HSP\Core\Rest\DeliveryErrorBoundary;
 use HSP\Modules\Commerce\Operations\CommerceEndpointProvider;
 use HSP\Modules\Commerce\Resources\AttributeResource;
+use HSP\Modules\Commerce\Resources\AttributeTermResource;
 use HSP\Modules\Commerce\Resources\ProductResource;
 use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Resources\VariationResource;
@@ -476,6 +477,7 @@ final class DeliveryErrorContractTest extends TestCase
             self::emptyProvider(),
             new AttributeResource(),
             static fn (string $taxonomy): QueryProviderInterface => $terms,
+            new AttributeTermResource(),
             self::emptyProvider(),
             new VariationResource(),
             self::boundary(),

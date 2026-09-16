@@ -37,11 +37,15 @@ final class VariationResource implements ResourceInterface
     public function toArray(array $row): array
     {
         return [
-            'id'               => (string) ($row['id'] ?? ''),
-            'source_id'        => (int) ($row['source_variation_id'] ?? 0),
-            // The PARENT's source id. Published because a consumer holding a variation needs to
-            // get back to its product, and because it is the key this projection is queried by.
-            'product_id'       => (int) ($row['source_parent_id'] ?? 0),
+            // NO `id`, `source_id` OR `product_id` (FLAG-COMMSOURCEID-1). All three were
+            // published without a ruling and are now Removed. `id` is the projection UUID —
+            // still SELECTed as the cursor tiebreaker, never serialized (DECISION F).
+            // `source_id` and `product_id` carried the SAME two integers as the pair below,
+            // under generic names: a consumer reading `product_id` could not tell whether it
+            // meant the internal parent row, the parent's Woo id, or something else, and the
+            // ambiguity is dangerous precisely where these values are used — a cart handoff
+            // that takes the two ids in different argument positions.
+            //
             // The two WooCommerce ids a native cart handoff needs, named so they cannot be read
             // the wrong way round. `WC_Cart::add_to_cart()` takes the PARENT product id and the
             // VARIATION id as SEPARATE arguments; handing it one where it expects the other

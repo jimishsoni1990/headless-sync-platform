@@ -100,6 +100,9 @@ final class CommerceRestRegistrar
         private readonly QueryProviderInterface $attributeQueryProvider,
         private readonly ResourceInterface $attributeResource,
         private readonly \Closure $attributeTermQueryFactory,
+        // A SEPARATE shape from `$termResource`, not the same one reused: `pa_*` terms are flat
+        // and slug-selected, product categories are hierarchical (FLAG-COMMSOURCEID-1).
+        private readonly ResourceInterface $attributeTermResource,
         private readonly QueryProviderInterface $variationQueryProvider,
         private readonly ResourceInterface $variationResource,
         // CCF-003: every callback is registered through this boundary, so a Throwable escaping a
@@ -349,7 +352,7 @@ final class CommerceRestRegistrar
             limit:  $this->intParam($request, 'limit'),
         ));
 
-        return $this->respond($this->termResource->toCollection($page->rows, $page->nextCursor));
+        return $this->respond($this->attributeTermResource->toCollection($page->rows, $page->nextCursor));
     }
 
     /** @param \WP_REST_Request<array<string,mixed>>|object $request */

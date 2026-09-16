@@ -24,12 +24,23 @@ use HSP\Core\Contracts\Operations\SchemaObject;
  * owns attachment state (AG-10); and there is no `permalink` field, because the WooCommerce
  * permalink base is configurable and a stored URL would go stale (FLAG-COMMPERMA-1).
  *
- * The `woo_*` identifiers are the one deliberate exception to HSP keeping source ids out of the
+ * The `woo_*` identifiers are a deliberate exception to HSP keeping source ids out of the
  * published contract: WooCommerce is the transactional authority a storefront hands off to, and
  * every native cart mechanism it offers is keyed on WordPress post ids. They are interoperability
  * identifiers, not addressing — `/products/{slug}` is unchanged — and not a precedent for
  * exposing source ids elsewhere. Ratified by DECISION AK, which authorises them for Commerce
  * Product + Variation ONLY and is explicitly not a precedent for the rest of the platform.
+ *
+ * The only other source identity published here is a PRODUCT CATEGORY's `source_id`/`parent`,
+ * and it is NOT a second approved exception — it is a legacy dependency of the shipped
+ * `?parent={source-term-id}` filter, retained provisionally and owned by FLAG-COMMCATPARENT-1.
+ * Attribute terms, which share the same projection table, publish neither.
+ *
+ * Everything else that once leaked (`id` on all four resources, `source_id` on products,
+ * variations, attribute definitions and attribute terms, a variation's `product_id`, and an
+ * attribute term's `parent`) completed the Doc 9 §26 lifecycle and is Removed —
+ * FLAG-COMMSOURCEID-1. Adding any of them back is a schema change that
+ * CommerceIdentityLeakGuardTest fails CI for.
  */
 final class CommerceEndpointProvider implements EndpointProviderInterface
 {
@@ -283,7 +294,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                 self::query('cursor', 'string', 'Opaque pagination cursor.'),
                 self::pageSize(self::TERM_MAX_LIMIT),
             ],
-            responseSchema: $this->termSchema()->asCursorPage(),
+            // NOT termSchema(): an attribute term publishes neither `source_id` nor `parent`
+            // (FLAG-COMMSOURCEID-1) — see attributeTermSchema().
+            responseSchema: $this->attributeTermSchema()->asCursorPage(),
             requestSchema: null,
             auth: EndpointAuth::Public,
             paginated: true,
@@ -379,24 +392,11 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private function variationSchema(): SchemaObject
     {
         return SchemaObject::object([
-            'id'               => 'string',
-            // LEGACY generic identity, retained for compatibility only (DECISION AK-9). These are
-            // NOT the Woo handoff contract: `source_id` names a different kind of entity on every
-            // other Commerce resource — a term id on /product-categories, an attribute-definition
-            // id on /product-attributes — so a consumer cannot read Woo semantics off the name.
-            // The explicit `woo_*` fields below are what a handoff uses.
-            'source_id'        => [
-                'type'        => 'integer',
-                'description' => 'Legacy generic source identifier, retained for compatibility. '
-                    . 'NOT the WooCommerce interoperability contract: use woo_variation_id for '
-                    . 'Woo variation interoperability.',
-            ],
-            'product_id'       => [
-                'type'        => 'integer',
-                'description' => "Legacy generic reference to this variation's parent, retained "
-                    . 'for compatibility. NOT the WooCommerce interoperability contract: use '
-                    . 'woo_product_id for the parent Woo product identity.',
-            ],
+            // REMOVED, not omitted by accident: `id`, `source_id` and `product_id`
+            // (FLAG-COMMSOURCEID-1). AK-9 deprecated the latter two and left removal to the
+            // Doc 9 §26 process; that process ran, and `id` — the projection UUID, never
+            // deprecated because it had never been authorised in the first place — went with
+            // them. All three are still read from the row internally; none is published.
             'woo_product_id'   => self::wooProductIdSchema(
                 'Authoritative WooCommerce product id of this variation\'s PARENT product — the '
                 . '`$product_id` argument of a native add-to-cart, never the variation itself.'
@@ -449,8 +449,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private function attributeSchema(): SchemaObject
     {
         return SchemaObject::object([
-            'id'           => 'string',
-            'source_id'    => 'integer',
+            // REMOVED: `id` and `source_id` (FLAG-COMMSOURCEID-1). An attribute definition is
+            // reachable only through `taxonomy`, so neither anchored anything a consumer can
+            // call — unlike a term's `source_id`, which the `?parent=` filter takes.
             // The FULL pa_-prefixed name — the key that joins to this attribute's terms.
             'taxonomy'     => 'string',
             'name'         => 'string',
@@ -463,18 +464,36 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private function termSchema(): SchemaObject
     {
         return SchemaObject::object([
-            'id'          => 'string',
-            'source_id'   => 'integer',
+            // REMOVED: `id`, the projection UUID (FLAG-COMMSOURCEID-1).
+            //
+            // `source_id` and `parent` are RETAINED PROVISIONALLY — a legacy contract
+            // dependency, NOT an approved public identity. The shipped
+            // `GET /product-categories?parent={source-term-id}` filter takes that integer and
+            // `source_id` is the only published field a consumer can get it from, so removing
+            // either strands a published API. The filter itself has no recorded architecture
+            // authorisation and is tracked by **FLAG-COMMCATPARENT-1**; these two fields are
+            // owned by that flag and go with whatever it rules.
+            'source_id'   => [
+                'type'        => 'integer',
+                'description' => 'Source term id. Retained because the `parent` query parameter '
+                    . 'of GET /product-categories accepts this value and `parent` below refers '
+                    . 'to it. Site-specific — authoritative for the connected source site only '
+                    . '— and NOT an address: categories are addressed by slug. Treat it as a '
+                    . 'legacy hierarchy dependency rather than a stable public identity; the '
+                    . 'category hierarchy contract is under review.',
+            ],
             'slug'        => 'string',
             'name'        => 'string',
             'description' => 'string',
-            // Parent SOURCE term id, or NULL at top level — so a consumer can rebuild the tree
-            // without a second lookup. The column is `NOT NULL DEFAULT 0`, but the published
-            // contract deliberately maps the sentinel 0 to null: "top level" reads better than a
-            // magic zero in JSON, and the schema must say so rather than promise an integer.
+            // Parent SOURCE term id, or NULL at top level. The column is `NOT NULL DEFAULT 0`,
+            // but the published contract deliberately maps the sentinel 0 to null: "top level"
+            // reads better than a magic zero in JSON, and the schema must say so rather than
+            // promise an integer. Same provisional status as `source_id` above.
             'parent'      => [
                 'type'        => ['integer', 'null'],
-                'description' => 'Parent source term id, or null for a top-level term.',
+                'description' => 'Parent source term id, or null for a top-level term. Same '
+                    . 'legacy-dependency caveat as source_id: the category hierarchy contract '
+                    . 'is under review.',
             ],
             // The SOURCE count, projected verbatim — not a Delivery API result count and not a
             // pagination total (FLAG-COMMTERMCOUNT-1). It shipped with no description at all,
@@ -489,6 +508,34 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
                     . 'pagination total: a product hidden from the catalog, or of a product '
                     . 'type outside Phase 2 support, still counts here.',
             ],
+        ]);
+    }
+
+    /**
+     * A `pa_*` attribute term — the same projection table as a product category, a DIFFERENT
+     * published shape (FLAG-COMMSOURCEID-1).
+     *
+     * Neither `source_id` nor `parent` appears, and neither is an oversight. Verified against
+     * WooCommerce 11.1.0: `product_cat` is registered `'hierarchical' => true`
+     * (`class-wc-post-types.php:106`) while `pa_*` taxonomies are `'hierarchical' => false`
+     * (`:269` — the `true` at `:318` is inside the `rewrite` array, a permalink option). An
+     * attribute term's parent is therefore structurally always null, and its source term id
+     * anchors nothing: this endpoint has no `?parent=` filter, and the product filter selects a
+     * term by SLUG (`?attribute=pa_colour&attribute_term=blue`).
+     *
+     * `count` is kept because it is independently contractual (FLAG-COMMTERMCOUNT-1) and its
+     * description is the identical source fact, deliberately not reworded into a second
+     * explanation of the same thing.
+     */
+    private function attributeTermSchema(): SchemaObject
+    {
+        $term = $this->termSchema()->schema;
+
+        return SchemaObject::object([
+            'slug'        => 'string',
+            'name'        => 'string',
+            'description' => 'string',
+            'count'       => $term['properties']['count'],
         ]);
     }
 
@@ -524,17 +571,9 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
     private function productSchema(): SchemaObject
     {
         return SchemaObject::object([
-            'id'                 => 'string',
-            // LEGACY generic identity, retained for compatibility only (DECISION AK-9). NOT the
-            // Woo handoff contract: `source_id` means a term id on /product-categories and an
-            // attribute-definition id on /product-attributes, so the name carries no WooCommerce
-            // semantics a consumer could rely on. `woo_product_id` below is what a handoff uses.
-            'source_id'          => [
-                'type'        => 'integer',
-                'description' => 'Legacy generic source identifier, retained for compatibility. '
-                    . 'NOT the WooCommerce interoperability contract: use woo_product_id for Woo '
-                    . 'product interoperability.',
-            ],
+            // REMOVED: `id` and `source_id` (FLAG-COMMSOURCEID-1) — see variationSchema().
+            // A product is addressed by `slug` and handed off by `woo_product_id`; neither
+            // removed field had a third job.
             'woo_product_id'     => self::wooProductIdSchema(
                 'Authoritative WooCommerce product id for this product, as accepted by native '
                 . 'WooCommerce cart flows. For a variable product this is the PARENT id — the '
@@ -602,8 +641,10 @@ final class CommerceEndpointProvider implements EndpointProviderInterface
      * transactional authority for cart, pricing, stock, tax, coupons, shipping and checkout, and
      * every native handoff it offers — `WC_Cart::add_to_cart()`, the `?add-to-cart=` form
      * handler, the Store API — is keyed on WordPress post ids. Without this value published under
-     * a name that means it, a storefront browsing HSP has to GUESS that `source_id` happens to be
-     * a Woo id, and a guess is not a contract.
+     * a name that means it, a storefront browsing HSP would have to GUESS that some generic
+     * `source_id` happened to be a Woo id, and a guess is not a contract. That guess is now
+     * impossible rather than merely discouraged: the generic fields were removed outright
+     * (FLAG-COMMSOURCEID-1), so this is the only Woo product id a product or variation publishes.
      *
      * `minimum: 1` is a real guarantee, not decoration: `source_product_id` is `BIGINT NOT NULL`
      * with a UNIQUE constraint, and a product with no row has no response at all.

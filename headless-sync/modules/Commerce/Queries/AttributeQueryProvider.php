@@ -23,7 +23,15 @@ final class AttributeQueryProvider implements QueryProviderInterface
     private const DEFAULT_LIMIT = 50;
     private const MAX_LIMIT     = 200;
 
-    private const COLUMNS = 'id, source_attribute_id, slug, name, type, order_by, has_archives';
+    /**
+     * `source_attribute_id` is NOT selected: it became dead the moment the attribute contract
+     * stopped publishing `source_id` (FLAG-COMMSOURCEID-1), and nothing else reads it on the
+     * delivery path — the definition is looked up by `slug` and ordered by `name, id`. `id`
+     * stays because the cursor is built from it.
+     *
+     * The column itself is untouched in `commerce.attributes`; only this SELECT dropped it.
+     */
+    private const COLUMNS = 'id, slug, name, type, order_by, has_archives';
 
     public function __construct(private readonly DatabaseConnectionInterface $db)
     {

@@ -69,11 +69,14 @@ final class WooHandoffIdentityTest extends TestCase
 
         self::assertSame(123, $published['woo_product_id']);
 
-        // Not the uuid, not a digit-bearing slug, not the sku, not the checksum.
-        self::assertNotSame($published['id'], (string) $published['woo_product_id']);
+        // Not a digit-bearing slug, not the sku, not the checksum.
         self::assertNotSame('456', (string) $published['woo_product_id']);
         self::assertNotSame('789', (string) $published['woo_product_id']);
         self::assertArrayNotHasKey('checksum', $published);
+
+        // The row's uuid cannot be confused with it either — it is no longer published at all
+        // (FLAG-COMMSOURCEID-1), which is a stronger statement than "differs from".
+        self::assertArrayNotHasKey('id', $published);
     }
 
     /**
@@ -126,18 +129,28 @@ final class WooHandoffIdentityTest extends TestCase
     }
 
     /**
-     * Additive, not a rename. `source_id` and `product_id` are existing published fields and
-     * removing one is a separate compatibility decision (Doc 9 §26); they carry the same values as
-     * before, and the new fields alias them rather than replacing them.
+     * The compatibility decision AK-9 deferred has now been taken (FLAG-COMMSOURCEID-1): the
+     * legacy generic fields completed Doc 9 §26 and are Removed, so the `woo_*` fields are the
+     * SOLE published identity rather than aliases over a duplicate.
+     *
+     * This assertion is the inverse of the one it replaces, deliberately. While both existed, a
+     * product published the same integer twice and a variation published two integers four
+     * times; the point of naming them was to make the generic ones redundant, and redundant
+     * fields that are never retired are just a second contract nobody maintains.
      */
-    public function test_the_existing_identity_fields_are_unchanged(): void
+    public function test_the_legacy_generic_identity_fields_are_removed(): void
     {
         $product   = (new ProductResource())->toArray(self::productRow(123, 'simple'));
         $variation = (new VariationResource())->toArray(self::variationRow(245, 200));
 
-        self::assertSame(123, $product['source_id']);
-        self::assertSame(245, $variation['source_id']);
-        self::assertSame(200, $variation['product_id']);
+        self::assertArrayNotHasKey('source_id', $product);
+        self::assertArrayNotHasKey('source_id', $variation);
+        self::assertArrayNotHasKey('product_id', $variation);
+
+        // The values they carried are still published — under the explicit names only.
+        self::assertSame(123, $product['woo_product_id']);
+        self::assertSame(245, $variation['woo_variation_id']);
+        self::assertSame(200, $variation['woo_product_id']);
     }
 
     /** No cart, checkout or URL crept in alongside the identifiers. */
@@ -215,40 +228,29 @@ final class WooHandoffIdentityTest extends TestCase
             self::assertStringContainsString('Site-specific', $field['description']);
         }
 
-        // The generic fields now point at the explicit ones instead of sitting undocumented.
-        self::assertStringContainsString('woo_product_id', $product['source_id']['description']);
-        self::assertStringContainsString('woo_variation_id', $variation['source_id']['description']);
-        self::assertStringContainsString('woo_product_id', $variation['product_id']['description']);
     }
 
     /**
-     * DECISION AK-9. The legacy fields are retained for compatibility, and documenting them as the
-     * Woo handoff contract would reintroduce exactly the ambiguity this work exists to remove —
-     * `source_id` names a term id on /product-categories and an attribute-definition id on
-     * /product-attributes, so the name cannot carry Woo semantics. They must read as legacy
-     * pointers to the explicit fields, never as the recommended way to hand an item to Woo.
+     * DECISION AK-9 required the generic fields to be documented as legacy pointers rather than
+     * as the handoff contract. FLAG-COMMSOURCEID-1 took the step AK-9 deferred to Doc 9 §26 and
+     * removed them from the SCHEMA as well as the runtime — so the guarantee is now stronger
+     * than "documented as legacy": the ambiguity is unrepresentable.
+     *
+     * Asserted on both endpoints because a schema that still declared them would leave generated
+     * consumer types carrying a field no response ever contains.
      */
-    public function test_the_legacy_fields_are_not_documented_as_the_woo_handoff_contract(): void
+    public function test_the_legacy_generic_fields_are_gone_from_the_published_schema(): void
     {
         $product   = self::itemProperties('/products/{slug}');
         $variation = self::itemProperties('/products/{slug}/variations');
 
-        $legacy = [
-            'product.source_id'   => $product['source_id']['description'],
-            'variation.source_id' => $variation['source_id']['description'],
-            'variation.product_id' => $variation['product_id']['description'],
-        ];
+        self::assertArrayNotHasKey('source_id', $product);
+        self::assertArrayNotHasKey('source_id', $variation);
+        self::assertArrayNotHasKey('product_id', $variation);
 
-        foreach ($legacy as $field => $description) {
-            self::assertStringContainsString('Legacy', $description, "{$field} must read as legacy");
-            self::assertStringContainsString(
-                'NOT the WooCommerce interoperability contract',
-                $description,
-                "{$field} must disclaim the handoff contract",
-            );
-            // Never "the authoritative WooCommerce … id" — that phrasing belongs to woo_* alone.
-            self::assertStringNotContainsString('Authoritative WooCommerce', $description, $field);
-        }
+        // And the explicit ones are still fully described, which is what they replaced.
+        self::assertStringContainsString('Authoritative WooCommerce', $product['woo_product_id']['description']);
+        self::assertStringContainsString('Authoritative WooCommerce', $variation['woo_variation_id']['description']);
     }
 
     /**

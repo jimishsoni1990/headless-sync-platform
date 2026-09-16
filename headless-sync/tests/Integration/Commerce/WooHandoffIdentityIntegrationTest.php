@@ -89,7 +89,14 @@ final class WooHandoffIdentityIntegrationTest extends TestCase
         $published = $this->publishedProduct('hat');
 
         self::assertSame(123, $published['woo_product_id']);
-        self::assertSame(123, $published['source_id'], 'the explicit field aliases, never replaces');
+
+        // FLAG-COMMSOURCEID-1 completed the Doc 9 §26 lifecycle AK-9 deferred: the explicit
+        // field no longer aliases a generic one, it REPLACED it. Asserted against real
+        // PostgreSQL rather than a fixture, because the row this came from genuinely carries
+        // both `id` and `source_product_id` — the filtering happens in the Resource, not in the
+        // absence of data.
+        self::assertArrayNotHasKey('source_id', $published);
+        self::assertArrayNotHasKey('id', $published);
     }
 
     /** A variable parent publishes the parent id — the first half of a variable handoff. */

@@ -12,6 +12,7 @@ use HSP\Modules\Commerce\Queries\ProductFilterSet;
 use HSP\Modules\Commerce\Queries\ProductQueryProvider;
 use HSP\Modules\Commerce\Queries\TermFilterSet;
 use HSP\Modules\Commerce\Resources\AttributeResource;
+use HSP\Modules\Commerce\Resources\AttributeTermResource;
 use HSP\Modules\Commerce\Resources\TermResource;
 use HSP\Modules\Commerce\Rest\CommerceRestRegistrar;
 use HSP\Tests\Unit\Content\Adapters\FakeDbConnection;
@@ -48,6 +49,7 @@ final class AttributeDeliveryTest extends TestCase
             new AttributeQueryProvider($this->db),
             new AttributeResource(),
             $factory(...),
+            new AttributeTermResource(),
             new \HSP\Modules\Commerce\Queries\VariationQueryProvider($this->db),
             new \HSP\Modules\Commerce\Resources\VariationResource(),
             new \HSP\Core\Rest\DeliveryErrorBoundary(
@@ -218,8 +220,14 @@ final class AttributeDeliveryTest extends TestCase
         ]);
 
         self::assertSame('pa_colour', $shaped['taxonomy']);
-        self::assertSame(3, $shaped['source_id']);
         self::assertFalse($shaped['has_archives']);
+
+        // FLAG-COMMSOURCEID-1: `taxonomy` is the WHOLE published identity of an attribute
+        // definition. The projection uuid and the source attribute id are still on the row and
+        // still never serialized — an attribute is reachable only through its taxonomy name, so
+        // neither was anchoring anything a consumer could call.
+        self::assertArrayNotHasKey('id', $shaped);
+        self::assertArrayNotHasKey('source_id', $shaped);
     }
 
     /** PostgreSQL hands booleans back as 't'/'f' over the text protocol, not as PHP bools. */
